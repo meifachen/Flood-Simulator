@@ -1,0 +1,7 @@
+vendor_src/
+node_modules/
+__pycache__/
+*.pyc
+.out_tmp/
+test-results/
+dist/*.tmp

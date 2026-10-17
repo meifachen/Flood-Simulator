@@ -1,0 +1,568 @@
+/* 2D overland flow on a raster (local-inertial shallow water, Bates et al. 2010 / de Almeida et al. 2012)
+ * US units: ft, s. Cells are row-major from the north-west corner (row 0 = north).
+ * Cell types: 0 open (computed), 1 wall (building), 2 stage boundary (lake or depression; level set from the network engine).
+ * Faces: qx[r*(nx+1)+c] between (r,c-1) and (r,c), positive to the east; qy[r*nx+c] between (r-1,c) and (r,c), positive to the south.
+ * Per step: (A) face flow with semi-implicit friction and a Froude cap, (B) outflow ratio so no open cell drains below zero,
+ * (D) depth update with rain (roof rain moved to the nearest open cell), Green-Ampt infiltration on the pervious fraction,
+ * optional drain allowance on road cells, and running maxima. Boundary cells keep their level; the net inflow to them is tallied.
+ * Point sources (for example SWMM node flooding) add a flow rate (cfs) to one open cell each; they are booked in the ledger as "inflow".
+ * Two back ends with the same arithmetic: CPU (JavaScript, Float32 state) and GPU (WebGPU compute, WGSL).
+ * Generic engine of the Flood Simulator; derived from the Lake Kathryn flood tab solver (same numerics and tests).
+ */
+(function (root) {
+  "use strict";
+  const G = 32.174, KN = 1.486 * 1.486, HMIN = 1e-3;
+
+  // ------------------------------------------------------------------ grid
+  function b64dec(s, T) {
+    let bin;
+    if (typeof Buffer !== "undefined") { const b = Buffer.from(s, "base64"); bin = new Uint8Array(b.buffer, b.byteOffset, b.length); }
+    else { const t = atob(s); bin = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) bin[i] = t.charCodeAt(i); }
+    const out = new Uint8Array(bin.length); out.set(bin); return new T(out.buffer);
+  }
+  /* raw: {nx, ny, dx, z, type, node, n, perv, ks (ft/s), psimd (ft, suction head x IMD), imd (initial moisture deficit, optional), mult, road (Uint16 ids), K (number of boundary nodes)} */
+  function makeGrid(raw) {
+    const N = raw.nx * raw.ny, g = Object.assign({}, raw, { N });
+    g.aux = new Float32Array(4 * N); g.prm = new Float32Array(4 * N);
+    let openArea = 0, multSum = 0;
+    for (let k = 0; k < N; k++) {
+      const t = raw.type[k], info = t | ((t === 2 ? raw.node[k] : 0) << 4) | ((raw.road && raw.road[k] > 0 ? 1 : 0) << 12);
+      g.aux[4 * k] = raw.z[k]; g.aux[4 * k + 1] = t === 0 ? raw.mult[k] : 0; g.aux[4 * k + 2] = info; g.aux[4 * k + 3] = raw.imd ? raw.imd[k] : 0;
+      g.prm[4 * k] = raw.n[k]; g.prm[4 * k + 1] = raw.perv[k]; g.prm[4 * k + 2] = raw.ks[k]; g.prm[4 * k + 3] = raw.psimd[k];
+      if (t === 0) { openArea++; multSum += raw.mult[k]; }
+    }
+    g.openCells = openArea; g.multSum = multSum;
+    return g;
+  }
+  // ------------------------------------------------------------------ Green-Ampt step (same arithmetic as the WGSL gaStep)
+  // Infiltration over one step with water ponded at the surface, SWMM grnampt form: c1 = (suction + ponded depth) x IMD,
+  // u - c1 ln(1 + u/(F1 + c1)) = Ks dt, solved by Newton on the cancellation-free form u F1/a + c1 (x - ln(1+x)), x = u/a, a = F1 + c1.
+  function xml1p(x) { return x < 0.05 ? x * x * (0.5 - x * (1 / 3 - x * (0.25 - x * (0.2 - x / 6)))) : x - Math.log(1 + x); }
+  // cap = water available per unit pervious area. The capacity over the step is at least Ks dt (1 + c1/(F1 + cap)) whenever it is below cap
+  // (the rate only falls as F grows), so when that bound reaches cap all the water infiltrates and Newton is skipped.
+  function gaStep(F1, ksdt, c1, cap) {
+    if (!(ksdt > 0)) return 0; if (!(c1 > 0)) return ksdt;
+    if (cap > 0 && cap <= ksdt * (1 + c1 / (F1 + cap))) return cap;
+    const a = F1 + c1; let u = ksdt + Math.sqrt(2 * c1 * ksdt); if (F1 > 0) u = Math.min(u, ksdt * (1 + c1 / F1));   // both bound the root from above; Newton then descends monotonically (convex)
+    for (let i = 0; i < 12; i++) { const x = u / a, f = u * F1 / a + c1 * xml1p(x) - ksdt, fp = (F1 + c1 * x / (1 + x)) / a, un = Math.max(u - f / Math.max(fp, 1e-12), 1e-12); if (Math.abs(un - u) <= 1e-9 * u) { u = un; break; } u = un; }
+    return u;
+  }
+
+  // ------------------------------------------------------------------ CPU back end
+  class CpuSolver {
+    constructor(g) {
+      this.g = g; const N = g.N;
+      this.st = new Float32Array(4 * N);   // h, F, hmax, tmax (hours)
+      this.r = new Float32Array(N).fill(1);
+      this.acc = new Float32Array(4 * N);  // infiltration, drain, edge outflow, boundary inflow (boundary cells) / clamp (open cells)
+      this.nqx = (g.nx + 1) * g.ny; this.q = new Float32Array(this.nqx + g.nx * (g.ny + 1)); this.qo = new Float32Array(this.q.length);
+      this.theta = g.theta ?? 0.8; this.kind = "cpu"; this.src = new Float32Array(N);   // point-source depth rate (ft/s) per cell
+    }
+    async init() { return this; }
+    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); }
+    setSources(list) { const A = this.g.dx * this.g.dx; this.src.fill(0); for (const s of list || []) this.src[s.cell] += s.rate / A; }
+    setBoundary(stages) {
+      const g = this.g, a = g.aux, st = this.st;
+      for (let k = 0; k < g.N; k++) {
+        const info = a[4 * k + 2]; if ((info & 3) !== 2) continue;
+        const s = stages[(info >> 4) & 255]; st[4 * k] = Math.max(s - a[4 * k], 0);
+      }
+    }
+    step(dt, rain, drain, tHours) {
+      const g = this.g, N = g.N, nx = g.nx, ny = g.ny, a = g.aux, p = g.prm, st = this.st, r = this.r, acc = this.acc, nqx = this.nqx, dx = g.dx;
+      const qo = this.q, q = this.qo; this.q = q; this.qo = qo;   // qo: previous step, q: this step
+      const sqKN = Math.sqrt(KN), gdt = G * dt, th = this.theta, th2 = (1 - th) / 2;
+      let hm = 0;
+      // (A) faces from the previous step's limited flows (de Almeida et al. 2012 weighting with the two neighbouring faces)
+      const edgeQ = (k, opp, e) => {
+        if ((a[4 * k + 2] & 3) !== 0) return 0;
+        const h = st[4 * k]; if (!(h > HMIN)) return 0;
+        const sl = Math.max((a[4 * opp] - a[4 * k]) / dx, 0.001);
+        let v = sqKN / p[4 * k] * h * Math.cbrt(h * h) * Math.sqrt(sl); const qm = h * Math.sqrt(G * h); if (v > qm) v = qm;
+        if (h > hm) hm = h; return e * v;
+      };
+      // interior face between L and R; f face index; fa/fb neighbouring faces in the same direction (or -1); La/Rb the cells beyond
+      const inner = (f, L, R, fa, La, fb, Rb) => {
+        const tL = a[4 * L + 2] & 3, tR = a[4 * R + 2] & 3;
+        if (tL === 1 || tR === 1 || (tL === 2 && tR === 2)) return 0;
+        const zL = a[4 * L], zR = a[4 * R], eL = zL + st[4 * L], eR = zR + st[4 * R];
+        const hf = (eL > eR ? eL : eR) - (zL > zR ? zL : zR);
+        if (!(hf > HMIN)) return 0;
+        let v0 = qo[f]; const qe = v0 * (v0 > 0 ? r[L] : r[R]);
+        let qa = qe, qb = qe;
+        if (fa >= 0) { v0 = qo[fa]; qa = v0 * (v0 > 0 ? r[La] : r[L]); }
+        if (fb >= 0) { v0 = qo[fb]; qb = v0 * (v0 > 0 ? r[R] : r[Rb]); }
+        const n = 0.5 * (p[4 * L] + p[4 * R]);
+        let v = (th * qe + th2 * (qa + qb) - gdt * hf * (eR - eL) / dx) / (1 + gdt * n * n * (qe < 0 ? -qe : qe) / (KN * hf * hf * Math.cbrt(hf)));
+        const qm = hf * Math.sqrt(G * hf); if (v > qm) v = qm; else if (v < -qm) v = -qm;
+        if (hf > hm) hm = hf; return v;
+      };
+      for (let rr = 0; rr < ny; rr++) {
+        const base = rr * (nx + 1), k0 = rr * nx;
+        q[base] = edgeQ(k0, k0 + 1, -1);
+        for (let c = 1; c < nx; c++) { const L = k0 + c - 1, R = L + 1; q[base + c] = inner(base + c, L, R, c > 1 ? base + c - 1 : -1, L - 1, c < nx - 1 ? base + c + 1 : -1, R + 1); }
+        q[base + nx] = edgeQ(k0 + nx - 1, k0 + nx - 2, 1);
+      }
+      for (let c = 0; c < nx; c++) { q[nqx + c] = edgeQ(c, c + nx, -1); q[nqx + ny * nx + c] = edgeQ((ny - 1) * nx + c, (ny - 2) * nx + c, 1); }
+      for (let rr = 1; rr < ny; rr++) {
+        const base = nqx + rr * nx;
+        for (let c = 0; c < nx; c++) { const f = base + c, L = (rr - 1) * nx + c, R = L + nx; q[f] = inner(f, L, R, rr > 1 ? f - nx : -1, L - nx, rr < ny - 1 ? f + nx : -1, R + nx); }
+      }
+      // (B) outflow ratio
+      for (let k = 0; k < N; k++) {
+        if ((a[4 * k + 2] & 3) !== 0) { r[k] = 1; continue; }
+        const rr = (k / nx) | 0, c = k - rr * nx;
+        const fW = rr * (nx + 1) + c, fE = fW + 1, fN = nqx + rr * nx + c, fS = fN + nx;
+        const qw = q[fW], qE = q[fE], qn = q[fN], qs = q[fS];
+        const out = ((qw < 0 ? -qw : 0) + (qE > 0 ? qE : 0) + (qn < 0 ? -qn : 0) + (qs > 0 ? qs : 0)) * dt / dx;
+        const h = st[4 * k]; r[k] = (out > h && out > 0) ? h / out : 1;
+      }
+      // (D) depth update
+      const pipes = this.pipes || [], np = pipes.length, stages = this.stages;
+      for (let k = 0; k < N; k++) {
+        const info = a[4 * k + 2], t = info & 3; if (t === 1) continue;
+        const rr = (k / nx) | 0, c = k - rr * nx;
+        const fW = rr * (nx + 1) + c, fE = fW + 1, fN = nqx + rr * nx + c, fS = fN + nx;
+        let v;
+        v = q[fW]; const qW = v * (v > 0 ? (c > 0 ? r[k - 1] : 1) : r[k]);
+        v = q[fE]; const qE = v * (v > 0 ? r[k] : (c < nx - 1 ? r[k + 1] : 1));
+        v = q[fN]; const qN = v * (v > 0 ? (rr > 0 ? r[k - nx] : 1) : r[k]);
+        v = q[fS]; const qS = v * (v > 0 ? r[k] : (rr < ny - 1 ? r[k + nx] : 1));
+        const dh = dt / dx * (qW - qE + qN - qS);
+        if (t === 2) { acc[4 * k + 3] += dh; continue; }
+        const edgeOut = dt / dx * ((c === 0 ? -qW : 0) + (c === nx - 1 ? qE : 0) + (rr === 0 ? -qN : 0) + (rr === ny - 1 ? qS : 0));
+        let h = st[4 * k] + dh + rain * a[4 * k + 1] * dt + this.src[k] * dt;
+        let pipeOut = 0;
+        for (let i = 0; i < np; i++) {
+          const pp = pipes[i]; if (pp.cell !== k) continue;
+          const sL = stages[pp.lake], eta = a[4 * k] + h, dH = sL - eta;
+          let d = pp.cda * Math.sqrt(2 * G * Math.abs(dH)) * dt / (dx * dx);
+          if (dH > 0) { d = Math.min(d, dH); h += d; pipeOut -= d; } else if (dH < 0) { d = Math.min(d, -dH, Math.max(h, 0)); h -= d; pipeOut += d; }
+        }
+        const perv = p[4 * k + 1];
+        let inf = 0;
+        if (perv > 0 && h > 0) {
+          const F = st[4 * k + 1];
+          inf = Math.min(perv * gaStep(F, p[4 * k + 2] * dt, p[4 * k + 3] + h * a[4 * k + 3], h / perv), h); h -= inf; st[4 * k + 1] = F + inf / perv;
+        }
+        let dr = 0;
+        if (drain > 0 && (info & 4096) && h > 0) { dr = Math.min(drain * dt, h); h -= dr; }
+        let cl = 0; if (h < 0) { cl = -h; h = 0; }
+        st[4 * k] = h; acc[4 * k] += inf; acc[4 * k + 1] += dr; acc[4 * k + 2] += edgeOut + pipeOut; acc[4 * k + 3] += cl;
+        if (h > st[4 * k + 2]) { st[4 * k + 2] = h; st[4 * k + 3] = tHours; }
+      }
+      return hm;
+    }
+    async chunk(o) {   // o: {dt, n, rain, drain, stages, tHours, pipes:[{cell, cda (sq ft), lake}]}
+      this.setBoundary(o.stages); this.stages = o.stages; this.pipes = o.pipes || []; if (o.sources) this.setSources(o.sources); let hm = 0;
+      for (let i = 0; i < o.n; i++) hm = Math.max(hm, this.step(o.dt, o.rain, o.drain, o.tHours));
+      return hm;
+    }
+    async read(resetAcc = true) {
+      const out = { st: this.st.slice(), acc: this.acc.slice() };
+      if (resetAcc) this.acc.fill(0);
+      return out;
+    }
+  }
+
+  // ------------------------------------------------------------------ GPU back end
+  const WGSL = /* wgsl */`
+struct P { nx: u32, ny: u32, nqx: u32, nf: u32, dx: f32, dt: f32, rain: f32, drain: f32, tHours: f32, g: f32, kn: f32, hmin: f32, theta: f32, npipe: f32, p2: f32, p3: f32, stage: array<vec4<f32>, 16>, pipe: array<vec4<f32>, 4> };
+@group(0) @binding(0) var<uniform> U: P;
+@group(0) @binding(1) var<storage, read> aux: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> prm: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> st: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> rat: array<f32>;
+@group(0) @binding(5) var<storage, read_write> q: array<f32>;
+@group(0) @binding(6) var<storage, read_write> acc: array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read_write> misc: array<atomic<u32>>;
+@group(0) @binding(8) var<storage, read> qo: array<f32>;
+@group(0) @binding(9) var<storage, read> src: array<f32>;
+var<workgroup> wmax: atomic<u32>;
+
+fn ctype(k: i32) -> u32 { return u32(aux[k].z) & 3u; }
+fn qoe(f: u32, Lk: i32, Rk: i32) -> f32 {
+  let v = qo[f];
+  if (v > 0.0) { if (Lk >= 0) { return v * rat[Lk]; } return v; }
+  if (Rk >= 0) { return v * rat[Rk]; } return v;
+}
+
+@compute @workgroup_size(256)
+fn faces(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  if (li == 0u) { atomicStore(&wmax, 0u); }
+  workgroupBarrier();
+  let f = gid.x + gid.y * nwg.x * 256u;
+  var qn: f32 = 0.0; var hf: f32 = 0.0;
+  if (f < U.nf) {
+    let nx = i32(U.nx); let ny = i32(U.ny);
+    var L: i32 = -1; var R: i32 = -1;
+    if (f < U.nqx) { let r = i32(f / (U.nx + 1u)); let c = i32(f % (U.nx + 1u)); if (c > 0) { L = r * nx + c - 1; } if (c < nx) { R = r * nx + c; } }
+    else { let ff = f - U.nqx; let r = i32(ff / U.nx); let c = i32(ff % U.nx); if (r > 0) { L = (r - 1) * nx + c; } if (r < ny) { R = r * nx + c; } }
+    if (L < 0 || R < 0) {
+      var k = R; var e: f32 = -1.0; if (R < 0) { k = L; e = 1.0; }
+      let h = st[k].x;
+      if (ctype(k) == 0u && h > U.hmin) {
+        var opp: i32;
+        if (f < U.nqx) { if (e > 0.0) { opp = k - 1; } else { opp = k + 1; } } else { if (e > 0.0) { opp = k - nx; } else { opp = k + nx; } }
+        let s = max((aux[opp].x - aux[k].x) / U.dx, 0.001);
+        var qo = sqrt(U.kn) / prm[k].x * pow(h, 5.0 / 3.0) * sqrt(s);
+        qo = min(qo, h * sqrt(U.g * h));
+        qn = e * qo; hf = h;
+      }
+    } else {
+      let tL = ctype(L); let tR = ctype(R);
+      if (!(tL == 1u || tR == 1u || (tL == 2u && tR == 2u))) {
+        let zL = aux[L].x; let zR = aux[R].x; let eL = zL + st[L].x; let eR = zR + st[R].x;
+        let d = max(eL, eR) - max(zL, zR);
+        if (d > U.hmin) {
+          let qe = qoe(f, L, R);
+          var qa = qe; var qb = qe;
+          if (f < U.nqx) { let c0 = f % (U.nx + 1u); if (c0 > 1u) { qa = qoe(f - 1u, L - 1, L); } if (c0 < U.nx - 1u) { qb = qoe(f + 1u, R, R + 1); } }
+          else { let r0 = (f - U.nqx) / U.nx; if (r0 > 1u) { qa = qoe(f - U.nx, L - nx, L); } if (r0 < U.ny - 1u) { qb = qoe(f + U.nx, R, R + nx); } }
+          let n = 0.5 * (prm[L].x + prm[R].x);
+          var v = (U.theta * qe + 0.5 * (1.0 - U.theta) * (qa + qb) - U.g * d * U.dt * (eR - eL) / U.dx) / (1.0 + U.g * U.dt * n * n * abs(qe) / (U.kn * pow(d, 7.0 / 3.0)));
+          let qm = d * sqrt(U.g * d);
+          v = clamp(v, -qm, qm);
+          qn = v; hf = d;
+        }
+      }
+    }
+    q[f] = qn;
+  }
+  atomicMax(&wmax, bitcast<u32>(hf));
+  workgroupBarrier();
+  if (li == 0u) { atomicMax(&misc[0], atomicLoad(&wmax)); }
+}
+
+fn cellIdx(gid: vec3<u32>, nwg: vec3<u32>) -> u32 { return gid.x + gid.y * nwg.x * 256u; }
+// x - ln(1 + x) without cancellation for small x
+fn xml1p(x: f32) -> f32 { if (x < 0.05) { return x * x * (0.5 - x * (1.0 / 3.0 - x * (0.25 - x * (0.2 - x / 6.0)))); } return x - log(1.0 + x); }
+// Green-Ampt infiltration over one step under ponding (SWMM grnampt form): solve u - c1 ln(1 + u/(F1 + c1)) = Ks dt for u = F2 - F1
+fn gaStep(F1: f32, ksdt: f32, c1: f32, cap: f32) -> f32 {
+  if (ksdt <= 0.0) { return 0.0; }
+  if (c1 <= 0.0) { return ksdt; }
+  if (cap > 0.0 && cap <= ksdt * (1.0 + c1 / (F1 + cap))) { return cap; }
+  let a = F1 + c1;
+  var u = ksdt + sqrt(2.0 * c1 * ksdt);
+  if (F1 > 0.0) { u = min(u, ksdt * (1.0 + c1 / F1)); }
+  for (var i = 0; i < 12; i = i + 1) {
+    let x = u / a;
+    let f = u * F1 / a + c1 * xml1p(x) - ksdt;
+    let fp = (F1 + c1 * x / (1.0 + x)) / a;
+    u = max(u - f / max(fp, 1e-12), 1e-12);
+  }
+  return u;
+}
+
+@compute @workgroup_size(256)
+fn ratio(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let k = cellIdx(gid, nwg); if (k >= U.nx * U.ny) { return; }
+  if (ctype(i32(k)) != 0u) { rat[k] = 1.0; return; }
+  let r = k / U.nx; let c = k % U.nx;
+  let fW = r * (U.nx + 1u) + c; let fE = fW + 1u; let fN = U.nqx + r * U.nx + c; let fS = fN + U.nx;
+  let out = (max(-q[fW], 0.0) + max(q[fE], 0.0) + max(-q[fN], 0.0) + max(q[fS], 0.0)) * U.dt / U.dx;
+  let h = st[k].x;
+  var v: f32 = 1.0; if (out > h && out > 0.0) { v = h / out; }
+  rat[k] = v;
+}
+
+fn qeff(f: u32, Lk: i32, Rk: i32) -> f32 {
+  let v = q[f];
+  if (v > 0.0) { if (Lk >= 0) { return v * rat[Lk]; } return v; }
+  if (Rk >= 0) { return v * rat[Rk]; } return v;
+}
+
+@compute @workgroup_size(256)
+fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let k = cellIdx(gid, nwg); if (k >= U.nx * U.ny) { return; }
+  let a = aux[k]; let info = u32(a.z); let t = info & 3u;
+  if (t == 1u) { return; }
+  let nx = i32(U.nx); let ki = i32(k);
+  let r = k / U.nx; let c = k % U.nx;
+  let fW = r * (U.nx + 1u) + c; let fE = fW + 1u; let fN = U.nqx + r * U.nx + c; let fS = fN + U.nx;
+  var W: i32 = -1; var E: i32 = -1; var Nn: i32 = -1; var S: i32 = -1;
+  if (c > 0u) { W = ki - 1; } if (c < U.nx - 1u) { E = ki + 1; } if (r > 0u) { Nn = ki - nx; } if (r < U.ny - 1u) { S = ki + nx; }
+  let qW = qeff(fW, W, ki); let qE = qeff(fE, ki, E); let qN = qeff(fN, Nn, ki); let qS = qeff(fS, ki, S);
+  let dh = U.dt / U.dx * (qW - qE + qN - qS);
+  var ac = acc[k];
+  if (t == 2u) { ac.w = ac.w + dh; acc[k] = ac; return; }
+  var eo: f32 = 0.0;
+  if (c == 0u) { eo = eo - qW; } if (c == U.nx - 1u) { eo = eo + qE; } if (r == 0u) { eo = eo - qN; } if (r == U.ny - 1u) { eo = eo + qS; }
+  eo = eo * U.dt / U.dx;
+  var s = st[k];
+  var h = s.x + dh + U.rain * a.y * U.dt + src[k] * U.dt;
+  var po: f32 = 0.0;
+  for (var i = 0u; i < u32(U.npipe); i = i + 1u) {
+    let pp = U.pipe[i];
+    if (u32(pp.x) == k) {
+      let li = u32(pp.z);
+      let sL = U.stage[li / 4u][li % 4u];
+      let dH = sL - (a.x + h);
+      var d = pp.y * sqrt(2.0 * U.g * abs(dH)) * U.dt / (U.dx * U.dx);
+      if (dH > 0.0) { d = min(d, dH); h = h + d; po = po - d; } else if (dH < 0.0) { d = min(min(d, -dH), max(h, 0.0)); h = h - d; po = po + d; }
+    }
+  }
+  let p = prm[k];
+  var inf: f32 = 0.0;
+  if (p.y > 0.0 && h > 0.0) {
+    inf = min(p.y * gaStep(s.y, p.z * U.dt, p.w + h * a.w, h / p.y), h); h = h - inf; s.y = s.y + inf / p.y;
+  }
+  var dr: f32 = 0.0;
+  if (U.drain > 0.0 && (info & 4096u) != 0u && h > 0.0) { dr = min(U.drain * U.dt, h); h = h - dr; }
+  var cl: f32 = 0.0; if (h < 0.0) { cl = -h; h = 0.0; }
+  s.x = h;
+  if (h > s.z) { s.z = h; s.w = U.tHours; }
+  st[k] = s;
+  acc[k] = ac + vec4<f32>(inf, dr, eo + po, cl);
+}
+
+@compute @workgroup_size(256)
+fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let k = cellIdx(gid, nwg); if (k >= U.nx * U.ny) { return; }
+  let info = u32(aux[k].z); if ((info & 3u) != 2u) { return; }
+  let i = (info >> 4u) & 255u;
+  let s = U.stage[i / 4u][i % 4u];
+  st[k].x = max(s - aux[k].x, 0.0);
+}
+`;
+  class GpuSolver {
+    constructor(g) { this.g = g; this.kind = "gpu"; }
+    async init(device) {
+      const g = this.g, N = g.N;
+      if (!device) {
+        if (!(typeof navigator !== "undefined" && navigator.gpu)) throw new Error("WebGPU is not available in this browser");
+        const ad = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+        if (!ad) throw new Error("No WebGPU adapter");
+        this.adapterInfo = ad.info ? { vendor: ad.info.vendor, architecture: ad.info.architecture, description: ad.info.description } : {};
+        if (ad.limits.maxStorageBuffersPerShaderStage < 9) throw new Error("This GPU allows fewer than 9 storage buffers per shader; use the CPU");
+        device = await ad.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: Math.min(ad.limits.maxStorageBufferBindingSize, 1 << 30), maxBufferSize: Math.min(ad.limits.maxBufferSize, 1 << 30), maxStorageBuffersPerShaderStage: 9 } });
+      }
+      const d = this.dev = device;
+      this.lost = null; d.lost && d.lost.then((i) => { this.lost = i.message || "device lost"; });
+      const B = GPUBufferUsage;
+      const mk = (size, usage, data) => { const b = d.createBuffer({ size: Math.max(16, Math.ceil(size / 16) * 16), usage, mappedAtCreation: !!data }); if (data) { new data.constructor(b.getMappedRange()).set(data); b.unmap(); } return b; };
+      this.nqx = (g.nx + 1) * g.ny; this.nf = this.nqx + g.nx * (g.ny + 1);
+      this.bU = mk(384, B.UNIFORM | B.COPY_DST); if ((g.K || 0) > 64) throw new Error("At most 64 boundary nodes per tile");
+      this.bAux = mk(16 * N, B.STORAGE, g.aux); this.bPrm = mk(16 * N, B.STORAGE, g.prm);
+      this.bSt = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bRat = mk(4 * N, B.STORAGE, new Float32Array(N).fill(1));
+      this.bQ = mk(4 * this.nf, B.STORAGE | B.COPY_DST); this.bQ2 = mk(4 * this.nf, B.STORAGE | B.COPY_DST); this.par = 0; this.bAcc = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST);
+      this.bMisc = mk(16, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bSrc = mk(4 * N, B.STORAGE | B.COPY_DST); this.srcCells = [];
+      this.rdMisc = d.createBuffer({ size: 16, usage: B.MAP_READ | B.COPY_DST });
+      this.rdSt = d.createBuffer({ size: 16 * N, usage: B.MAP_READ | B.COPY_DST }); this.rdAcc = d.createBuffer({ size: 16 * N, usage: B.MAP_READ | B.COPY_DST });
+      const mod = d.createShaderModule({ code: WGSL });
+      if (mod.getCompilationInfo) { const ci = await mod.getCompilationInfo(); const err = ci.messages.filter((m) => m.type === "error"); if (err.length) throw new Error("WGSL: " + err.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join("; ")); }
+      const layout = d.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        ...[3, 4, 5, 6, 7].map((b) => ({ binding: b, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } })),
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }] });
+      const pl = d.createPipelineLayout({ bindGroupLayouts: [layout] });
+      this.pipe = {}; for (const e of ["faces", "ratio", "update", "boundary"]) this.pipe[e] = d.createComputePipeline({ layout: pl, compute: { module: mod, entryPoint: e } });
+      const mkbg = (qn, qold) => d.createBindGroup({ layout, entries: [this.bU, this.bAux, this.bPrm, this.bSt, this.bRat, qn, this.bAcc, this.bMisc, qold, this.bSrc].map((buffer, binding) => ({ binding, resource: { buffer } })) });
+      this.bgs = [mkbg(this.bQ2, this.bQ), mkbg(this.bQ, this.bQ2)];   // step parity 0 writes Q2 from Q; parity 1 writes Q from Q2
+      const wg = (n) => { const w = Math.ceil(n / 256); return w <= 65535 ? [w, 1] : [65535, Math.ceil(w / 65535)]; };
+      this.wgCells = wg(N); this.wgFaces = wg(this.nf);
+      // the kernels index with gid.x + gid.y*nwg.x*256: with a 2D dispatch nwg.x must be the x count
+      return this;
+    }
+    upload(st) { this.dev.queue.writeBuffer(this.bSt, 0, st); }
+    reset() {   // clear flows, ratios and tallies so nothing carries over from an earlier run on this solver
+      const d = this.dev, enc = d.createCommandEncoder(); enc.clearBuffer(this.bQ); enc.clearBuffer(this.bQ2); enc.clearBuffer(this.bAcc); d.queue.submit([enc.finish()]);
+      d.queue.writeBuffer(this.bRat, 0, new Float32Array(this.g.N).fill(1)); this.par = 0;
+      const e2 = d.createCommandEncoder(); e2.clearBuffer(this.bSrc); d.queue.submit([e2.finish()]); this.srcCells = [];
+    }
+    setSources(list) {   // sparse update: zero the cells set last time, then write this chunk's rates (duplicates summed)
+      const A = this.g.dx * this.g.dx, m = new Map(); for (const s of list || []) m.set(s.cell, (m.get(s.cell) || 0) + s.rate / A);
+      const z = new Float32Array(1); for (const c of this.srcCells) if (!m.has(c)) this.dev.queue.writeBuffer(this.bSrc, 4 * c, z);
+      for (const [c, v] of m) this.dev.queue.writeBuffer(this.bSrc, 4 * c, new Float32Array([v]));
+      this.srcCells = [...m.keys()];
+    }
+    async chunk(o) {
+      const d = this.dev, g = this.g;
+      if (this.lost) throw new Error("GPU device lost: " + this.lost);
+      const u = new ArrayBuffer(384), ui = new Uint32Array(u), uf = new Float32Array(u);
+      ui[0] = g.nx; ui[1] = g.ny; ui[2] = this.nqx; ui[3] = this.nf; uf[4] = g.dx; uf[5] = o.dt; uf[6] = o.rain; uf[7] = o.drain; uf[8] = o.tHours; uf[9] = G; uf[10] = KN; uf[11] = HMIN; uf[12] = g.theta ?? 0.8;
+      for (let i = 0; i < Math.min(o.stages.length, 64); i++) uf[16 + i] = o.stages[i];
+      if ((o.pipes || []).length > 4) throw new Error("The GPU solver handles at most 4 pipe connections; use the CPU for more");
+      const pipes = o.pipes || []; uf[13] = pipes.length;
+      pipes.forEach((pp, i) => { uf[80 + 4 * i] = pp.cell; uf[81 + 4 * i] = pp.cda; uf[82 + 4 * i] = pp.lake; });
+      if (pipes.some((pp) => pp.cell >= (1 << 24))) throw new Error("pipe cell index too large for float encoding");
+      d.queue.writeBuffer(this.bU, 0, u); if (o.sources) this.setSources(o.sources);
+      d.queue.writeBuffer(this.bMisc, 0, new Uint32Array(4));
+      const enc = d.createCommandEncoder(), pass = enc.beginComputePass();
+      const run = (p, w, bg) => { pass.setPipeline(this.pipe[p]); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(w[0], w[1]); };
+      run("boundary", this.wgCells, this.bgs[this.par]);
+      for (let i = 0; i < o.n; i++) { const bg = this.bgs[this.par]; run("faces", this.wgFaces, bg); run("ratio", this.wgCells, bg); run("update", this.wgCells, bg); this.par ^= 1; }
+      pass.end();
+      enc.copyBufferToBuffer(this.bMisc, 0, this.rdMisc, 0, 16);
+      d.queue.submit([enc.finish()]);
+      await this.rdMisc.mapAsync(GPUMapMode.READ);
+      const hm = new Float32Array(this.rdMisc.getMappedRange().slice(0))[0]; this.rdMisc.unmap();
+      return hm;
+    }
+    async read(resetAcc = true) {
+      const d = this.dev, enc = d.createCommandEncoder();
+      enc.copyBufferToBuffer(this.bSt, 0, this.rdSt, 0, 16 * this.g.N); enc.copyBufferToBuffer(this.bAcc, 0, this.rdAcc, 0, 16 * this.g.N);
+      if (resetAcc) enc.clearBuffer(this.bAcc);
+      d.queue.submit([enc.finish()]);
+      await Promise.all([this.rdSt.mapAsync(GPUMapMode.READ), this.rdAcc.mapAsync(GPUMapMode.READ)]);
+      const st = new Float32Array(this.rdSt.getMappedRange().slice(0)), acc = new Float32Array(this.rdAcc.getMappedRange().slice(0));
+      this.rdSt.unmap(); this.rdAcc.unmap();
+      return { st, acc };
+    }
+    destroy() { try { this.dev.destroy(); } catch (e) {} }
+  }
+
+  // ------------------------------------------------------------------ driver
+  /* o: {t0, t1 (hours), rainAt(i) -> in/hr for rain interval i = floor(t / rainStep) (rainStep s, default 3600, so i is the hour),
+   *     stageAt(tHours) -> array (ft), drainInHr, pipes, init, cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
+   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source}
+   * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
+   * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
+   * 50 ms so a stop request sent as a message is seen. The solver is reset at the start, so nothing carries over from an earlier run. */
+  const now = () => (typeof performance !== "undefined" ? performance : Date).now();
+  const yieldTask = () => new Promise((r) => (typeof setImmediate === "function" ? setImmediate(r) : setTimeout(r, 0)));
+  async function simulate(g, solver, o) {
+    const A = g.dx * g.dx, cfl = o.cfl ?? 0.7, dtMax = o.dtMax ?? 5, chunkSec = o.chunkSec ?? 60, readSec = o.readSec ?? 900;
+    if (!(Number.isFinite(o.t0) && Number.isFinite(o.t1) && o.t1 > o.t0)) throw new Error(`Invalid simulation window: start ${o.t0}, end ${o.t1} (hours); the end must be after the start`);
+    if (!(cfl > 0 && cfl <= 1)) throw new Error(`Invalid Courant number ${cfl}; use a value in (0, 1]`);
+    if (!(dtMax > 0) || !(chunkSec > 0) || !(readSec > 0)) throw new Error("Invalid time-step settings (dtMax, chunkSec and readSec must be positive)");
+    const K = g.K || 0, pipes = o.pipes || [], srcs = o.sources || [], rainStep = o.rainStep ?? 3600;
+    if (!(rainStep > 0)) throw new Error(`Invalid rain interval ${rainStep} s`);
+    for (const sc of srcs) if (!(sc.cell >= 0 && sc.cell < g.N) || (g.aux[4 * sc.cell + 2] & 3) !== 0) throw new Error(`Point inflow ${sc.name || sc.cell} is not on an open cell`);
+    if (srcs.length && typeof o.sourceAt !== "function") throw new Error("Point inflows given without a sourceAt function");
+    const checkStages = (s, t) => {
+      if (!s || s.length < K) throw new Error(`Lake levels missing at hour ${t.toFixed(2)}: ${s ? s.length : 0} given for ${K} lakes`);
+      for (let i = 0; i < K; i++) if (!Number.isFinite(s[i])) throw new Error(`Lake level ${i} is not a number at hour ${t.toFixed(2)} (${s[i]})`);
+      return s;
+    };
+    for (const pp of pipes) { const r = (pp.cell / g.nx) | 0, c = pp.cell % g.nx; if (!(pp.cell >= 0 && pp.cell < g.N) || r === 0 || c === 0 || r === g.ny - 1 || c === g.nx - 1) throw new Error("A pipe connection must be on an interior cell"); }
+    const N = g.N, st0 = new Float32Array(4 * N);
+    // initial state: dry open cells, boundary at the engine level
+    const s0 = checkStages(o.stageAt(o.t0), o.t0);
+    for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 2) st0[4 * k] = Math.max(s0[(g.aux[4 * k + 2] >> 4) & 255] - g.aux[4 * k], 0);
+    if (o.init) { if (o.init.length !== 4 * N) throw new Error("Initial state has the wrong size"); st0.set(o.init); }
+    for (let k = 0; k < 4 * N; k++) if (!Number.isFinite(st0[k])) throw new Error("Initial state contains a value that is not a number");
+    solver.reset();
+    if (solver.kind === "gpu") solver.upload(st0); else solver.st.set(st0);
+    const vol = (st) => { let v = 0; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 0) v += st[4 * k]; return v * A; };
+    const isPipe = new Uint8Array(N); for (const pp of pipes) isPipe[pp.cell] = 1;
+    const L = { rain: 0, inflow: 0, inf: 0, drain: 0, edge: 0, pipe: 0, toLakes: 0, clamp: 0, v0: vol(st0), v1: 0, err: 0, errPct: 0 };
+    // first step: sized for the deepest water anywhere that can move, including lake cells next to dry ground
+    let h0max = 0.05; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) !== 1 && st0[4 * k] > h0max) h0max = st0[4 * k];
+    let t = o.t0 * 3600, tEnd = o.t1 * 3600, hm = Math.max(h0max, o.hInit ?? 0.05), steps = 0, chunks = 0, nextRead = t + readSec, stopped = false, lastYield = now();
+    const t0wall = now();
+    const frames = [];
+    const doRead = async (final) => {
+      const r = await solver.read(true), acc = r.acc;
+      for (let k = 0; k < N; k++) {
+        const ty = g.aux[4 * k + 2] & 3; if (ty === 1) continue;
+        if (ty === 2) { L.toLakes += acc[4 * k + 3] * A; continue; }
+        L.inf += acc[4 * k] * A; L.drain += acc[4 * k + 1] * A; if (isPipe[k]) L.pipe += acc[4 * k + 2] * A; else L.edge += acc[4 * k + 2] * A; L.clamp += acc[4 * k + 3] * A;
+      }
+      for (let k = 0; k < N; k++) if (!Number.isFinite(r.st[4 * k])) throw new Error(`The solver produced an invalid depth at hour ${(t / 3600).toFixed(2)}`);
+      L.v1 = vol(r.st);
+      L.err = L.v1 - L.v0 - (L.rain + L.inflow - L.inf - L.drain - L.edge - L.pipe - L.toLakes + L.clamp);
+      L.errPct = 100 * L.err / Math.max(L.rain + L.inflow + Math.abs(L.toLakes) + Math.abs(L.pipe) + L.v0, 1e-9);
+      const wall = (now() - t0wall) / 1000;
+      const fr = { tHours: t / 3600, st: r.st, ledger: Object.assign({}, L), steps, chunks, wall, dtLast: o._dt, hmFace: hm, final: !!final };
+      if (o.onRead) await o.onRead(fr);
+      return fr;
+    };
+    while (t < tEnd - 1e-6) {
+      if (o.shouldStop && o.shouldStop()) { stopped = true; break; }
+      const hourEnd = (Math.floor(t / rainStep + 1e-9) + 1) * rainStep;   // end of this rain interval
+      const dtC = Math.min(dtMax, cfl * g.dx / Math.sqrt(G * Math.max(hm, 0.05)));
+      let span = Math.min(chunkSec, hourEnd - t, tEnd - t, nextRead - t);
+      const n = Math.max(1, Math.ceil(span / dtC)), dt = span / n;
+      const th = (t + span / 2) / 3600, hr = Math.floor(t / rainStep + 1e-9);
+      const rainInHr = o.rainAt(hr);
+      if (!(Number.isFinite(rainInHr) && rainInHr >= 0)) throw new Error(`Rainfall missing or invalid at hour ${hr} (${rainInHr})`);
+      const rain = rainInHr / 12 / 3600, drainInHr = o.drainInHr || 0;
+      if (!(Number.isFinite(drainInHr) && drainInHr >= 0)) throw new Error(`Invalid drain allowance ${drainInHr}`);
+      const stages = checkStages(o.stageAt(th), th);
+      let sources = null, qSrc = 0;
+      if (srcs.length) {
+        const rates = o.sourceAt(t / 3600, (t + span) / 3600);
+        if (!rates || rates.length !== srcs.length) throw new Error(`Point inflows missing at hour ${(t / 3600).toFixed(2)}`);
+        sources = srcs.map((sc, i) => { const q = rates[i]; if (!(Number.isFinite(q) && q >= 0)) throw new Error(`Point inflow ${sc.name || sc.cell} is invalid at hour ${(t / 3600).toFixed(2)} (${q})`); qSrc += q; return { cell: sc.cell, rate: q }; });
+      }
+      const co = { dt, n, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
+      let hmC = 0, done = n;
+      if (solver.kind === "cpu") {
+        // the CPU runs the chunk in pieces of at most 10 steps, yielding between them so a stop request is seen within a second or two;
+        // the step size and chunk time are the same as on the GPU, so both back ends take the same steps
+        done = 0;
+        while (done < n) {
+          const m = Math.min(10, n - done); hmC = Math.max(hmC, await solver.chunk(Object.assign({}, co, { n: m }))); done += m;
+          if (now() - lastYield > 50) { await yieldTask(); lastYield = now(); if (done < n && o.shouldStop && o.shouldStop()) { stopped = true; break; } }
+        }
+        if (stopped) span = dt * done;
+      } else hmC = await solver.chunk(co);
+      L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done;
+      // next chunk: allow for the depth to grow by a quarter before the next reading
+      hm = Math.max(hmC * 1.25, 0.05); o._dt = dt;
+      t += span; steps += done; chunks++;
+      if (stopped) break;
+      if (t >= nextRead - 1e-6 || t >= tEnd - 1e-6) { nextRead = t + readSec; frames.push(await doRead(t >= tEnd - 1e-6)); }
+      if (now() - lastYield > 50) { await yieldTask(); lastYield = now(); }
+    }
+    if (stopped && (!frames.length || frames[frames.length - 1].tHours < t / 3600 - 1e-9)) frames.push(await doRead(true));
+    return { ledger: L, steps, chunks, frames, stopped };
+  }
+
+  // ------------------------------------------------------------------ lake-level spill (steady state of the 2D model with no rain)
+  /* For each boundary node at level s, every open cell reachable from it through open cells with ground below s is under water to s.
+   * Land below the lake's outlet crest (crests[i]) is not filled and stops the spread: below the crest it is the outlet channel,
+   * whose flow the network model carries through the outlet structures. Where two lakes reach the same cell the higher level is kept. Returns depth per cell (Float32, 0 where dry; boundary cells get their own depth). */
+  function pipeSeeds(pipes) { return pipes || []; }
+  function levelFill(g, stages, out, crests, pipes, info) {
+    const N = g.N, nx = g.nx, ny = g.ny, a = g.aux, lvl = new Float64Array(N).fill(-1e9), stack = new Int32Array(N);
+    const K = stages.length;
+    for (let i = 0; i < K; i++) {
+      const s = stages[i], lo = crests ? crests[i] : -1e9; let sp = 0;
+      for (let k = 0; k < N; k++) { const inf = a[4 * k + 2]; if ((inf & 3) === 2 && ((inf >> 4) & 255) === i) { if (s > lvl[k]) lvl[k] = s; stack[sp++] = k; } }
+      // pipe connections: the connected cell fills from the lake when the lake is above its ground
+      for (const pp of pipes || []) if (pp.lake === i && a[4 * pp.cell] < s && lvl[pp.cell] < s) { lvl[pp.cell] = s; stack[sp++] = pp.cell; }
+      while (sp) {
+        const k = stack[--sp], r = (k / nx) | 0, c = k - r * nx;
+        const nb = [c > 0 ? k - 1 : -1, c < nx - 1 ? k + 1 : -1, r > 0 ? k - nx : -1, r < ny - 1 ? k + nx : -1];
+        for (const j of nb) { if (j < 0) continue; if ((a[4 * j + 2] & 3) !== 0) continue; const zj = a[4 * j]; if (zj < s && zj >= lo && lvl[j] < s) { lvl[j] = s; stack[sp++] = j; } }
+      }
+    }
+    const d = out || new Float32Array(N); let edge = 0;
+    for (let k = 0; k < N; k++) {
+      const t = a[4 * k + 2] & 3; d[k] = t === 1 ? 0 : Math.max(lvl[k] - a[4 * k], 0);
+      if (t === 0 && d[k] > 0) { const r = (k / nx) | 0, c = k - r * nx; if (r === 0 || c === 0 || r === ny - 1 || c === nx - 1) edge++; }
+    }
+    // lake water standing on an open tile edge would drain out of the tile without limit in the 2D model: report it
+    if (info) info.edgeCells = edge;
+    return d;
+  }
+
+  // ------------------------------------------------------------------ readouts
+  /* excl: optional Uint8Array, 1 for cells that were already water at the start (canals, ponds below the lake level); they do not count */
+  function readouts(g, st, thr, roadSegCount, excl) {
+    const N = g.N, A = g.dx * g.dx; let wet = 0, wetMax = 0, hmx = 0, hmxMax = 0;
+    for (let k = 0; k < N; k++) {
+      if ((g.aux[4 * k + 2] & 3) !== 0 || (excl && excl[k])) continue;
+      const h = st[4 * k], m = st[4 * k + 2];
+      if (h > thr.wet_ft) wet++; if (m > thr.wet_ft) wetMax++; if (h > hmx) hmx = h; if (m > hmxMax) hmxMax = m;
+    }
+    const nb = g.bldStart ? g.bldStart.length - 1 : 0, bNow = new Uint8Array(nb), bMax = new Uint8Array(nb), bDepth = new Float32Array(nb);
+    for (let b = 0; b < nb; b++) {
+      let dn = 0, dm = 0; for (let i = g.bldStart[b]; i < g.bldStart[b + 1]; i++) { const k = g.bldCells[i]; if (excl && excl[k]) continue; dn = Math.max(dn, st[4 * k]); dm = Math.max(dm, st[4 * k + 2]); }
+      bNow[b] = dn > thr.building_ft; bMax[b] = dm > thr.building_ft; bDepth[b] = dm;
+    }
+    const rNow = new Float32Array((roadSegCount || 0) + 1), rMax = new Float32Array((roadSegCount || 0) + 1);
+    if (g.road) for (let k = 0; k < N; k++) { const s = g.road[k]; if (!s || (g.aux[4 * k + 2] & 3) !== 0 || (excl && excl[k])) continue; if (st[4 * k] > rNow[s]) rNow[s] = st[4 * k]; if (st[4 * k + 2] > rMax[s]) rMax[s] = st[4 * k + 2]; }
+    let rCutNow = 0, rCutMax = 0; for (let s = 1; s < rNow.length; s++) { if (rNow[s] > thr.road_ft) rCutNow++; if (rMax[s] > thr.road_ft) rCutMax++; }
+    let bn = 0, bm = 0; for (let b = 0; b < nb; b++) { bn += bNow[b]; bm += bMax[b]; }
+    return { wetAc: wet * A / 43560, wetMaxAc: wetMax * A / 43560, depthMax: hmx, depthMaxEver: hmxMax, bldNow: bn, bldMax: bm, bldTotal: nb, bMax, bDepth, roadNow: rCutNow, roadMax: rCutMax, rNow, rMax };
+  }
+
+  const api = { G, KN, HMIN, levelFill, pipeSeeds, makeGrid, CpuSolver, GpuSolver, simulate, readouts, WGSL, b64dec, gaStep };
+  if (typeof module !== "undefined" && module.exports) module.exports = api; else root.Flood2D = api;
+})(typeof self !== "undefined" ? self : this);
