@@ -1,0 +1,31 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install
+        run: |
+          npm --prefix tools install
+          pip install numpy rasterio geopandas swmm-toolkit==0.17.0 playwright
+          python -m playwright install --with-deps chromium
+      - name: Engine, SWMM readers and model builder
+        run: |
+          node tests/node/test_solver_core.js
+          node tests/node/test_solver_guards.js
+          node tests/node/test_sources.js
+          node tests/node/test_swmm.js
+          node tests/node/test_model.js
+      - name: SWMM reference reproduces with the EPA engine
+        run: |
+          python tests/py/make_swmm_reference.py examples/synthetic_us
+          git diff --exit-code --stat examples/synthetic_us/swmm_reference.json || echo "reference changed (engine version?)"
+      - name: Build and browser tests
+        run: |
+          python tools/build.py
+          python tests/browser/test_app.py

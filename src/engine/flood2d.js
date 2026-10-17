@@ -158,6 +158,7 @@
       for (let i = 0; i < o.n; i++) hm = Math.max(hm, this.step(o.dt, o.rain, o.drain, o.tHours));
       return hm;
     }
+    async readCells(cells) { const h = new Float32Array(cells.length); for (let i = 0; i < cells.length; i++) h[i] = this.st[4 * cells[i]]; return h; }
     async read(resetAcc = true) {
       const out = { st: this.st.slice(), acc: this.acc.slice() };
       if (resetAcc) this.acc.fill(0);
@@ -402,6 +403,13 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const hm = new Float32Array(this.rdMisc.getMappedRange().slice(0))[0]; this.rdMisc.unmap();
       return hm;
     }
+    async readCells(cells) {   // water depth at a few cells (two-way coupling), copied 16 bytes per cell
+      const d = this.dev, M = cells.length; if (!M) return new Float32Array(0);
+      if (!this.rdCells || this.rdCells.size < 16 * M) { if (this.rdCells) this.rdCells.destroy(); this.rdCells = d.createBuffer({ size: 16 * M, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); }
+      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(this.bSt, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
+      await this.rdCells.mapAsync(GPUMapMode.READ, 0, 16 * M); const a = new Float32Array(this.rdCells.getMappedRange(0, 16 * M).slice(0)); this.rdCells.unmap();
+      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i]; return h;
+    }
     async read(resetAcc = true) {
       const d = this.dev, enc = d.createCommandEncoder();
       enc.copyBufferToBuffer(this.bSt, 0, this.rdSt, 0, 16 * this.g.N); enc.copyBufferToBuffer(this.bAcc, 0, this.rdAcc, 0, 16 * this.g.N);
@@ -449,7 +457,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     if (solver.kind === "gpu") solver.upload(st0); else solver.st.set(st0);
     const vol = (st) => { let v = 0; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 0) v += st[4 * k]; return v * A; };
     const isPipe = new Uint8Array(N); for (const pp of pipes) isPipe[pp.cell] = 1;
-    const L = { rain: 0, inflow: 0, inf: 0, drain: 0, edge: 0, pipe: 0, toLakes: 0, clamp: 0, v0: vol(st0), v1: 0, err: 0, errPct: 0 };
+    const L = { rain: 0, inflow: 0, captured: 0, inf: 0, drain: 0, edge: 0, pipe: 0, toLakes: 0, clamp: 0, v0: vol(st0), v1: 0, err: 0, errPct: 0 };
     // first step: sized for the deepest water anywhere that can move, including lake cells next to dry ground
     let h0max = 0.05; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) !== 1 && st0[4 * k] > h0max) h0max = st0[4 * k];
     let t = o.t0 * 3600, tEnd = o.t1 * 3600, hm = Math.max(h0max, o.hInit ?? 0.05), steps = 0, chunks = 0, nextRead = t + readSec, stopped = false, lastYield = now();
@@ -464,8 +472,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       }
       for (let k = 0; k < N; k++) if (!Number.isFinite(r.st[4 * k])) throw new Error(`The solver produced an invalid depth at hour ${(t / 3600).toFixed(2)}`);
       L.v1 = vol(r.st);
-      L.err = L.v1 - L.v0 - (L.rain + L.inflow - L.inf - L.drain - L.edge - L.pipe - L.toLakes + L.clamp);
-      L.errPct = 100 * L.err / Math.max(L.rain + L.inflow + Math.abs(L.toLakes) + Math.abs(L.pipe) + L.v0, 1e-9);
+      L.err = L.v1 - L.v0 - (L.rain + L.inflow - L.captured - L.inf - L.drain - L.edge - L.pipe - L.toLakes + L.clamp);
+      L.errPct = 100 * L.err / Math.max(L.rain + L.inflow + L.captured + Math.abs(L.toLakes) + Math.abs(L.pipe) + L.v0, 1e-9);
       const wall = (now() - t0wall) / 1000;
       const fr = { tHours: t / 3600, st: r.st, ledger: Object.assign({}, L), steps, chunks, wall, dtLast: o._dt, hmFace: hm, final: !!final };
       if (o.onRead) await o.onRead(fr);
@@ -483,11 +491,12 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const rain = rainInHr / 12 / 3600, drainInHr = o.drainInHr || 0;
       if (!(Number.isFinite(drainInHr) && drainInHr >= 0)) throw new Error(`Invalid drain allowance ${drainInHr}`);
       const stages = checkStages(o.stageAt(th), th);
-      let sources = null, qSrc = 0;
+      let sources = null, qSrc = 0, qSink = 0;
       if (srcs.length) {
-        const rates = o.sourceAt(t / 3600, (t + span) / 3600);
+        // sourceAt may be async (two-way coupling reads depths and advances SWMM); a negative rate is a withdrawal, allowed only for sources marked sink
+        const rates = await o.sourceAt(t / 3600, (t + span) / 3600, solver);
         if (!rates || rates.length !== srcs.length) throw new Error(`Point inflows missing at hour ${(t / 3600).toFixed(2)}`);
-        sources = srcs.map((sc, i) => { const q = rates[i]; if (!(Number.isFinite(q) && q >= 0)) throw new Error(`Point inflow ${sc.name || sc.cell} is invalid at hour ${(t / 3600).toFixed(2)} (${q})`); qSrc += q; return { cell: sc.cell, rate: q }; });
+        sources = srcs.map((sc, i) => { const q = rates[i]; if (!(Number.isFinite(q) && (q >= 0 || sc.sink))) throw new Error(`Point inflow ${sc.name || sc.cell} is invalid at hour ${(t / 3600).toFixed(2)} (${q})`); if (q >= 0) qSrc += q; else qSink -= q; return { cell: sc.cell, rate: q }; });
       }
       const co = { dt, n, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
       let hmC = 0, done = n;
@@ -501,7 +510,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         }
         if (stopped) span = dt * done;
       } else hmC = await solver.chunk(co);
-      L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done;
+      L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done; L.captured += qSink * dt * done;
       // next chunk: allow for the depth to grow by a quarter before the next reading
       hm = Math.max(hmC * 1.25, 0.05); o._dt = dt;
       t += span; steps += done; chunks++;

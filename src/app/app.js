@@ -1,0 +1,453 @@
+/* Flood Simulator page: inputs, worker calls, map, 3D, charts and exports. */
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, d = 1) => (v === null || v === undefined || !Number.isFinite(v) ? "–" : v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }));
+const UNIT_FT = { ft: 1, "us-ft": 1200 / 3937 / 0.3048, m: 1 / 0.3048 };
+const S = { dem: null, bld: null, bnd: null, swmm: null, grid: null, frames: [], final: null, frame: 0, view: "now", sel: -1, running: false, catalog: null, files: {}, exName: null };
+window.S = S;
+
+// ------------------------------------------------------------------ worker
+let W = null, CID = 0; const CALLS = {};
+function worker() {
+  if (W) return W;
+  W = new Worker(URL.createObjectURL(new Blob([$("#workersrc").textContent], { type: "text/javascript" })));
+  W.onmessage = (e) => { const m = e.data, c = CALLS[m.id]; if (!c) return; if (m.progress || m.frame) { c.on && c.on(m); return; } delete CALLS[m.id]; m.error ? c.reject(new Error(m.error)) : c.resolve(m.res); };
+  W.onerror = (e) => { for (const k of Object.keys(CALLS)) { CALLS[k].reject(new Error(e.message || "worker error")); delete CALLS[k]; } };
+  return W;
+}
+function call(cmd, args, transfer, on) { const id = ++CID; return new Promise((resolve, reject) => { CALLS[id] = { resolve, reject, on }; worker().postMessage({ id, cmd, args }, transfer || []); }); }
+async function gunzipB64(b64) { const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)); return new Uint8Array(await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()); }
+async function catalog() { if (!S.catalog) S.catalog = JSON.parse(new TextDecoder().decode(await gunzipB64($("#catalog").textContent.trim()))); return S.catalog; }
+
+// ------------------------------------------------------------------ inputs
+function msg(html, cls = "note") { $("#msg").className = cls; $("#msg").innerHTML = html; }
+function setSt(id, html, cls = "") { $(id).innerHTML = cls ? `<span class="${cls}">${html}</span>` : html; }
+async function loadInputs(args, label) {
+  args.catalog = await catalog();
+  msg(`Reading ${esc(label)}…`);
+  try {
+    const r = await call("load", args);
+    if (r.dem) { S.dem = r.dem; S.grid = null; clearResults(); }
+    if (r.buildings) S.bld = r.buildings.count ? r.buildings : null;
+    if (r.boundaries) S.bnd = r.boundaries.count ? r.boundaries : null;
+    if ("swmm" in r) S.swmm = r.swmm;
+    refreshInputs(); msg(`Loaded ${esc(label)}.`);
+    return true;
+  } catch (e) { msg(`Could not read ${esc(label)}: ${esc(e.message)}`, "err"); return false; }
+}
+function vUnitFt() { const v = $("#vunit").value; if (v !== "auto") return UNIT_FT[v]; return S.dem && S.dem.vUnitHint ? UNIT_FT[S.dem.vUnitHint] : S.dem ? S.dem.hUnitFt : NaN; }
+function unitName(ft) { return Math.abs(ft - 1) < 1e-5 ? "ft" : Math.abs(ft - 1 / 0.3048) < 1e-6 ? "m" : Math.abs(ft - UNIT_FT["us-ft"]) < 1e-9 ? "US survey ft" : `${ft} ft`; }
+function refreshInputs() {
+  const d = S.dem;
+  if (d) {
+    const crs = d.epsg ? `EPSG ${d.epsg}${d.crsName ? " (" + esc(d.crsName) + ")" : ""}` : "<span class='err'>CRS unknown</span>";
+    setSt("#st-dem", `${d.nx.toLocaleString()} × ${d.ny.toLocaleString()} cells of ${fmt(d.res, 2)} ${Number.isFinite(d.hUnitFt) ? unitName(d.hUnitFt) : "units"}; ${crs}; ground ${fmt(d.zmin * vUnitFt(), 1)} to ${fmt(d.zmax * vUnitFt(), 1)} ft${d.valid < d.nx * d.ny ? `; ${(d.nx * d.ny - d.valid).toLocaleString()} cells without data` : ""}`);
+    $("#crs-box").hidden = !!d.proj4;
+    if (d.vUnitHint) $("#vunit").title = `The file says ${d.vUnitHint}`;
+    fillCellSizes();
+  }
+  setSt("#st-bld", S.bld ? `${S.bld.count.toLocaleString()} footprints, ${esc(S.bld.note)}` : "none");
+  setSt("#st-bnd", S.bnd ? `${S.bnd.count} polygons, ${esc(S.bnd.note)}` : "none");
+  const sw = S.swmm;
+  if (sw) {
+    const inside = sw.nodes.filter((n) => n.inside).length;
+    setSt("#st-inp", `${sw.nodes.length} nodes (${inside} inside the DEM), ${sw.links.length} links, ${sw.flowUnits}; ${sw.start ? sw.start.replace("T", " ").slice(0, 16) : "?"} for ${fmt(sw.hours, 2)} h` + (sw.warnings.length ? `<br><span class="warn">${sw.warnings.slice(0, 3).map(esc).join("<br>")}</span>` : ""));
+    if (sw.hasOut) { const fl = sw.nodes.filter((n) => n.peakCfs > 0); setSt("#st-out", `${sw.out.nPeriods} reports every ${sw.out.stepSec / 60} min; ${fl.length} nodes flood (peak ${fmt(Math.max(0, ...fl.map((n) => n.peakCfs)), 1)} cfs, ${fmt(fl.reduce((s, n) => s + n.floodCf, 0) / 43560, 2)} ac-ft in all)`); }
+    else setSt("#st-out", "none");
+    $("#gauge").innerHTML = sw.rain.map((g) => `<option value="${esc(g.name)}" ${g.error ? "disabled" : ""}>${esc(g.name)}${g.error ? " – " + esc(g.error) : ` – ${fmt(g.totalIn, 2)} in`}</option>`).join("");
+    if (sw.hours && !S._tSet) { $("#t1").value = +sw.hours.toFixed(2); S._tSet = true; }
+  } else { setSt("#st-inp", "none"); setSt("#st-out", "none"); $("#gauge").innerHTML = ""; }
+  const co = $("#coupling"); co.options[1].disabled = !(sw && sw.hasOut); co.options[2].disabled = !sw;
+  if (co.selectedOptions[0].disabled) co.value = "off";
+  $("#swmm-note").textContent = !sw ? "Load a SWMM .inp to use it" : sw.hasOut ? "One way reads the .out; two way runs SWMM 5.2.4 in the page" : "Two way runs SWMM 5.2.4 in the page; one way needs the .out";
+  boundaryTable(); waterNotes();
+  $("#st-data").textContent = d ? "DEM loaded" + (S.bld ? ", buildings" : "") + (S.bnd ? ", boundaries" : "") + (sw ? ", SWMM" : "") : "nothing loaded";
+  $("#b-run").disabled = !d || S.running || (!d.proj4 && !Number.isFinite(d.hUnitFt));
+  if (d) mapInputs();
+}
+function fillCellSizes() {
+  const d = S.dem, cur = +$("#cell").value || 0; let html = "", pick = null;
+  for (const f of [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20]) {
+    const nx = Math.floor(d.nx / f), ny = Math.floor(d.ny / f), n = nx * ny; if (nx < 3 || ny < 3) break;
+    const cs = +(d.res * f).toFixed(6), ft = cs * (d.hUnitFt || NaN);
+    html += `<option value="${cs}" ${n > 8e6 ? "disabled" : ""}>${fmt(cs, cs < 10 ? 2 : 1)} ${Number.isFinite(d.hUnitFt) ? unitName(d.hUnitFt) : ""} – ${(n / 1e6).toFixed(n < 1e5 ? 3 : 2)} M cells</option>`;
+    if (pick === null && n <= 1.2e6) pick = cs;
+  }
+  $("#cell").innerHTML = html; $("#cell").value = cur && [...$("#cell").options].some((o) => +o.value === cur) ? cur : pick;
+  cellNote();
+}
+function cellNote() { const d = S.dem; if (!d) return; const cs = +$("#cell").value, f = Math.round(cs / d.res); $("#cell-note").textContent = `${fmt(cs * d.hUnitFt, 1)} ft; ${Math.floor(d.nx / f)} × ${Math.floor(d.ny / f)} cells`; $("#st-grid").textContent = `${fmt(cs * d.hUnitFt, 1)} ft cells`; }
+function boundaryTable() {
+  const el = $("#bnd-table"); if (!S.bnd) { el.innerHTML = ""; S.bspec = []; return; }
+  const nodes = S.swmm ? S.swmm.nodes.filter((n) => n.type === "STORAGE" || n.type === "OUTFALL").concat(S.swmm.nodes.filter((n) => n.type !== "STORAGE" && n.type !== "OUTFALL")) : [];
+  const prev = S.bspecTouched ? S.bspec || [] : [];   // until the user changes a row, defaults follow the files (a node named in the polygon once the SWMM files arrive)
+  el.innerHTML = `<table class="t"><thead><tr><th>Polygon</th><th>Water level from</th><th class="n">Level (ft)</th></tr></thead><tbody>` + S.bnd.props.map((p, i) => {
+    const name = p.name || p.node || `Boundary ${i + 1}`, pv = prev[i] || {};
+    const node = pv.node !== undefined ? pv.node : (p.node && nodes.some((n) => n.name === p.node) ? p.node : "");
+    const lvl = pv.level !== undefined ? pv.level : (p.level_ft ?? p.level ?? "");
+    return `<tr><td>${esc(name)}</td><td><select data-b="${i}" class="b-src" aria-label="Level source for ${esc(name)}"><option value="">Fixed level</option>${nodes.map((n) => `<option value="${esc(n.name)}" ${n.name === node ? "selected" : ""}>SWMM ${esc(n.type.toLowerCase())} ${esc(n.name)}</option>`).join("")}</select></td>
+      <td class="n"><input type="number" step="0.01" data-b="${i}" class="b-lvl" value="${esc(lvl)}" ${node ? "disabled" : ""} aria-label="Fixed level for ${esc(name)}"></td></tr>`;
+  }).join("") + "</tbody></table>";
+  const read = () => { S.bspec = S.bnd.props.map((p, i) => ({ index: i, key: p.name || p.node || `Boundary ${i + 1}`, node: el.querySelector(`.b-src[data-b="${i}"]`).value || null, level: parseFloat(el.querySelector(`.b-lvl[data-b="${i}"]`).value) })); };
+  el.querySelectorAll(".b-src").forEach((s) => s.onchange = () => { el.querySelector(`.b-lvl[data-b="${s.dataset.b}"]`).disabled = !!s.value; S.bspecTouched = true; read(); });
+  el.querySelectorAll(".b-lvl").forEach((s) => s.oninput = () => { S.bspecTouched = true; read(); });
+  read();
+}
+function waterNotes() {
+  const r = $("#rain").value; $("#rain-gauge").hidden = r !== "gauge"; $("#rain-uniform").hidden = r !== "uniform";
+  const cp = $("#coupling").value; $("#two-box").hidden = cp !== "two";
+  $("#double-warn").hidden = !(r === "gauge" && cp !== "off");
+  const parts = []; if (cp === "one") parts.push("SWMM flooding (one way)"); if (cp === "two") parts.push("SWMM two way"); if (r !== "none") parts.push(r === "gauge" ? "gauge rain" : "uniform rain");
+  $("#st-water").textContent = parts.join(" + ") || "none chosen";
+}
+async function readFile(inp, kind) {
+  const f = inp.files[0]; if (!f) return null;
+  if (f.size > 600e6) throw new Error(`${f.name} is ${(f.size / 1e6).toFixed(0)} MB; prepare a smaller file first (python/prep_dem.py)`);
+  return kind === "text" ? await f.text() : await f.arrayBuffer();
+}
+function wireInputs() {
+  $("#f-dem").onchange = async (e) => { try { const b = await readFile(e.target, "bin"); if (b) { S.exName = null; await loadInputs({ dem: b }, e.target.files[0].name); } } catch (x) { msg(esc(x.message), "err"); } };
+  $("#f-bld").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } await loadInputs({ buildings: await readFile(e.target, "text") }, e.target.files[0].name); };
+  $("#f-bnd").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } S.bspecTouched = false; await loadInputs({ boundaries: await readFile(e.target, "text") }, e.target.files[0].name); };
+  $("#f-inp").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } await loadInputs({ inp: await readFile(e.target, "text"), out: null }, e.target.files[0].name); $("#f-out").value = ""; };
+  $("#f-out").onchange = async (e) => { if (!S.swmm) { msg("Load the SWMM .inp first.", "err"); e.target.value = ""; return; } const ok2 = await loadInputs({ out: await readFile(e.target, "bin") }, e.target.files[0].name); if (ok2 && S.swmm.hasOut && $("#coupling").value === "off") $("#coupling").value = "one"; refreshInputs(); waterNotes(); };
+  $("#crs-epsg").onchange = async (e) => { const v = parseInt(e.target.value, 10); if (!(v > 0)) return; await loadInputs({ epsg: v }, `EPSG ${v}`); };
+  $("#vunit").onchange = refreshInputs;
+  $("#cell").onchange = cellNote;
+  $("#rain").onchange = waterNotes; $("#coupling").onchange = waterNotes;
+  // values are checked where they are typed: out-of-range numbers are marked and block the run
+  document.querySelectorAll("aside input[type=number]").forEach((i) => i.addEventListener("input", () => { const v = +i.value; const bad = i.value === "" || (i.min !== "" && v < +i.min) || (i.max !== "" && v > +i.max); i.style.borderColor = bad ? "var(--bad)" : ""; i.setAttribute("aria-invalid", bad); }));
+}
+const EX = () => JSON.parse($("#examples").textContent || "[]");
+async function loadExample(i) {
+  const ex = EX()[i]; if (!ex) return;
+  msg(`Loading example “${esc(ex.name)}”…`);
+  const get = async (k, kind) => { if (!ex.files[k]) return null; const u8 = await gunzipB64(ex.files[k]); return kind === "text" ? new TextDecoder().decode(u8) : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength); };
+  S._tSet = false; S.bspec = null; S.bspecTouched = false; S.exName = ex.name;
+  const ok1 = await loadInputs({ dem: await get("dem"), buildings: await get("buildings", "text"), boundaries: await get("boundaries", "text"), inp: await get("inp", "text"), out: await get("out") }, `example “${ex.name}”`);
+  if (!ok1) return;
+  if (S.swmm && S.swmm.hasOut) $("#coupling").value = "one";
+  $("#rain").value = "none"; $("#basemap").value = ex.basemap || "none"; waterNotes(); refreshInputs();
+  ["#f-dem", "#f-bld", "#f-bnd", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
+  msg(`Loaded example “${esc(ex.name)}”. ${esc(ex.note || "")} Press Run.`);
+}
+
+// ------------------------------------------------------------------ run
+function numIn(id, what) { const el = $(id), v = parseFloat(el.value); if (!Number.isFinite(v) || (el.min !== "" && v < +el.min) || (el.max !== "" && v > +el.max)) throw new Error(`${what}: “${el.value}” is outside ${el.min}–${el.max}`); return v; }
+function runOptions() {
+  const d = S.dem, o = {};
+  o.cellSize = +$("#cell").value; o.vUnitFt = vUnitFt(); o.useBuildings = $("#use-bld").value === "1"; o.roofToGround = $("#roof").value === "1"; o.closedEdges = $("#edges").value === "closed";
+  if (!Number.isFinite(o.vUnitFt)) throw new Error("Choose the elevation units");
+  o.imperv = numIn("#imp", "Impervious fraction") / 100; o.nImp = numIn("#n-imp", "Manning n impervious"); o.nPerv = numIn("#n-perv", "Manning n pervious");
+  o.ksInHr = numIn("#ks", "Ks"); o.suctionIn = numIn("#psi", "Suction head"); o.imd = numIn("#imd", "Initial moisture deficit");
+  o.coupling = $("#coupling").value; o.useSwmmFlooding = o.coupling === "one"; o.rainSource = $("#rain").value; o.gauge = $("#gauge").value;
+  if (o.coupling === "one" && !(S.swmm && S.swmm.hasOut)) throw new Error("One-way coupling needs the SWMM .out file");
+  if (o.coupling === "two") { o.lw = numIn("#lw", "Inlet weir length"); o.cw = numIn("#cw", "Weir coefficient"); o.inletArea = numIn("#ia", "Inlet orifice area"); o.co = numIn("#co", "Orifice coefficient"); o.couplingSec = numIn("#csec", "Coupling interval"); }
+  if (o.rainSource === "uniform") { o.rainInHr = numIn("#rain-ih", "Rain intensity"); o.rainHours = numIn("#rain-h", "Rain duration"); }
+  if (o.rainSource === "gauge" && !S.swmm) throw new Error("Rain from a gauge needs the SWMM .inp");
+  o.t0 = numIn("#t0", "Start"); o.t1 = numIn("#t1", "End"); if (!(o.t1 > o.t0)) throw new Error("The end must be after the start");
+  o.outputSec = numIn("#outmin", "Map interval") * 60; o.engine = $("#engine").value; o.cfl = numIn("#cfl", "Courant number");
+  o.wetFt = numIn("#wet", "Wet depth"); o.buildingFt = numIn("#bthr", "Building depth");
+  o.boundaries = (S.bspec || []).map((b) => { if (!b.node && !Number.isFinite(b.level)) throw new Error(`Give a level or a SWMM node for boundary “${b.key}”`); return b; });
+  if (o.coupling === "off" && o.rainSource === "none" && !o.boundaries.length) throw new Error("Choose at least one water source (SWMM coupling, rain or a level boundary)");
+  if (o.coupling !== "two" && o.boundaries.some((b) => b.node) && !(S.swmm && S.swmm.hasOut)) throw new Error("A boundary level from a SWMM node needs the .out file (or two-way coupling)");
+  const nFrames = Math.ceil((o.t1 - o.t0) * 3600 / o.outputSec) + 1, f = Math.round(o.cellSize / d.res), cells = Math.floor(d.nx / f) * Math.floor(d.ny / f);
+  if (nFrames * cells > 400e6) throw new Error(`Storing ${nFrames} maps of ${(cells / 1e6).toFixed(1)} M cells needs too much memory; map less often or use larger cells`);
+  return o;
+}
+async function run() {
+  let o; try { o = runOptions(); } catch (e) { msg(esc(e.message), "err"); return; }
+  S.running = true; $("#b-run").disabled = true; $("#b-stop").disabled = false; clearResults(); $("#warns").innerHTML = "";
+  try {
+    msg("Building the grid…");
+    const gr = await call("build", o);
+    S.grid = gr; S.grid.opts = o;
+    if (gr.warnings.length) $("#warns").innerHTML = gr.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join("");
+    mapGrid();
+    msg(`Grid ${gr.G.nx} × ${gr.G.ny} (${(gr.info.open / 1e6).toFixed(2)} M open cells). Starting…`);
+    const t0 = performance.now();
+    const res = await call("run", o, [], (m) => {
+      if (m.frame) { S.frames.push({ q: new Uint8Array(m.frame.q), sum: m.frame.sum }); onFrame(); return; }
+      const p = m.progress;
+      if (p.phase === "start") { S.sources = p.sources; S.nodeMap = p.nodeMap; if (p.warnings.length) $("#warns").innerHTML += p.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join(""); }
+      else if (p.phase === "note") $("#warns").innerHTML += `<div class="warn">${esc(p.text)}</div>`;
+      else if (p.phase === "run") {
+        $("#pbar").style.width = `${Math.min(100, 100 * p.frac).toFixed(1)}%`;
+        const eta = p.frac > 0 ? (p.wall / p.frac - p.wall) : NaN;
+        msg(`${p.kind === "gpu" ? "GPU" : "CPU"}: ${fmt(p.tHours, 2)} h simulated, ${fmt(p.speed, 1)}× real time, time step ${fmt(p.dt, 2)} s; about ${eta > 90 ? fmt(eta / 60, 0) + " min" : fmt(eta, 0) + " s"} left. Water balance closes within ${fmt(Math.abs(p.closurePct), 4)}%.`);
+      }
+    });
+    S.final = res; $("#pbar").style.width = "100%";
+    msg(`${res.stopped ? "<b>Stopped early.</b> " : "Done: "}${res.steps.toLocaleString()} time steps in ${fmt(res.wall, 1)} s on the ${res.kind === "gpu" ? "GPU" : "CPU"}; water balance closes within ${fmt(Math.abs(res.ledger.errPct), 4)}%.`, res.stopped ? "warn" : "note");
+    S.view = $("#view").value; renderAll();
+    ["#x-tif", "#x-csv", "#x-nodes"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
+  } catch (e) { msg(`Run failed: ${esc(e.message)}`, "err"); }
+  finally { S.running = false; $("#b-run").disabled = false; $("#b-stop").disabled = true; }
+}
+function clearResults() { S.frames = []; S.final = null; S.frame = 0; S.sel = -1; $("#slider").max = 0; $("#slider").disabled = true; $("#b-play").disabled = true; ["#x-tif", "#x-csv", "#x-nodes"].forEach((s) => ($(s).disabled = true)); $("#kpis").innerHTML = ""; $("#ledger").textContent = "Run the model to see where the water went."; }
+let lastPaint = 0;
+function onFrame() {
+  const n = S.frames.length; $("#slider").max = n - 1; $("#slider").disabled = false; $("#b-play").disabled = false;
+  if (S.view === "now" && (performance.now() - lastPaint > 400)) { S.frame = n - 1; $("#slider").value = n - 1; lastPaint = performance.now(); paint(); }
+}
+
+// ------------------------------------------------------------------ geometry for the map
+let P4 = null;
+function proj() { if (!S.dem || !S.dem.proj4) return null; if (!P4 || P4._p !== S.dem.proj4) { P4 = proj4(S.dem.proj4, "EPSG:4326"); P4._p = S.dem.proj4; } return P4; }
+const geoMode = () => (proj() ? "geo" : "local");
+function toLL(x, y) { const p = proj(); if (!p) return L.latLng(y, x); const q = p.forward([x, y]); return L.latLng(q[1], q[0]); }
+function fromLL(ll) { const p = proj(); if (!p) return [ll.lng, ll.lat]; return p.inverse([ll.lng, ll.lat]); }
+let MAP = null;
+function ensureMap() {
+  const mode = geoMode();
+  if (MAP && MAP._mode === mode) return MAP;
+  if (MAP) { MAP.remove(); MAP = null; }
+  $("#map").innerHTML = "";
+  MAP = L.map("map", { crs: mode === "geo" ? L.CRS.EPSG3857 : L.CRS.Simple, minZoom: mode === "geo" ? 3 : -8, maxZoom: mode === "geo" ? 21 : 8, preferCanvas: true, zoomSnap: 0.25 });
+  MAP._mode = mode; MAP._layers2 = {};
+  MAP.on("click", onMapClick);
+  $("#bm-wrap").hidden = mode !== "geo";
+  setBasemap();
+  return MAP;
+}
+function setBasemap() {
+  if (!MAP) return; if (MAP._bm) { MAP.removeLayer(MAP._bm); MAP._bm = null; }
+  const v = $("#basemap").value; if (MAP._mode !== "geo" || v === "none") return;
+  MAP._bm = v === "osm" ? L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, maxNativeZoom: 19, attribution: "© OpenStreetMap contributors" })
+    : L.tileLayer("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 16, attribution: "USGS The National Map" });
+  MAP._bm.addTo(MAP).bringToBack();
+}
+function mapInputs() {
+  const m = ensureMap(), d = S.dem, b = d.bounds;
+  for (const k of ["frame", "bld", "bnd", "swmm"]) if (m._layers2[k]) { m.removeLayer(m._layers2[k]); delete m._layers2[k]; }
+  const ring = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]].map(([x, y]) => toLL(x, y));
+  m._layers2.frame = L.polyline(ring, { color: css("--muted"), weight: 1, dashArray: "4 4", interactive: false }).addTo(m);
+  if (!m._fitted || m._fitted !== d) { m.fitBounds(L.latLngBounds(ring), { animate: false }); m._fitted = d; }
+  const cvt = (rings) => rings.map((r) => r.map((p) => toLL(p[0], p[1])));
+  if (S.bld) {
+    const polys = []; for (const f of S.bld.feats) { const g = f.geometry; if (g.type === "Polygon") polys.push(cvt(g.coordinates)); else if (g.type === "MultiPolygon") for (const p of g.coordinates) polys.push(cvt(p)); }
+    m._layers2.bld = L.layerGroup(polys.map((p) => L.polygon(p, { weight: 0.6, color: css("--muted"), fillColor: css("--surface"), fillOpacity: 0.6, interactive: false }))).addTo(m);
+  }
+  if (S.bnd) m._layers2.bnd = L.layerGroup(S.bnd.feats.map((f) => { const g = f.geometry, rs = g.type === "Polygon" ? [g.coordinates] : g.coordinates; return L.polygon(rs.map(cvt), { color: css("--bnd"), weight: 1.5, dashArray: "5 3", fill: false, interactive: false }); })).addTo(m);
+  drawSwmm();
+}
+function drawSwmm() {
+  const m = MAP; if (!m) return; if (m._layers2.swmm) { m.removeLayer(m._layers2.swmm); delete m._layers2.swmm; }
+  const sw = S.swmm; if (!sw) return;
+  const idx = {}; sw.nodes.forEach((n) => (idx[n.name] = n));
+  const g = L.layerGroup();
+  for (const l of sw.links) { const a = idx[l.from], b = idx[l.to]; if (!a || !b || !Number.isFinite(a.x) || !Number.isFinite(b.x)) continue; g.addLayer(L.polyline([[a.x, a.y], ...l.verts, [b.x, b.y]].map((p) => toLL(p[0], p[1])), { color: css("--link"), weight: 2, opacity: 0.8, interactive: false })); }
+  const t = curT();
+  for (const n of sw.nodes) {
+    if (!Number.isFinite(n.x)) continue;
+    const q = rateNow(n), fl = n.peakCfs > 0 || q !== 0;
+    const mk = L.circleMarker(toLL(n.x, n.y), { radius: n.type === "JUNCTION" ? (q > 0 ? 5 + Math.min(9, Math.sqrt(q)) : 4) : 6, color: fl ? css("--node") : css("--link"), weight: 2, fillColor: q > 0 ? css("--node") : css("--surface"), fillOpacity: 0.9 });
+    mk.bindTooltip(() => `<b>${esc(n.name)}</b> (${esc(n.type.toLowerCase())})<br>Rim ${fmt(n.rimFt, 2)} ft, invert ${fmt(n.invertFt, 2)} ft` + (S.frames.length || sw.hasOut ? `<br>Exchange now ${fmt(rateNow(n), 2)} cfs (+ out of SWMM)` : "") + (sw.hasOut ? `<br>.out flooding: peak ${fmt(n.peakCfs, 2)} cfs; volume ${fmt(n.floodCf, 0)} cf` : "") + (nodeStatus(n.name) ? `<br><i>${esc(nodeStatus(n.name))}</i>` : ""));
+    g.addLayer(mk);
+  }
+  m._layers2.swmm = g.addTo(m);
+}
+// exchange at a node in the selected map (cfs, + out of SWMM onto the ground); before a run, the .out flooding (one way)
+function rateNow(n) { const f = S.frames[S.frame]; if (f && S.sources) { const i = S.sources.findIndex((s) => s.name === n.name); return i >= 0 && f.sum.rates ? f.sum.rates[i] : 0; } return S.swmm.hasOut ? nodeFloodAt(n, curT()) : 0; }
+function nodeStatus(name) { const r = (S.nodeMap || []).find((x) => x.name === name); return r ? r.status : ""; }
+function nodeFloodAt(n, tHours) { const sw = S.swmm; if (!n.flood || !sw.out) return 0; const step = sw.out.stepSec / 3600, x = (tHours - sw.out.t0Hours) / step - 1; if (x < -1) return 0; if (x < 0) return n.flood[0] * (x + 1); if (x >= n.flood.length - 1) return n.flood[n.flood.length - 1]; const i = Math.floor(x), w = x - i; return n.flood[i] * (1 - w) + n.flood[i + 1] * w; }
+function curT() { const f = S.frames[S.frame]; return f ? f.sum.tHours : +$("#t0").value || 0; }
+
+// overlay image: pixel grid over the grid's lat/lng box (Web Mercator rows), each pixel looks up its grid cell
+function overlayLUT() {
+  const gr = S.grid, G = gr.G; if (gr._lut) return gr._lut;
+  const corners = [[G.x0, G.y1], [G.x0 + G.nx * G.cs, G.y1], [G.x0, G.y1 - G.ny * G.cs], [G.x0 + G.nx * G.cs, G.y1 - G.ny * G.cs]];
+  if (geoMode() === "local") { gr._lut = { simple: true, bounds: L.latLngBounds([L.latLng(G.y1 - G.ny * G.cs, G.x0), L.latLng(G.y1, G.x0 + G.nx * G.cs)]), W: G.nx, H: G.ny }; return gr._lut; }
+  // sample the edges densely for the bounding box
+  const lls = []; for (let i = 0; i <= 20; i++) { const t = i / 20; lls.push(toLL(G.x0 + t * G.nx * G.cs, G.y1), toLL(G.x0 + t * G.nx * G.cs, G.y1 - G.ny * G.cs), toLL(G.x0, G.y1 - t * G.ny * G.cs), toLL(G.x0 + G.nx * G.cs, G.y1 - t * G.ny * G.cs)); }
+  void corners;
+  const bb = L.latLngBounds(lls), W = Math.min(G.nx, 2048), H = Math.max(1, Math.round(W * G.ny / G.nx));
+  const yM = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)), latM = (y) => (360 / Math.PI) * Math.atan(Math.exp(y)) - 90;
+  const y0 = yM(bb.getNorth()), y1 = yM(bb.getSouth()), lut = new Int32Array(W * H), p = proj();
+  for (let j = 0; j < H; j++) { const lat = latM(y0 + (j + 0.5) / H * (y1 - y0));
+    for (let i = 0; i < W; i++) { const lng = bb.getWest() + (i + 0.5) / W * (bb.getEast() - bb.getWest()), xy = p.inverse([lng, lat]); const c = Math.floor((xy[0] - G.x0) / G.cs), r = Math.floor((G.y1 - xy[1]) / G.cs); lut[j * W + i] = c >= 0 && r >= 0 && c < G.nx && r < G.ny ? r * G.nx + c : -1; } }
+  gr._lut = { lut, W, H, bounds: bb }; return gr._lut;
+}
+function imageFrom(fn) {
+  const L0 = overlayLUT(), cv = document.createElement("canvas"); cv.width = L0.W; cv.height = L0.H;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(L0.W, L0.H), px = img.data, G = S.grid.G;
+  for (let p = 0; p < L0.W * L0.H; p++) { let k; if (L0.simple) { const j = (p / L0.W) | 0, i = p % L0.W; k = j * G.nx + i; } else k = L0.lut[p]; if (k < 0) continue; fn(k, px, 4 * p); }
+  ctx.putImageData(img, 0, 0); return cv.toDataURL("image/png");
+}
+function mapGrid() {
+  const m = ensureMap(), gr = S.grid, G = gr.G, z = gr.z, t = gr.type, dx = G.cs * (S.dem.hUnitFt || 1);
+  if (m._layers2.hs) m.removeLayer(m._layers2.hs);
+  // hillshade (sun from the north-west, 45 degrees) of the grid ground, walls dark
+  let zs = []; for (let k = 0; k < z.length; k += 13) if (!(t[k] === 1 && z[k] === 0)) zs.push(z[k]); zs.sort((a, b) => a - b);
+  const zlo = zs[Math.floor(zs.length * 0.02)] || 0, zhi = Math.max(zlo + 1, zs[Math.floor(zs.length * 0.98)] || 1);
+  const dk = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  const url = imageFrom((k, px, o) => {
+    const r = (k / G.nx) | 0, c = k % G.nx; if (t[k] === 1 && gr.z[k] === 0) return;
+    const zl = z[r * G.nx + Math.max(c - 1, 0)], zr = z[r * G.nx + Math.min(c + 1, G.nx - 1)], zu = z[Math.max(r - 1, 0) * G.nx + c], zd = z[Math.min(r + 1, G.ny - 1) * G.nx + c];
+    // hillshade with 4x relief, sun from the north-west at 45 degrees, over a light elevation tint (low = green-grey, high = sand)
+    const sx = 4 * (zr - zl) / (2 * dx), sy = 4 * (zd - zu) / (2 * dx), n = Math.hypot(sx, sy, 1), sh = Math.min(1, Math.max(0, (sx * 0.5 - sy * 0.5 + 0.707) / n));
+    const e = Math.min(1, Math.max(0, (z[k] - zlo) / (zhi - zlo))), tint = dk ? [52 + 30 * e, 62 + 22 * e, 58 + 10 * e] : [196 + 40 * e, 210 + 22 * e, 190 + 30 * e];
+    const f = (dk ? 0.55 : 0.62) + 0.5 * sh, w = t[k] === 1 ? 0.7 : 1;
+    px[o] = Math.min(255, tint[0] * f * w); px[o + 1] = Math.min(255, tint[1] * f * w); px[o + 2] = Math.min(255, tint[2] * f * w); px[o + 3] = $("#basemap").value === "none" ? 255 : 90;
+  });
+  m._layers2.hs = L.imageOverlay(url, overlayLUT().bounds, { interactive: false, opacity: 1 }).addTo(m);
+  m._layers2.hs.bringToBack(); if (m._bm) m._bm.bringToBack();
+  if (m._layers2.depth) { m.removeLayer(m._layers2.depth); delete m._layers2.depth; }
+}
+
+// ------------------------------------------------------------------ depth display
+const DCL = [0.1, 0.25, 0.5, 1, 2, 4];   // ft
+const RAMP_L = ["#cfe3f6", "#9cc7ec", "#68a6dd", "#3b82c4", "#1d5d9b", "#0d3a6b"], RAMP_D = ["#9ec9f0", "#73aee6", "#4a91d8", "#2f73bd", "#1e5596", "#123b6c"];
+const dark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+const ramp = () => (dark() ? RAMP_D : RAMP_L).map((h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]);
+function dclass(d) { let c = -1; for (let i = 0; i < DCL.length; i++) if (d >= DCL[i]) c = i; return c; }
+const dec = (q) => (q ? 25 * (q / 255) ** 2 : 0);
+function depthAt(k) { if (S.view === "max" && S.final) return S.final.hmax[k]; const f = S.frames[S.frame]; return f ? dec(f.q[k]) : 0; }
+function paint() {
+  if (!S.grid || !S.frames.length) return;
+  const m = ensureMap(), rp = ramp(), t = S.grid.type, lake = css("--water"), lc = [parseInt(lake.slice(1, 3), 16), parseInt(lake.slice(3, 5), 16), parseInt(lake.slice(5, 7), 16)];
+  const wet = S.grid.opts.wetFt;
+  const url = imageFrom((k, px, o) => {
+    if (t[k] === 1) return; const d = depthAt(k);
+    if (t[k] === 2) { px[o] = lc[0]; px[o + 1] = lc[1]; px[o + 2] = lc[2]; px[o + 3] = 200; return; }   // a level boundary is always water
+    if (!(d >= wet)) return; const c = rp[dclass(d)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 220;
+  });
+  if (m._layers2.depth) m._layers2.depth.setUrl(url); else m._layers2.depth = L.imageOverlay(url, overlayLUT().bounds, { interactive: false }).addTo(m);
+  const f = S.frames[S.frame];
+  $("#tlabel").textContent = S.view === "max" ? "Maximum over the run" : `${clock(f.sum.tHours)} (${S.frame + 1} of ${S.frames.length})`;
+  drawSwmm(); kpis(); legend();
+  if (!$("#v3d").hidden) V3.frame();
+  for (const id of ["c-area", "c-in", "c-lvl", "c-pt"]) { const el = document.getElementById(id); if (el && el.data && el.data.some((d) => d.x && d.x.length)) Plotly.relayout(el, { shapes: [vline(f.sum.tHours)] }); }
+}
+function clock(h) { const sw = S.swmm; if (sw && sw.start) { const d = new Date(Date.parse(sw.start) + h * 3600000); return d.toISOString().slice(0, 16).replace("T", " "); } return `${fmt(h, 2)} h`; }
+function legend() {
+  $("#legend").innerHTML = `Water depth (ft): ` + DCL.map((d, i) => `<span><span class="sw" style="background:${(dark() ? RAMP_D : RAMP_L)[i]}"></span>${i < DCL.length - 1 ? `${d}–${DCL[i + 1]}` : `over ${d}`}</span>`).join("") +
+    `<span><span class="sw" style="background:var(--water)"></span>level boundary</span><span><span class="sw" style="background:var(--node);border-radius:50%"></span>SWMM node flooding now</span><span>Map shows water deeper than ${fmt(S.grid.opts.wetFt, 2)} ft.</span>`;
+}
+function kpis() {
+  const fr = S.frames, f = fr[S.frame], fin = S.final; if (!f) return;
+  const peakArea = Math.max(...fr.map((x) => x.sum.wetAc)), peakB = fin ? fin.bReached : Math.max(...fr.map((x) => x.sum.buildings));
+  const dmax = fin ? Math.max(...fr.map((x) => x.sum.depthMax)) : f.sum.depthMax;
+  const L0 = (fin || {}).ledger || f.sum.ledger;
+  const k = [[S.view === "max" ? "Peak flooded area" : "Flooded area now", fmt(S.view === "max" ? peakArea : f.sum.wetAc, 2) + " ac", `deeper than ${fmt(S.grid.opts.wetFt, 2)} ft`],
+    ["Deepest water on land", fmt(S.view === "max" ? dmax : f.sum.depthMax, 2) + " ft", S.view === "max" ? "over the run" : "now"],
+    ["Buildings reached", S.view === "max" ? (fin ? peakB.toLocaleString() : "–") : f.sum.buildings.toLocaleString(), `water over ${fmt(S.grid.opts.buildingFt, 2)} ft beside them`],
+    ["Water on the surface", fmt(f.sum.volCf / 43560, 2) + " ac-ft", "now"],
+    ["SWMM flooding into the 2D", fmt(f.sum.inflowCfs, 1) + " cfs", `now; ${fmt(L0.inflow / 43560, 2)} ac-ft so far`]];
+  $("#kpis").innerHTML = k.map(([l, v, n]) => `<div class="kpi"><div class="l">${esc(l)}</div><div class="v">${v}</div><div class="l">${esc(n)}</div></div>`).join("");
+}
+
+// ------------------------------------------------------------------ charts (one measure per chart, no second axis)
+const CFG = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] };
+function layout(title, ytitle) {
+  return { title: { text: title, font: { size: 14, color: css("--ink") }, x: 0.02 }, paper_bgcolor: css("--surface"), plot_bgcolor: css("--surface"), font: { color: css("--ink"), size: 12 },
+    margin: { l: 56, r: 12, t: 36, b: 40 }, xaxis: { gridcolor: css("--line"), linecolor: css("--line") }, yaxis: { title: { text: ytitle }, gridcolor: css("--line"), zerolinecolor: css("--line"), rangemode: "tozero" },
+    showlegend: true, legend: { orientation: "h", y: -0.2 }, hovermode: "x unified" };
+}
+function vline(t) { return { type: "line", xref: "x", yref: "paper", x0: hx(t), x1: hx(t), y0: 0, y1: 1, line: { color: css("--muted"), width: 1, dash: "dot" } }; }
+const hx = (h) => clock(h);
+const SERIES = ["#2a6fb0", "#c46a1e", "#3f8f5a", "#8e4fa8", "#b0413e", "#5c6f84", "#a08a1c", "#1c8a8a"];
+function charts() {
+  const fr = S.frames; if (!fr.length) return; const t = fr.map((f) => hx(f.sum.tHours));
+  Plotly.react("c-area", [{ x: t, y: fr.map((f) => f.sum.wetAc), name: "Flooded area", mode: "lines", line: { color: SERIES[0], width: 2 }, hovertemplate: "%{y:.2f} ac<extra></extra>" }],
+    Object.assign(layout(`Flooded area (deeper than ${fmt(S.grid.opts.wetFt, 2)} ft)`, "Area (ac)"), { showlegend: false, shapes: [vline(fr[S.frame].sum.tHours)] }), CFG);
+  // SWMM inflows: the 7 largest nodes by volume, the rest as "Other"
+  // per-node exchange from the maps; the 7 largest by volume, the rest as "Other"
+  const srcs = (S.sources || []).map((s, i) => ({ name: s.name, i, vol: fr.reduce((a, f) => a + Math.abs((f.sum.rates || [])[i] || 0), 0) })).filter((x) => x.vol > 0).sort((a, b) => b.vol - a.vol);
+  const tr = [], top = srcs.slice(0, 7), rest = srcs.slice(7), two = S.grid.opts.coupling === "two";
+  top.forEach((n, j) => tr.push({ x: t, y: fr.map((f) => (f.sum.rates || [])[n.i] || 0), name: n.name, mode: "lines", line: { color: SERIES[j], width: 2 }, hovertemplate: `${esc(n.name)} %{y:.2f} cfs<extra></extra>` }));
+  if (rest.length) tr.push({ x: t, y: fr.map((f) => rest.reduce((a, n) => a + ((f.sum.rates || [])[n.i] || 0), 0)), name: `Other (${rest.length})`, mode: "lines", line: { color: SERIES[7], width: 2 } });
+  Plotly.react("c-in", tr.length ? tr : [{ x: [], y: [] }], Object.assign(layout(two ? "SWMM exchange at nodes (+ out of SWMM, − into inlets)" : "SWMM node flooding into the 2D", "Flow (cfs)"), { shapes: tr.length ? [vline(fr[S.frame].sum.tHours)] : [], annotations: tr.length ? [] : [{ text: "No SWMM flooding in this run", showarrow: false, xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: css("--muted") } }] }), CFG);
+  const bs = S.grid.opts.boundaries || [];
+  Plotly.react("c-lvl", bs.length ? bs.map((b, i) => ({ x: t, y: fr.map((f) => f.sum.stages[i]), name: b.key + (b.node ? ` (SWMM ${b.node})` : " (fixed)"), mode: "lines", line: { color: SERIES[i % 8], width: 2 } })) : [{ x: [], y: [] }],
+    Object.assign(layout("Level boundaries", "Water level (ft)"), { yaxis: { title: { text: "Water level (ft)" }, gridcolor: css("--line") }, shapes: bs.length ? [vline(fr[S.frame].sum.tHours)] : [], annotations: bs.length ? [] : [{ text: "No level boundaries", showarrow: false, xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: css("--muted") } }] }), CFG);
+  pointChart();
+}
+function pointChart() {
+  const fr = S.frames; if (!fr.length) return; const k = S.sel;
+  const tr = k >= 0 ? [{ x: fr.map((f) => hx(f.sum.tHours)), y: fr.map((f) => dec(f.q[k])), name: "Depth", mode: "lines", line: { color: SERIES[0], width: 2 }, hovertemplate: "%{y:.2f} ft<extra></extra>" }] : [{ x: [], y: [] }];
+  Plotly.react("c-pt", tr, Object.assign(layout(k >= 0 ? `Depth at the clicked point (ground ${fmt(S.grid.z[k], 2)} ft)` : "Depth at a point", "Depth (ft)"), { showlegend: false, shapes: k >= 0 ? [vline(fr[S.frame].sum.tHours)] : [], annotations: k >= 0 ? [] : [{ text: "Click the map to pick a point", showarrow: false, xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: css("--muted") } }] }), CFG);
+}
+function ledger() {
+  const L0 = S.final.ledger, ac = (v) => fmt(v / 43560, 3);
+  const rows = [["Rain on the grid", L0.rain], ["SWMM node flooding (into the 2D)", L0.inflow], ["Taken by SWMM inlets", -(L0.captured || 0)], ["Infiltration", -L0.inf], ["Out at the grid edges", -L0.edge], ["Into level boundaries (– means out of them)", -L0.toLakes], ["Change in water on the surface", -(L0.v1 - L0.v0)], ["Depth clamped at zero (numerical)", L0.clamp], ["Closure (should be about 0)", -L0.err]];
+  $("#ledger").innerHTML = `<table class="t"><thead><tr><th>Term</th><th class="n">ac-ft</th><th class="n">cubic feet</th></tr></thead><tbody>${rows.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="n">${ac(v)}</td><td class="n">${fmt(v, 0)}</td></tr>`).join("")}</tbody></table>
+    <p class="note">Positive terms add water to the surface. Closure is ${fmt(Math.abs(L0.errPct), 5)}% of the water moved.</p>` + swmm2Html();
+  const r2 = S.final.swmm2;
+  if (r2) { $("#dl-rpt").onclick = () => download(`${stem()}_coupled.rpt`, r2.rpt, "text/plain"); $("#dl-out").onclick = () => download(`${stem()}_coupled.out`, new Uint8Array(r2.out), "application/octet-stream"); }
+}
+function swmm2Html() {
+  const r2 = S.final && S.final.swmm2; if (!r2) return "";
+  const t = r2.tally, ac = (v) => fmt(v / 43560, 3);
+  return `<h3 style="margin:12px 0 6px;font-size:15px">SWMM, two-way coupling</h3><table class="t"><tbody>
+    <tr><td>Overflow from SWMM nodes onto the 2D</td><td class="n">${ac(t.fromSwmm)} ac-ft</td></tr>
+    <tr><td>Surface water into SWMM inlets</td><td class="n">${ac(t.sentToSwmm)} ac-ft</td></tr>
+    <tr><td>Overflow at nodes not coupled (lost)</td><td class="n">${ac(t.lostOverflow)} ac-ft</td></tr>
+    <tr><td>SWMM flow routing continuity error</td><td class="n">${fmt(r2.massBalance.flow, 3)} %</td></tr></tbody></table>
+    ${r2.notes && r2.notes.length ? `<p class="warn">${r2.notes.map(esc).join("<br>")}</p>` : ""}
+    <div class="row" style="margin-top:6px"><button id="dl-rpt">SWMM report of the coupled run (.rpt)</button><button id="dl-out" ${r2.out ? "" : "disabled"}>SWMM results (.out)</button></div>`;
+}
+function renderAll() { paint(); charts(); ledger(); if (!$("#v3d").hidden) V3.build(); }
+
+// ------------------------------------------------------------------ map click
+function onMapClick(e) {
+  if (!S.grid) return; const [x, y] = fromLL(e.latlng), G = S.grid.G;
+  const c = Math.floor((x - G.x0) / G.cs), r = Math.floor((G.y1 - y) / G.cs); if (c < 0 || r < 0 || c >= G.nx || r >= G.ny) return;
+  const k = r * G.nx + c, t = S.grid.type[k]; S.sel = t === 0 ? k : -1;
+  const f = S.frames[S.frame];
+  const html = t === 1 ? (S.grid.z[k] === 0 ? "No ground data here (acts as a wall)" : "Building (wall)") : t === 2 ? "Level boundary" :
+    `Ground ${fmt(S.grid.z[k], 2)} ft<br>` + (f ? `Water at ${esc(clock(f.sum.tHours))}: ${fmt(dec(f.q[k]), 2)} ft<br>` : "") + (S.final ? `Deepest ${fmt(S.final.hmax[k], 2)} ft${S.final.hmax[k] > 0 ? ` at ${esc(clock(S.final.tmax[k]))}` : ""}` : "");
+  L.popup().setLatLng(e.latlng).setContent(html).openOn(MAP); pointChart();
+}
+
+// ------------------------------------------------------------------ exports
+function download(name, data, type) { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([data], { type })); a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+function stem() { return (S.exName || "flood").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "flood"; }
+function exportTif() {
+  const gr = S.grid, G = gr.G, N = G.nx * G.ny, d = new Float32Array(N), wse = new Float32Array(N), tm = new Float32Array(N), vf = S.grid.opts.vUnitFt;
+  for (let k = 0; k < N; k++) { const open = gr.type[k] === 0, h = S.final.hmax[k]; d[k] = open ? h : NaN; wse[k] = open && h > 0 ? (gr.z[k] + h) / vf : NaN; tm[k] = open && h > 0 ? S.final.tmax[k] - S.grid.opts.t0 : NaN; }
+  const lin = S.dem.hUnitFt ? (Math.abs(S.dem.hUnitFt - 1 / 0.3048) < 1e-6 ? "m" : Math.abs(S.dem.hUnitFt - UNIT_FT["us-ft"]) < 1e-9 ? "us-ft" : "ft") : "ft";
+  const buf = FloodModel.geoTiff(G, S.dem.epsg, [{ name: "max_depth_ft", data: d }, { name: `max_water_level_${vf === 1 ? "ft" : "dem_units"}`, data: wse }, { name: `hours_to_max_from_start_${S.grid.opts.t0}h`, data: tm }], lin);
+  download(`${stem()}_max_depth_EPSG${S.dem.epsg || "none"}.tif`, buf, "image/tiff");
+}
+function exportCsv() {
+  const rows = ["building,centroid_x,centroid_y,max_depth_beside_ft,reached"], bm = S.final.bMax, thr = S.grid.opts.buildingFt;
+  const feats = S.grid.opts.useBuildings && S.bld ? S.bld.feats : [];
+  feats.forEach((f, i) => { const r = f.geometry.type === "Polygon" ? f.geometry.coordinates[0] : f.geometry.coordinates[0][0]; let x = 0, y = 0; for (const p of r) { x += p[0]; y += p[1]; } x /= r.length; y /= r.length;
+    rows.push(`${f.properties && f.properties.id !== undefined ? f.properties.id : i},${x.toFixed(2)},${y.toFixed(2)},${(bm[i] || 0).toFixed(3)},${bm[i] > thr ? "yes" : "no"}`); });
+  download(`${stem()}_buildings.csv`, rows.join("\n"), "text/csv");
+}
+function exportNodes() {
+  const srcs = S.sources || [];
+  const rows = ["time,hours," + srcs.map((x) => `${x.name}_cfs`).join(",")];
+  for (const f of S.frames) rows.push(`${clock(f.sum.tHours)},${f.sum.tHours.toFixed(4)},` + srcs.map((x, i) => ((f.sum.rates || [])[i] || 0).toFixed(4)).join(","));
+  download(`${stem()}_swmm_inflows.csv`, rows.join("\n"), "text/csv");
+}
+
+// ------------------------------------------------------------------ wiring
+function setTab(which) { $("#t-map").setAttribute("aria-selected", which === "map"); $("#t-3d").setAttribute("aria-selected", which === "3d"); $("#map").hidden = which !== "map"; $("#v3d").hidden = which !== "3d"; if (which === "3d") V3.build(); else if (MAP) MAP.invalidateSize(); }
+let PLAY = null;
+function init() {
+  const ex = EX(); $("#ex-pick").innerHTML = ex.map((e, i) => `<option value="${i}">${esc(e.name)}</option>`).join("");
+  $("#ex-load").onclick = () => loadExample(+$("#ex-pick").value);
+  wireInputs();
+  $("#b-run").onclick = run; $("#b-stop").onclick = () => { if (W) W.postMessage({ cmd: "stop" }); msg("Stopping…"); };
+  $("#slider").oninput = (e) => { S.frame = +e.target.value; if (S.view !== "now") { S.view = "now"; $("#view").value = "now"; } paint(); pointChart(); };
+  $("#view").onchange = (e) => { S.view = e.target.value; paint(); };
+  $("#basemap").onchange = () => { setBasemap(); if (S.grid) mapGrid(); if (S.frames.length) paint(); };
+  $("#b-play").onclick = () => {
+    if (PLAY) { clearInterval(PLAY); PLAY = null; $("#b-play").textContent = "Play"; return; }
+    S.view = "now"; $("#view").value = "now"; $("#b-play").textContent = "Pause";
+    PLAY = setInterval(() => { S.frame = (S.frame + 1) % S.frames.length; $("#slider").value = S.frame; paint(); }, 450);
+  };
+  $("#t-map").onclick = () => setTab("map"); $("#t-3d").onclick = () => setTab("3d");
+  $("#x-tif").onclick = exportTif; $("#x-csv").onclick = exportCsv; $("#x-nodes").onclick = exportNodes;
+  $("#b-help").onclick = () => { $("#help").hidden = !$("#help").hidden; if (!$("#help").hidden) $("#help").scrollIntoView({ behavior: "smooth" }); };
+  $("#b-theme").onclick = () => { const r = document.documentElement, d = dark(); r.dataset.theme = d ? "light" : "dark"; try { localStorage.setItem("fsim-theme", r.dataset.theme); } catch (e) {} if (S.grid) mapGrid(); if (S.dem) mapInputs(); if (S.frames.length) renderAll(); };
+  try { const t = localStorage.getItem("fsim-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  if (!("gpu" in navigator)) $("#engine").options[1].disabled = true;
+  if (BUILD) document.title = `Flood Simulator ${BUILD.version}`;
+}
+document.addEventListener("DOMContentLoaded", init);

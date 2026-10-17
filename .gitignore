@@ -1,7 +1,7 @@
-vendor_src/
-node_modules/
-__pycache__/
 *.pyc
 .out_tmp/
-test-results/
+__pycache__/
 dist/*.tmp
+node_modules/
+test-results/
+vendor_src/

@@ -1,0 +1,152 @@
+{
+ "app": "FloodSimulator.html",
+ "version": "0.2.0",
+ "bytes": 5550151,
+ "sha256": "23fe3e5c578e8e8f6c12d90cb0d2b2bcd83de886c16f50070392c7674c5d2d1e",
+ "inputs": [
+  {
+   "file": "examples/public_demo/buildings.geojson",
+   "sha256": "d6bc770465800dd9a7852a5a630c5776410e418a1029657f5424eec09406ee47"
+  },
+  {
+   "file": "examples/public_demo/dem.tif",
+   "sha256": "ad4ac593f4d9ef33c3ca878b9882aad874d49ad0769d025d9d78e8171ea346b0"
+  },
+  {
+   "file": "examples/public_demo/example.json",
+   "sha256": "d3224165971c4b495d3caca9beb48fedcfb02ae7bd59fc90b57374f6a999a66d"
+  },
+  {
+   "file": "examples/public_demo/lake.geojson",
+   "sha256": "b39cf3fc790b11ad0473b240dfebb8b4b79cd03df3f5b743c6dcba66f35056dc"
+  },
+  {
+   "file": "examples/public_demo/model.inp",
+   "sha256": "c15e3236ad0cfead10d2ef52a5ff2a3840465d9752d38d162580d8a14fd681cc"
+  },
+  {
+   "file": "examples/public_demo/model.out",
+   "sha256": "54f9db9d63918b3cc2fb4d34a27a8634440feb43fcb687ff4a2acdc3e181bc17"
+  },
+  {
+   "file": "examples/synthetic_si/buildings.geojson",
+   "sha256": "f61f65b54f22af69827b574d56d2507d7755cf872ff18f5204a6ee5502bdf8dd"
+  },
+  {
+   "file": "examples/synthetic_si/dem.tif",
+   "sha256": "358d2b81f31cbab3cce99c239f4286f2177ab6c7733504f5b9449d780a73bba4"
+  },
+  {
+   "file": "examples/synthetic_si/example.json",
+   "sha256": "9c4067b7cde9181a2051ea060531c09807f06000d7a5a0eb88f0432b499a45c8"
+  },
+  {
+   "file": "examples/synthetic_si/model.inp",
+   "sha256": "cde9d3c60ce2d5421e06762a688c77fa33e931abc9310ee0f8bcf31bdeb08ddf"
+  },
+  {
+   "file": "examples/synthetic_si/model.out",
+   "sha256": "74fa0d6285206be8a34c2e3866916b6939ca98502f2f39d051069e426b3d7a98"
+  },
+  {
+   "file": "examples/synthetic_si/pond.geojson",
+   "sha256": "7e609b6a19e8865a8bf2c0b14d58653bc8d933be604436a6e0403811eb59de77"
+  },
+  {
+   "file": "examples/synthetic_us/buildings.geojson",
+   "sha256": "e36214ddcfd7a398997e9b7b56f9aeb903e49d52875922e8e982c78822ad5bdc"
+  },
+  {
+   "file": "examples/synthetic_us/dem.tif",
+   "sha256": "827b8b067d3092efccae664bfe09b39b4df87c0fd7aa23f3e2f12eee82e22aa3"
+  },
+  {
+   "file": "examples/synthetic_us/example.json",
+   "sha256": "536bd1e651c664a5dbb9ab110f25749789b43862b0d365bfc00c8d31d75a1152"
+  },
+  {
+   "file": "examples/synthetic_us/model.inp",
+   "sha256": "9df04b7623e50d8f89fc1f46db3439afd3f550c8a878820de26c48468b37543f"
+  },
+  {
+   "file": "examples/synthetic_us/model.out",
+   "sha256": "8c717a6f3238b205b6c41ba013bd5d6803cee15b640f85172639f2dd11cdf2ac"
+  },
+  {
+   "file": "examples/synthetic_us/pond.geojson",
+   "sha256": "fb84a0ccf71f81c8b541fe5180f2ccd59aedf42ac5c8ed532d74f512cc4d6432"
+  },
+  {
+   "file": "src/app/app.js",
+   "sha256": "949b82a00405aaf77e3fa0d8a9e0a86cd6117a8663474b69f6dfc4cd6f56df94"
+  },
+  {
+   "file": "src/app/help.html",
+   "sha256": "aaebdd29def929e921e290d342d4f6c7d92818fe16c44f6f6094d818c4fa30f4"
+  },
+  {
+   "file": "src/app/index.html",
+   "sha256": "61b947d691c2d34e6ac29485abdc05c2514d80a1165c795c3ce8c3a80003245f"
+  },
+  {
+   "file": "src/app/view3d.js",
+   "sha256": "ad9a1cf3b6e5cb2e89239430e2c6d7fb5e674c0d229233a40081194c3cd0db70"
+  },
+  {
+   "file": "src/app/worker.js",
+   "sha256": "ef6358ef1344b27710e95eb596d69c02e785593bf2fe46801934246a58da197c"
+  },
+  {
+   "file": "src/core/couple2way.js",
+   "sha256": "76f72e55864df807170055624aef121ad55910887a5e7a50b4945a8040073394"
+  },
+  {
+   "file": "src/core/model.js",
+   "sha256": "5be611c2b732eeca60929cd65b362fe4ab7b61a9ca41a8ebfef220319a723e5d"
+  },
+  {
+   "file": "src/engine/flood2d.js",
+   "sha256": "68a62bec4f5b8f758208e9c9274ed9adbd16e34376f18f694d2dce25aa488a00"
+  },
+  {
+   "file": "src/io/swmm.js",
+   "sha256": "19749b4fde715759d3c898eaf6666659a8f7649bf2f2665d09d133e7748b3823"
+  },
+  {
+   "file": "vendor/crs_catalog.json",
+   "sha256": "0eb9304d46a4f9a988555e8f35d3535816797429bd747d8a54157f38263c05d0"
+  },
+  {
+   "file": "vendor/geotiff/geotiff.js",
+   "sha256": "cb5c9731bfee1f8bff1728e54e4436ada81ea3258b178a3d6603c61b58d99e6c"
+  },
+  {
+   "file": "vendor/leaflet/leaflet.css",
+   "sha256": "a7837102824184820dfa198d1ebcd109ff6d0ff9a2672a074b9a1b4d147d04c6"
+  },
+  {
+   "file": "vendor/leaflet/leaflet.js",
+   "sha256": "db49d009c841f5ca34a888c96511ae936fd9f5533e90d8b2c4d57596f4e5641a"
+  },
+  {
+   "file": "vendor/plotly/plotly-basic.min.js",
+   "sha256": "138c2e81014b979dc00867a93da55b7605a17495ee78dd7afb433b7f021dfcfa"
+  },
+  {
+   "file": "vendor/proj4/proj4.js",
+   "sha256": "4975fbf411fac1842c5b91d362d323d3f01ca0cb52385a2ea219790ffaa20a80"
+  },
+  {
+   "file": "vendor/swmm-wasm/swmm5.js",
+   "sha256": "fdd0303e439c96c72e14ae7eebb0829772cf2d725bc7c035d089cecaaf09a94b"
+  },
+  {
+   "file": "vendor/three/OrbitControls.js",
+   "sha256": "b4c6e53f98538535b11fd6655627d47fb5877b3ad972568bff0a7026c4b6d5c4"
+  },
+  {
+   "file": "vendor/three/three.min.js",
+   "sha256": "f34446bf875b5fb0dcd93819ffe1d9e182d46634ee855f5d904c6c4ac7cdbc95"
+  }
+ ]
+}

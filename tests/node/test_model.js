@@ -1,7 +1,7 @@
 // Model builder (DEM, buildings, boundaries, SWMM coupling, GeoTIFF out): node tests/node/test_model.js   (exit 1 on failure)
 // Reference values from rasterio (tests/py/make_grid_reference.py) and the SWMM engine (make_swmm_reference.py).
 const fs = require("fs"), path = require("path");
-const GeoTIFF = require("../../vendor_src/node_modules/geotiff");
+const GeoTIFF = require("../../tools/node_modules/geotiff");
 const M = require(process.env.MODELJS || "../../src/core/model.js"), S = require("../../src/io/swmm.js"), F = require("../../src/engine/flood2d.js");
 const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "../../vendor/crs_catalog.json")));
 const res = []; const ok = (name, pass, info) => { res.push({ name, pass: !!pass, info }); console.log((pass ? "PASS " : "FAIL ") + name + "  " + info); };

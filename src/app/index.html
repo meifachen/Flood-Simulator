@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flood Simulator</title>
+<style>/*__LEAFLET_CSS__*/</style>
+<style>
+:root{color-scheme:light dark;--bg:#f5f6f8;--surface:#ffffff;--ink:#1e2833;--muted:#5b6672;--line:#d8dde3;--chip:#eef1f4;--accent:#2a6fb0;--accent-ink:#ffffff;--warn:#9a5b00;--bad:#b3261e;--good:#2e7d4f;--water:#2f7fc1;--node:#b3261e;--link:#6b7682;--bnd:#1d5d9b;--shadow:0 1px 2px rgba(0,0,0,.06)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#11161c;--surface:#19212a;--ink:#e6eaef;--muted:#9aa5b1;--line:#2c3743;--chip:#232d38;--accent:#5b97df;--accent-ink:#0b1117;--warn:#e0a24a;--bad:#e0574f;--good:#5fb383;--water:#5aa6e6;--node:#e0574f;--link:#8792a0;--bnd:#7fb3ea;--shadow:none}}
+:root[data-theme="light"]{color-scheme:light}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#11161c;--surface:#19212a;--ink:#e6eaef;--muted:#9aa5b1;--line:#2c3743;--chip:#232d38;--accent:#5b97df;--accent-ink:#0b1117;--warn:#e0a24a;--bad:#e0574f;--good:#5fb383;--water:#5aa6e6;--node:#e0574f;--link:#8792a0;--bnd:#7fb3ea;--shadow:none}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1000}
+header h1{font-size:17px;margin:0;font-weight:650}
+header .sub{color:var(--muted);font-size:13px}
+header .sp{flex:1}
+button,.btn{font:inherit;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:6px;padding:6px 11px;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:14px;padding:14px 16px;max-width:1800px;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:1fr;padding:10px 16px}}
+aside{display:flex;flex-direction:column;gap:10px;min-width:0}
+section.res{min-width:0;display:flex;flex-direction:column;gap:12px}
+details.card,div.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
+details.card>summary{cursor:pointer;padding:9px 12px;font-weight:600;list-style:none;display:flex;gap:8px;align-items:center}
+details.card>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
+details.card[open]>summary::before{transform:rotate(90deg)}
+details.card>summary .state{margin-left:auto;font-weight:400;font-size:12px;color:var(--muted)}
+.body{padding:0 12px 12px}
+div.card{padding:12px}
+label.f{display:grid;grid-template-columns:1fr minmax(110px,150px);gap:8px;align-items:center;margin:6px 0}
+label.f>span{color:var(--ink)}
+label.f small{display:block;color:var(--muted);font-size:12px}
+input[type=number],input[type=text],select{font:inherit;width:100%;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}
+input[type=file]{font-size:12px;max-width:100%;color:var(--muted)}
+.file{margin:8px 0;padding:8px;border:1px dashed var(--line);border-radius:6px}
+.file b{display:block;margin-bottom:3px}
+.file .st{font-size:12px;color:var(--muted);margin-top:4px;word-break:break-word}
+.note{color:var(--muted);font-size:12px}
+.warn{color:var(--warn);font-size:13px}
+.err{color:var(--bad);font-size:13px}
+.ok{color:var(--good)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{background:var(--chip);border-radius:999px;padding:2px 9px;font-size:12px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+.kpi .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.kpi .l{color:var(--muted);font-size:12px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:6px 10px;color:var(--muted)}
+.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+#map,#v3d{height:min(62vh,640px);border-radius:8px;border:1px solid var(--line);background:var(--bg)}
+#v3d{position:relative;overflow:hidden}
+.timebar{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin-top:8px}
+.timebar input[type=range]{width:100%}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px}
+.chart{height:280px}
+table.t{border-collapse:collapse;width:100%;font-size:13px}
+table.t td,table.t th{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left}
+table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
+.progress{height:6px;background:var(--chip);border-radius:3px;overflow:hidden;margin:6px 0}
+.progress>div{height:100%;width:0;background:var(--accent);transition:width .2s}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);align-items:center;margin-top:6px}
+.sw{display:inline-block;width:12px;height:12px;border:1px solid var(--line);vertical-align:-2px;margin-right:3px}
+.empty{padding:40px 16px;text-align:center;color:var(--muted)}
+.leaflet-container{background:var(--bg);font:inherit}
+.leaflet-popup-content{font-size:13px}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--surface);color:var(--ink);box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.leaflet-bar a{background:var(--surface);color:var(--ink);border-color:var(--line)}
+.leaflet-control-attribution{background:color-mix(in srgb,var(--surface) 80%,transparent)!important;color:var(--muted)}
+.leaflet-control-attribution a{color:var(--accent)}
+@media (max-width:600px){header .sub{display:none}}
+.badge{position:absolute;left:10px;top:10px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:12px;max-width:320px;z-index:2}
+#help h3{margin:14px 0 4px;font-size:15px}
+#help p,#help li{max-width:80ch}
+.vis{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Flood Simulator</h1><span class="sub">2D overland flooding from SWMM5 and rain</span>
+  <span class="sp"></span>
+  <button id="b-help" aria-controls="help">Help</button>
+  <button id="b-theme" title="Switch light and dark">Theme</button>
+</header>
+<main>
+<aside>
+  <details class="card" open id="s-data"><summary>1. Data <span class="state" id="st-data">nothing loaded</span></summary><div class="body">
+    <div class="row" style="margin:6px 0"><span class="note">Try an example:</span><select id="ex-pick" aria-label="Example"></select><button id="ex-load">Load</button></div>
+    <div class="file"><b>Ground (DEM) — GeoTIFF, required</b><input type="file" id="f-dem" accept=".tif,.tiff"><div class="st" id="st-dem"></div>
+      <div id="crs-box" hidden><label class="f"><span>EPSG code of the DEM<small>The file has no usable CRS</small></span><input type="number" id="crs-epsg" placeholder="e.g. 6438"></label></div>
+      <label class="f"><span>Elevation units</span><select id="vunit"><option value="auto">Same as horizontal</option><option value="ft">feet</option><option value="us-ft">US survey feet</option><option value="m">meters</option></select></label></div>
+    <div class="file"><b>Buildings — GeoJSON, optional</b><input type="file" id="f-bld" accept=".geojson,.json"><div class="st" id="st-bld"></div></div>
+    <div class="file"><b>Level boundaries (lakes, ponds, tide) — GeoJSON, optional</b><input type="file" id="f-bnd" accept=".geojson,.json"><div class="st" id="st-bnd"></div><div id="bnd-table"></div></div>
+    <div class="file"><b>SWMM5 input (.inp), optional</b><input type="file" id="f-inp" accept=".inp,.txt"><div class="st" id="st-inp"></div></div>
+    <div class="file"><b>SWMM5 results (.out), optional</b><input type="file" id="f-out" accept=".out"><div class="st" id="st-out"></div></div>
+  </div></details>
+  <details class="card" open id="s-grid"><summary>2. Grid and surface <span class="state" id="st-grid"></span></summary><div class="body">
+    <label class="f"><span>Cell size<small id="cell-note"></small></span><select id="cell"></select></label>
+    <label class="f"><span>Buildings act as walls</span><select id="use-bld"><option value="1">Yes</option><option value="0">No</option></select></label>
+    <label class="f"><span>Rain on roofs</span><select id="roof"><option value="1">Runs to the nearest ground cell</option><option value="0">Is not counted</option></select></label>
+    <label class="f"><span>Grid edges</span><select id="edges"><option value="open">Open (water can leave)</option><option value="closed">Closed (walls)</option></select></label>
+    <label class="f"><span>Impervious fraction (%)</span><input type="number" id="imp" min="0" max="100" step="1" value="40"></label>
+    <label class="f"><span>Manning n, impervious</span><input type="number" id="n-imp" min="0.005" max="0.5" step="0.001" value="0.015"></label>
+    <label class="f"><span>Manning n, pervious</span><input type="number" id="n-perv" min="0.005" max="1" step="0.005" value="0.10"></label>
+    <label class="f"><span>Green-Ampt Ks (in/hr)</span><input type="number" id="ks" min="0" max="50" step="0.01" value="0.5"></label>
+    <label class="f"><span>Suction head (in)</span><input type="number" id="psi" min="0" max="50" step="0.1" value="4"></label>
+    <label class="f"><span>Initial moisture deficit</span><input type="number" id="imd" min="0" max="0.6" step="0.01" value="0.3"></label>
+  </div></details>
+  <details class="card" open id="s-water"><summary>3. Water sources <span class="state" id="st-water"></span></summary><div class="body">
+    <label class="f"><span>SWMM coupling<small id="swmm-note">Load a SWMM .inp to use it</small></span><select id="coupling"><option value="off">Off</option><option value="one">One way: node flooding from the .out</option><option value="two">Two way: run SWMM here, exchange through inlets</option></select></label>
+    <div id="two-box" hidden>
+      <label class="f"><span>Inlet weir length (ft)<small>per coupled junction</small></span><input type="number" id="lw" min="0" max="100" step="0.5" value="3"></label>
+      <label class="f"><span>Weir coefficient (US)</span><input type="number" id="cw" min="0" max="4" step="0.05" value="3.0"></label>
+      <label class="f"><span>Inlet orifice area (sq ft)</span><input type="number" id="ia" min="0" max="100" step="0.5" value="4"></label>
+      <label class="f"><span>Orifice coefficient</span><input type="number" id="co" min="0" max="1" step="0.05" value="0.6"></label>
+      <label class="f"><span>Coupling interval (s)</span><input type="number" id="csec" min="2" max="300" step="1" value="30"></label>
+    </div>
+    <label class="f"><span>Rain on the grid</span><select id="rain"><option value="none">None</option><option value="gauge">From a SWMM rain gauge</option><option value="uniform">Uniform rain</option></select></label>
+    <div id="rain-gauge" hidden><label class="f"><span>Rain gauge</span><select id="gauge"></select></label></div>
+    <div id="rain-uniform" hidden><label class="f"><span>Intensity (in/hr)</span><input type="number" id="rain-ih" min="0" max="20" step="0.1" value="2"></label><label class="f"><span>Duration (hours)</span><input type="number" id="rain-h" min="0.1" max="72" step="0.1" value="1"></label></div>
+    <p class="warn" id="double-warn" hidden>SWMM already routes the runoff of this storm through its subcatchments. Rain on the grid as well counts that water twice where the grid overlaps the subcatchments.</p>
+    <label class="f"><span>Start (hours from SWMM start)</span><input type="number" id="t0" min="0" step="0.25" value="0"></label>
+    <label class="f"><span>End (hours)</span><input type="number" id="t1" min="0.1" step="0.25" value="6"></label>
+    <label class="f"><span>Map every (minutes)</span><input type="number" id="outmin" min="1" max="120" step="1" value="5"></label>
+  </div></details>
+  <details class="card" open id="s-run"><summary>4. Run <span class="state" id="st-run"></span></summary><div class="body">
+    <label class="f"><span>Engine</span><select id="engine"><option value="auto">GPU if available, else CPU</option><option value="gpu">GPU (WebGPU)</option><option value="cpu">CPU</option></select></label>
+    <label class="f"><span>Courant number</span><input type="number" id="cfl" min="0.1" max="1" step="0.05" value="0.7"></label>
+    <label class="f"><span>Wet when deeper than (ft)</span><input type="number" id="wet" min="0.01" max="5" step="0.01" value="0.1"></label>
+    <label class="f"><span>Building reached at (ft)</span><input type="number" id="bthr" min="0.01" max="5" step="0.05" value="0.5"></label>
+    <div class="row"><button class="primary" id="b-run" disabled>Run</button><button id="b-stop" disabled>Stop</button></div>
+    <div class="progress" aria-hidden="true"><div id="pbar"></div></div>
+    <div id="msg" class="note" role="status" aria-live="polite">Load a DEM to start.</div>
+    <div id="warns"></div>
+  </div></details>
+</aside>
+<section class="res">
+  <div class="kpis" id="kpis"></div>
+  <div class="card">
+    <div class="tabs" role="tablist"><button role="tab" id="t-map" aria-selected="true">Map</button><button role="tab" id="t-3d" aria-selected="false">3D</button>
+      <span style="flex:1"></span>
+      <label class="note" style="display:flex;gap:6px;align-items:center">Show <select id="view"><option value="now">Depth at the selected time</option><option value="max">Maximum depth</option></select></label>
+      <label class="note" style="display:flex;gap:6px;align-items:center" id="bm-wrap">Basemap <select id="basemap"><option value="none">Hillshade only (offline)</option><option value="osm">OpenStreetMap</option><option value="usgs">USGS imagery</option></select></label></div>
+    <div id="map"><div class="empty">The map appears when a DEM is loaded.</div></div>
+    <div id="v3d" hidden><div class="badge" id="b3d"></div></div>
+    <div class="timebar"><button id="b-play" disabled>Play</button><input type="range" id="slider" min="0" max="0" value="0" disabled aria-label="Time"><span id="tlabel" class="note">–</span></div>
+    <div class="legend" id="legend"></div>
+    <div class="row" style="margin-top:8px"><button id="x-tif" disabled>Export GeoTIFF (max depth, max water level, time of max)</button><button id="x-csv" disabled>Export buildings (CSV)</button><button id="x-nodes" disabled>Export SWMM inflows (CSV)</button></div>
+  </div>
+  <div class="charts">
+    <div class="card"><div class="chart" id="c-area"></div></div>
+    <div class="card"><div class="chart" id="c-in"></div></div>
+    <div class="card"><div class="chart" id="c-lvl"></div></div>
+    <div class="card"><div class="chart" id="c-pt"></div></div>
+  </div>
+  <div class="card"><h3 style="margin:0 0 6px;font-size:15px">Water balance</h3><div id="ledger" class="note">Run the model to see where the water went.</div></div>
+  <div class="card" id="help" hidden>/*__HELP__*/</div>
+</section>
+</main>
+<script>/*__LIBS__*/</script>
+<script id="workersrc" type="text/plain">/*__WORKER__*/</script>
+<script id="catalog" type="text/plain">/*__CATALOG__*/</script>
+<script id="examples" type="application/json">/*__EXAMPLES__*/</script>
+<script>const BUILD = /*__BUILD__*/null;</script>
+<script>/*__APP__*/</script>
+</body>
+</html>

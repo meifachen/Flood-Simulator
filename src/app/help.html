@@ -1,0 +1,36 @@
+<h2 style="margin:0 0 6px;font-size:17px">How to use the Flood Simulator</h2>
+<p>The simulator spreads water over the ground in two dimensions. The water can come from SWMM node flooding, rain on the grid, or lakes and other water bodies held at a level. Everything runs in this page: no files leave your computer, and nothing is installed.</p>
+<h3>1. Data</h3>
+<ul>
+<li><b>Ground (DEM)</b>: a single-band GeoTIFF in a projected coordinate system (feet or meters), north up. Clip and resample large lidar rasters first with <code>python/prep_dem.py</code>; the page accepts up to 40 million DEM cells and builds a grid of up to 8 million cells. If the file has no EPSG code, type it in.</li>
+<li><b>Buildings</b>: GeoJSON polygons. Cells whose centre falls inside a footprint become walls. Rain on a roof runs to the nearest ground cell. Longitude/latitude files are reprojected to the DEM's coordinate system.</li>
+<li><b>Level boundaries</b>: GeoJSON polygons for lakes, ponds or tidal water. Their level comes either from a SWMM storage or outfall node's head in the .out file, or from a fixed level you type (ft). A <code>node</code> or <code>level_ft</code> property fills this in automatically.</li>
+<li><b>SWMM5 .inp and .out</b>: node coordinates must be in the DEM's coordinate system. Each node that floods in the .out file adds its flooding rate (cfs) to the ground cell at that node. A node on a building is moved to the nearest open cell within 30 ft.</li>
+</ul>
+<h3>2. Grid and surface</h3>
+<p>The cell size is a whole multiple of the DEM resolution; ground levels are block averages. Roughness and Green-Ampt infiltration are uniform: each cell is part impervious (no infiltration) and part pervious.</p>
+<h3>3. Water sources</h3>
+<p><b>SWMM node flooding</b> is the usual choice for a SWMM study: SWMM routes the subcatchment runoff through the pipes, and the water that leaves the system at surcharged nodes spreads on the ground. <b>Rain on the grid</b> adds rain to every cell; together with SWMM flooding it counts runoff twice wherever the grid overlaps SWMM subcatchments. Times are hours from the SWMM start date and time.</p>
+<p><b>SWMM coupling</b>:</p>
+<ul>
+<li><b>One way</b> reads the node flooding from your .out file. Water on the ground never drains back, so street ponding is an upper bound.</li>
+<li><b>Two way</b> runs EPA SWMM 5.2.4 inside the page and exchanges water every coupling interval (30 s by default):
+<ul>
+<li>overflow at a node spreads on the ground;</li>
+<li>water standing over a junction goes back in through its inlet, by a weir equation while the node is below its rim and an orifice equation when it is surcharged;</li>
+<li>the inlet size applies to every coupled junction;</li>
+<li><code>ALLOW_PONDING</code> is set to NO in the copy SWMM runs;</li>
+<li>the SWMM report and results of the coupled run can be downloaded after the run.</li>
+</ul></li>
+</ul>
+<h3>4. Run and results</h3>
+<p>The engine uses the GPU (WebGPU) when the browser offers it, and the CPU otherwise. Stop ends a run and keeps the maps computed so far. The map and 3D views show the depth at the selected time or the maximum over the run. Click the map to see the ground level and the depth over time at a point. Exports: a three-band GeoTIFF (maximum depth, maximum water level, time of the maximum) in the DEM's coordinate system; building maxima (CSV); and the SWMM inflows used (CSV).</p>
+<h3>Method</h3>
+<p>Local-inertial shallow-water equations on a square grid (Bates et al. 2010; de Almeida et al. 2012, θ = 0.8). Friction is semi-implicit (Manning). Flow per unit width is capped at the critical (Froude 1) value, and an outflow limiter keeps depths non-negative. The time step follows the Courant condition. Green-Ampt infiltration uses the SWMM integrated form with ponded depth in the suction term. Open grid edges let water leave at normal depth. A water balance is kept at every map, and its closure is shown.</p>
+<h3>Limits</h3>
+<ul>
+<li>Two-way coupling is explicit (one coupling interval of lag); inlet parameters are the same at every junction.</li>
+<li>Uniform roughness and soils.</li>
+<li>Building heights in 3D are assumed from footprint area unless the file has a <code>height</code> property.</li>
+<li>Coordinates are converted with proj4 without datum grid shifts, so the basemap can be off by a meter or so; the model itself is unaffected.</li>
+</ul>
