@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.2.0",
- "bytes": 5550151,
- "sha256": "23fe3e5c578e8e8f6c12d90cb0d2b2bcd83de886c16f50070392c7674c5d2d1e",
+ "version": "0.3.0",
+ "bytes": 5594758,
+ "sha256": "ab8a5ecc831bf5a4aad19576e2db31986934175499bcfd688160c511a9d42deb",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -38,7 +38,11 @@
   },
   {
    "file": "examples/synthetic_si/example.json",
-   "sha256": "9c4067b7cde9181a2051ea060531c09807f06000d7a5a0eb88f0432b499a45c8"
+   "sha256": "5dcf98537994ac98ee2a40fb8e0388b8ec738f78619b7af79cd297f8d409657f"
+  },
+  {
+   "file": "examples/synthetic_si/landcover.tif",
+   "sha256": "bec10be57a3d92d9881b49895c62fc9259e30677377ef7a0a601043a0081a39b"
   },
   {
    "file": "examples/synthetic_si/model.inp",
@@ -53,6 +57,10 @@
    "sha256": "7e609b6a19e8865a8bf2c0b14d58653bc8d933be604436a6e0403811eb59de77"
   },
   {
+   "file": "examples/synthetic_si/soils.geojson",
+   "sha256": "b86ec92fd44e33aacd3175c2bba0fcd590db59ed9a390604fea2d961abc6516e"
+  },
+  {
    "file": "examples/synthetic_us/buildings.geojson",
    "sha256": "e36214ddcfd7a398997e9b7b56f9aeb903e49d52875922e8e982c78822ad5bdc"
   },
@@ -62,7 +70,15 @@
   },
   {
    "file": "examples/synthetic_us/example.json",
-   "sha256": "536bd1e651c664a5dbb9ab110f25749789b43862b0d365bfc00c8d31d75a1152"
+   "sha256": "895bf2761c580fda688e86afae53aa2ee8fb344d3908ae828b285ca7eb644cfd"
+  },
+  {
+   "file": "examples/synthetic_us/inlets.geojson",
+   "sha256": "b2caa8a234f225bed257a5621707765e81443a79c91c691785acec9f40c519dd"
+  },
+  {
+   "file": "examples/synthetic_us/landcover.tif",
+   "sha256": "d42b6c7a2ee7f84d39fc42712f468b707c950b722999123fc8cb0a555d7ea81d"
   },
   {
    "file": "examples/synthetic_us/model.inp",
@@ -77,16 +93,24 @@
    "sha256": "fb84a0ccf71f81c8b541fe5180f2ccd59aedf42ac5c8ed532d74f512cc4d6432"
   },
   {
+   "file": "examples/synthetic_us/soils.geojson",
+   "sha256": "5deae4da6d1d3657dc1de2ac2be62a4c80b17b8abcff6e1c227bef6bbbbe8ec4"
+  },
+  {
    "file": "src/app/app.js",
-   "sha256": "949b82a00405aaf77e3fa0d8a9e0a86cd6117a8663474b69f6dfc4cd6f56df94"
+   "sha256": "105c074163769639390a8a37d20b064f474924041fe9481b3104d0ec51047f86"
   },
   {
    "file": "src/app/help.html",
-   "sha256": "aaebdd29def929e921e290d342d4f6c7d92818fe16c44f6f6094d818c4fa30f4"
+   "sha256": "6f72ac68f492e9da01637dfe0bdecc96294e41093296add7a5f5635ddc7563ca"
   },
   {
    "file": "src/app/index.html",
-   "sha256": "61b947d691c2d34e6ac29485abdc05c2514d80a1165c795c3ce8c3a80003245f"
+   "sha256": "26b080ebbcc3f9e9a69eea3b86ee2051233b9efc15b9bad64e43be0bebf2eeb3"
+  },
+  {
+   "file": "src/app/results_io.js",
+   "sha256": "45dd95180d4abc8939b791b94ac07e0e4dc722698877b0eb546cd8ce1af38f74"
   },
   {
    "file": "src/app/view3d.js",
@@ -94,19 +118,19 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "ef6358ef1344b27710e95eb596d69c02e785593bf2fe46801934246a58da197c"
+   "sha256": "3bfa74b2433aa98b2441d257023cc8df80e3157c306555426434ec76c5325d7a"
   },
   {
    "file": "src/core/couple2way.js",
-   "sha256": "76f72e55864df807170055624aef121ad55910887a5e7a50b4945a8040073394"
+   "sha256": "63c678f6b5133f980a140be0fc8bd3114c8feceafe4bb8a7f9d67ed5192967a9"
   },
   {
    "file": "src/core/model.js",
-   "sha256": "5be611c2b732eeca60929cd65b362fe4ab7b61a9ca41a8ebfef220319a723e5d"
+   "sha256": "f3d761b519f711937b5f5ce920e976123c841e287005c3777fed1f2edf5d7597"
   },
   {
    "file": "src/engine/flood2d.js",
-   "sha256": "68a62bec4f5b8f758208e9c9274ed9adbd16e34376f18f694d2dce25aa488a00"
+   "sha256": "e62806ca48c23ca6563b45a76221e0ea485d1c39845528fc2f0f81e832a563a7"
   },
   {
    "file": "src/io/swmm.js",

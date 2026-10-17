@@ -21,6 +21,9 @@ jobs:
           node tests/node/test_sources.js
           node tests/node/test_swmm.js
           node tests/node/test_model.js
+          node tests/node/test_couple2way.js
+          node tests/node/test_velocity.js
+          node tests/node/test_landcover.js
       - name: SWMM reference reproduces with the EPA engine
         run: |
           python tests/py/make_swmm_reference.py examples/synthetic_us

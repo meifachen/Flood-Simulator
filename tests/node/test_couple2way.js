@@ -54,6 +54,24 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const net = c.tally.perNode.map((p, i) => `${c.sources[i].name} out ${(p.out / 43560).toFixed(2)} in ${(p.in / 43560).toFixed(2)}`);
     console.log("   per node (ac-ft):", net.join("; "));
   }
+  // C4 per-inlet parameters: two curb inlets on J4 placed off the manhole, no default inlets elsewhere
+  {
+    const j4 = model.nodes[model.nodeIndex.J4], inl = [{ x: j4.x - 40, y: j4.y + 12, node: "J4", lw: 6, area: 3 }, { x: j4.x + 40, y: j4.y - 12, node: "J4", lw: 2, area: 1 }, { x: j4.x, y: j4.y, node: "NOPE" }];
+    const { c, r } = await coupled({ inlets: inl, defaultInlets: false });
+    const iJ4 = c.nodes.findIndex((n) => n.name === "J4"), perIn = c.tally.perInlet, sumIn = perIn.reduce((a, v) => a + v, 0);
+    ok("C4 only the listed inlets capture water, at their own cells", c.inlets.length === 2 && c.inlets.every((it) => it.node === "J4") && c.inlets[0].cell !== c.nodes[iJ4].cell && Math.abs(c.tally.sentToSwmm - sumIn) < 1e-6 * Math.max(1, sumIn),
+      `${c.inlets.length} inlets; captured ${perIn.map((v) => v.toFixed(0)).join(" + ")} cf = sent to SWMM ${c.tally.sentToSwmm.toFixed(0)} cf`);
+    ok("C4 SWMM receives the sum of J4's inlets as its lateral inflow", Math.abs(c.tally.perNode[iJ4].in - sumIn) < 1e-6 * Math.max(1, sumIn) && sumIn > 0, `J4 in ${c.tally.perNode[iJ4].in.toFixed(0)} cf`);
+    // same place, smaller opening: less capture (the inlet size is used)
+    const small = await coupled({ inlets: [{ x: j4.x - 40, y: j4.y + 12, node: "J4", lw: 1, area: 0.3 }], defaultInlets: false });
+    ok("C4 a smaller inlet at the same place takes less water", small.c.tally.perInlet[0] < perIn[0] && small.c.tally.perInlet[0] > 0, `${small.c.tally.perInlet[0].toFixed(0)} cf (1 ft weir, 0.3 sq ft) vs ${perIn[0].toFixed(0)} cf (6 ft weir, 3 sq ft)`);
+    ok("C4 an inlet tied to an unknown node is reported", c.warnings.some((w) => /node NOPE is not a coupled SWMM junction/.test(w)), c.warnings.join(" | "));
+    ok("C4 2D capture equals what the inlets took", Math.abs(r.ledger.captured - sumIn) / sumIn < 1e-6 && Math.abs(r.ledger.err) / r.ledger.inflow < 1e-4, `2D captured ${r.ledger.captured.toFixed(0)} cf; closure ${r.ledger.err.toFixed(2)} cf`);
+  }
+  {
+    let m = ""; try { await coupled({ inlets: [{ x: model.nodes[0].x, y: model.nodes[0].y, node: "J1", lw: -2 }] }); } catch (e) { m = e.message; }
+    ok("C4 an invalid inlet size is refused", /Inlet 1 \(J1\): lw -2/.test(m), m);
+  }
   // C3 prepareInp forces ALLOW_PONDING NO
   {
     const p = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\nALLOW_PONDING YES\n[JUNCTIONS]\nJ 1 2\n");

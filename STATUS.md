@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-10-17. Version 0.2.0: one-way and two-way SWMM coupling.
+Updated 2026-10-17. Version 0.3.0: per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -24,6 +24,14 @@ Updated 2026-10-17. Version 0.2.0: one-way and two-way SWMM coupling.
   - `prep_dem.py`: clip, reproject and resample, vertical unit factor, buildings, SWMM node check;
   - `make_synthetic.py` and `make_public_demo.py`.
 - **Other tools:** `tools/build.py` builds the page, `tools/build_swmm_wasm.sh` builds SWMM in WebAssembly, and `tools/screenshot.py`.
+
+- **New in 0.3.0:**
+  - **Inlets:** a GeoJSON of inlets (point, node, weir length, grate area, coefficients, rim) replaces the single default size. Each inlet is its own sink; the half-the-water cap is shared among inlets in one cell. Junctions without a listed inlet use the default size or none (setting in the two-way box). An unknown node is reported and the inlet is ignored; an invalid size is refused.
+  - **Land cover and soils:** an NLCD-coded GeoTIFF (any CRS; sampled at cell centres) sets Manning n and imperviousness per cell; a soils GeoJSON with a hydrologic soil group (dual groups use the last letter, D) sets Green-Ampt Ks and suction. Both tables are editable in the app. Unknown classes keep the global values and are reported.
+  - **Velocity and hazard:** maximum speed and maximum depth × velocity, recorded where depth is at least 0.05 ft, on the CPU and on the GPU. New map views, legend classes, KPIs and popup values. The GeoTIFF export has 5 bands.
+  - **Save and reopen:** `.fsim.gz` holds the grid, maps, maxima, SWMM summary and the layers on the map. A reopened run shows the map, 3D, charts and exports; Run is off until the inputs are loaded again.
+  - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
+  - Loading a new DEM clears the other layers and says so.
 
 ## Tested (all pass)
 - `tests/node/test_solver_core.js`, `test_solver_guards.js`: carried-over solver tests.
@@ -57,7 +65,26 @@ Updated 2026-10-17. Version 0.2.0: one-way and two-way SWMM coupling.
     - SWMM continuity is −0.010%;
     - less water is left on the surface than with closed inlets.
   - C3: ponding is forced off. C1 to C3 test new code, so they cannot fail on the earlier commit (symbol-only); the reference values come from the EPA engine.
-- `tests/browser/test_app.py` (Chromium, built page, offline). B1 to B13 and Z all pass:
+- `tests/node/test_velocity.js` (new functions; symbol-only fail-first):
+  - V1 uniform Manning flow: depth 0.471 ft (exact 0.471), speed 2.122 ft/s (exact 2.121), depth × velocity 1.000;
+  - V2 water at rest: 0 ft/s;
+  - V3 sheet flow under 0.05 ft: no velocity recorded.
+- `tests/node/test_landcover.js` (new functions; symbol-only fail-first):
+  - land cover sampled at cell centres agrees 100% with pyproj/rasterio for both examples;
+  - the soils raster equals the rasterio rasterization;
+  - table values reach the cells;
+  - group A soil infiltrates 13.81 ac-ft against 3.54 for group D on the same storm;
+  - unknown classes reported, invalid table values refused.
+- `tests/node/test_couple2way.js` C4 (inlets): per-node sums equal the exchange; at the same location a smaller inlet takes 15,356 cf against 28,551 cf; unknown node reported; invalid size refused.
+- `tests/node/test_model.js` closed edges: edge outflow 0 and closure −1.86 cf of 466,886 cf of rain. Fails on the earlier code (edge outflow 218,522 cf): proven fail-first.
+- `tests/browser/test_app.py` (Chromium, built page, offline). B1 to B16 and Z all pass. New in 0.3.0:
+  - B14 land cover and soils loaded and used;
+  - B3 velocity views; B4 5-band GeoTIFF;
+  - B6 GPU velocity equal to CPU (4.4e-5 ft/s);
+  - B15 two-way with 14 listed inlets;
+  - B16 save, reopen, identical maps and GeoTIFF; truncated, wrong and future-version files refused;
+  - B8 a new DEM clears the old layers; SI land cover and soils through the file inputs.
+  Carried over:
   - example load;
   - CPU run with closure, and inflow volume equal to the node series;
   - map, KPIs and map click;
@@ -83,9 +110,11 @@ Updated 2026-10-17. Version 0.2.0: one-way and two-way SWMM coupling.
 - A DEM without an EPSG code (the EPSG entry box is coded but was not run).
 - Grids near the 8-million-cell limit.
 - Two-way coupling against another coupled model (e.g. PCSWMM 2D or HEC-RAS). It is verified for conservation and consistency only.
+- A soils GeoTIFF in the browser (the code path exists; only soils GeoJSON was run in the app).
+- Land cover classes other than NLCD codes (other schemes need an edited table).
+- Results files from very large grids (file size and memory when reopening).
 
 ## Open items
-- Per-inlet parameters (from a GeoJSON of inlets) instead of one size for every junction.
-- Spatially varying roughness and soils (from land cover).
-- Maximum velocity and depth × velocity hazard maps.
-- Save and reopen results.
+- Inlet clogging factors and inlet types (curb, grate, combination) with HEC-22 curves.
+- Time series of velocity (only maxima are kept).
+- Velocity and hazard checked against a benchmark (e.g. UK EA test 6A); only Manning flow is checked now.

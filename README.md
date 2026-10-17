@@ -6,7 +6,10 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
   - a ground DEM (GeoTIFF);
   - building footprints (GeoJSON);
   - lakes or other level boundaries (GeoJSON);
-  - a SWMM5 model with its results (`.inp` and `.out`).
+  - land cover, such as NLCD (GeoTIFF of class codes), for Manning n and imperviousness per cell;
+  - soils (GeoJSON with `hsg`, or a GeoTIFF of groups 1–4) for Green-Ampt per cell;
+  - a SWMM5 model (`.inp`), with its results (`.out`) for one-way coupling;
+  - inlets (GeoJSON points) for two-way coupling.
 - **Water sources:**
   - SWMM node flooding, added at each node;
   - rain on the grid, from a SWMM rain gauge or uniform;
@@ -15,9 +18,11 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
 - **Results:**
   - animated depth map over a hillshade or basemap;
   - 3D view with buildings and water;
-  - charts of flooded area, SWMM inflows, boundary levels and the depth at any point;
+  - maximum velocity and maximum depth × velocity maps;
+  - charts of flooded area, SWMM exchange, boundary levels and the depth at any point;
   - water-balance table;
-  - exports: GeoTIFF of maximum depth, maximum water level and time to maximum; buildings CSV; SWMM inflows CSV.
+  - exports: a 5-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity), buildings CSV and SWMM exchange CSV;
+  - save a run to a `.fsim.gz` file and open it later without the inputs.
 
 ![screenshot](docs/screenshot.png)
 
@@ -46,7 +51,7 @@ Use `--zfactor 3.2808333333 --zunits ft` to convert meter elevations to US surve
 |---|---|---|
 | What runs SWMM | You, beforehand. The app reads your `.out`. | The app: EPA SWMM 5.2.4 compiled to WebAssembly, run in step with the 2D. Results are identical to the native engine. |
 | Into the 2D | Node flooding (cfs) at each node's location | Node overflow every coupling interval |
-| Back into SWMM | Nothing | Surface water through inlets: weir flow while the node is below its rim, orifice flow when it is surcharged, capped at half the water standing in the cell |
+| Back into SWMM | Nothing | Surface water through inlets: weir flow while the node is below its rim, orifice flow when it is surcharged, capped at half the water standing in the cell. Inlets come from an inlets file (each at its own cell, with its own size), or default to one at each manhole. |
 | Level boundaries | Storage or outfall head from the `.out` | Live storage or outfall head |
 | Outputs | Results in the app | Also the coupled SWMM report (`.rpt`) and results (`.out`) |
 
@@ -58,7 +63,7 @@ Notes:
 - **Two-way settings:**
   - the coupling is explicit, with a default interval of 30 s; the 2D sees SWMM's response one interval later;
   - `ALLOW_PONDING` is forced to `NO` in the in-memory copy so that overflow reaches the surface, and the app says so;
-  - inlet weir length, weir coefficient, orifice area and orifice coefficient apply to every coupled junction.
+  - in the inlets file, each point names its junction (`node`) and can set `weir_length_ft`, `orifice_area_sqft`, `cw`, `co` and `rim_ft`. The defaults in the app apply to anything not given.
 - **Double counting:** rain on the grid together with SWMM counts runoff twice where the grid overlaps SWMM subcatchments. The app warns about this.
 
 The WebAssembly build of SWMM is `vendor/swmm-wasm/swmm5.js`. It was built from the EPA source (public domain), tag v5.2.4, with Emscripten 3.1.64; see `tools/build_swmm_wasm.sh`.
@@ -72,7 +77,7 @@ The WebAssembly build of SWMM is `vendor/swmm-wasm/swmm5.js`. It was built from 
 | `src/core/model.js` | DEM to grid, buildings to walls, boundary polygons, one-way SWMM coupling, GeoTIFF writer |
 | `src/app/` | Page, worker, 3D view, help |
 | `tools/build.py` | Builds `dist/FloodSimulator.html` with every library inlined |
-| `python/` | `prep_dem.py` (DEM and buildings prep), `make_synthetic.py`, `make_public_demo.py` |
+| `python/` | `prep_dem.py` (DEM and buildings prep), `make_synthetic.py`, `make_public_demo.py`, `make_landcover_example.py`, `make_inlets_example.py` |
 | `examples/` | Synthetic street sewer (US and SI units) and a public-data demo |
 | `tests/` | Node tests (engine, SWMM readers, model builder), Python reference generators, browser tests |
 
@@ -86,6 +91,8 @@ node tests/node/test_sources.js
 node tests/node/test_swmm.js
 node tests/node/test_model.js
 node tests/node/test_couple2way.js
+node tests/node/test_velocity.js
+node tests/node/test_landcover.js
 python tools/build.py && python tests/browser/test_app.py
 ```
 

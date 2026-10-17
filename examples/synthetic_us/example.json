@@ -7,5 +7,8 @@
  "boundaries": "pond.geojson",
  "inp": "model.inp",
  "out": "model.out",
- "note": "Invented place and model for testing. Georeferenced in a real CRS so the files are valid; turn the basemap off."
+ "note": "Invented place and model for testing. Georeferenced in a real CRS so the files are valid; turn the basemap off.",
+ "landcover": "landcover.tif",
+ "soils": "soils.geojson",
+ "inlets": "inlets.geojson"
 }

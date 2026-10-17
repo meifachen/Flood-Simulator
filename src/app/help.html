@@ -5,10 +5,13 @@
 <li><b>Ground (DEM)</b>: a single-band GeoTIFF in a projected coordinate system (feet or meters), north up. Clip and resample large lidar rasters first with <code>python/prep_dem.py</code>; the page accepts up to 40 million DEM cells and builds a grid of up to 8 million cells. If the file has no EPSG code, type it in.</li>
 <li><b>Buildings</b>: GeoJSON polygons. Cells whose centre falls inside a footprint become walls. Rain on a roof runs to the nearest ground cell. Longitude/latitude files are reprojected to the DEM's coordinate system.</li>
 <li><b>Level boundaries</b>: GeoJSON polygons for lakes, ponds or tidal water. Their level comes either from a SWMM storage or outfall node's head in the .out file, or from a fixed level you type (ft). A <code>node</code> or <code>level_ft</code> property fills this in automatically.</li>
+<li><b>Land cover</b>: a GeoTIFF of class codes (for example NLCD). Each cell takes the class at its centre. The Grid section lists the classes found, with editable Manning n and impervious %. NLCD starting values: n from Kalyanapu et al. (2009); impervious % from the midpoints of the NLCD developed classes. Check them for your site.</li>
+<li><b>Soils</b>: GeoJSON polygons with an <code>hsg</code> property (A–D; a dual group such as B/D uses D), or a GeoTIFF of groups 1–4. Green-Ampt Ks, suction and initial moisture deficit by group are editable; starting values are the Rawls et al. (1983) texture values in the SWMM Reference Manual.</li>
+<li><b>Inlets</b> (two-way coupling): GeoJSON points with a <code>node</code> property naming the junction each inlet drains to, and optionally <code>weir_length_ft</code>, <code>orifice_area_sqft</code>, <code>cw</code>, <code>co</code> and <code>rim_ft</code>. Each inlet takes water from the cell it sits in.</li>
 <li><b>SWMM5 .inp and .out</b>: node coordinates must be in the DEM's coordinate system. Each node that floods in the .out file adds its flooding rate (cfs) to the ground cell at that node. A node on a building is moved to the nearest open cell within 30 ft.</li>
 </ul>
 <h3>2. Grid and surface</h3>
-<p>The cell size is a whole multiple of the DEM resolution; ground levels are block averages. Roughness and Green-Ampt infiltration are uniform: each cell is part impervious (no infiltration) and part pervious.</p>
+<p>The cell size is a whole multiple of the DEM resolution; ground levels are block averages. Each cell is part impervious (no infiltration) and part pervious. Roughness and imperviousness come from the land cover, and Green-Ampt values from the soils, where those are loaded; the global values apply elsewhere. Loading a new DEM clears the other layers, so nothing from an earlier site is used by mistake.</p>
 <h3>3. Water sources</h3>
 <p><b>SWMM node flooding</b> is the usual choice for a SWMM study: SWMM routes the subcatchment runoff through the pipes, and the water that leaves the system at surcharged nodes spreads on the ground. <b>Rain on the grid</b> adds rain to every cell; together with SWMM flooding it counts runoff twice wherever the grid overlaps SWMM subcatchments. Times are hours from the SWMM start date and time.</p>
 <p><b>SWMM coupling</b>:</p>
@@ -18,19 +21,20 @@
 <ul>
 <li>overflow at a node spreads on the ground;</li>
 <li>water standing over a junction goes back in through its inlet, by a weir equation while the node is below its rim and an orifice equation when it is surcharged;</li>
-<li>the inlet size applies to every coupled junction;</li>
+<li>each inlet in the inlets file takes water from its own cell; junctions without a listed inlet get the default inlet at the manhole, or none, as you choose;</li>
 <li><code>ALLOW_PONDING</code> is set to NO in the copy SWMM runs;</li>
 <li>the SWMM report and results of the coupled run can be downloaded after the run.</li>
 </ul></li>
 </ul>
 <h3>4. Run and results</h3>
-<p>The engine uses the GPU (WebGPU) when the browser offers it, and the CPU otherwise. Stop ends a run and keeps the maps computed so far. The map and 3D views show the depth at the selected time or the maximum over the run. Click the map to see the ground level and the depth over time at a point. Exports: a three-band GeoTIFF (maximum depth, maximum water level, time of the maximum) in the DEM's coordinate system; building maxima (CSV); and the SWMM inflows used (CSV).</p>
+<p>The engine uses the GPU (WebGPU) when the browser offers it, and the CPU otherwise. Stop ends a run and keeps the maps computed so far. The map and 3D views show the depth at the selected time or the maximum over the run. Two more views show the maximum velocity and the maximum depth × velocity. They are recorded where the water is deeper than 0.05 ft, and their color classes are for display, not a hazard standard. Click the map to see the ground level, the depth over time and the velocity maxima at a point.</p>
+<p>Exports: a five-band GeoTIFF in the DEM's coordinate system (maximum depth, maximum water level, time of the maximum, maximum velocity, maximum depth × velocity), building maxima (CSV) and the SWMM exchange (CSV). <b>Save results</b> writes a .fsim.gz file with every map; <b>Open saved results</b> shows it again, with the same maps, charts and exports, without the input files.</p>
 <h3>Method</h3>
 <p>Local-inertial shallow-water equations on a square grid (Bates et al. 2010; de Almeida et al. 2012, θ = 0.8). Friction is semi-implicit (Manning). Flow per unit width is capped at the critical (Froude 1) value, and an outflow limiter keeps depths non-negative. The time step follows the Courant condition. Green-Ampt infiltration uses the SWMM integrated form with ponded depth in the suction term. Open grid edges let water leave at normal depth. A water balance is kept at every map, and its closure is shown.</p>
 <h3>Limits</h3>
 <ul>
-<li>Two-way coupling is explicit (one coupling interval of lag); inlet parameters are the same at every junction.</li>
-<li>Uniform roughness and soils.</li>
+<li>Two-way coupling is explicit (one coupling interval of lag).</li>
+<li>Cell velocity is the mean of the two face flows in each direction divided by the depth; it is a cell-average value.</li>
 <li>Building heights in 3D are assumed from footprint area unless the file has a <code>height</code> property.</li>
 <li>Coordinates are converted with proj4 without datum grid shifts, so the basemap can be off by a meter or so; the model itself is unaffected.</li>
 </ul>

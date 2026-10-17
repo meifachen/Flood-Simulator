@@ -3,6 +3,7 @@
  */
 "use strict";
 const Model = self.FloodModel;
+let LCR = null, SOIL = null, INLETS = null;   // INLETS: [{x, y, node, lw, area, cw, co, rimFt}] in the DEM CRS   // land cover raster; soils: {kind: "raster", R} or {kind: "polygons", feats}
 let CAT = null, DEM = null, SRC = {}, MODEL = null, INP = null, OUT = null, B = null, BLD = [], BOUND = [], STOP = false;
 const post = (m, tr) => self.postMessage(m, tr || []);
 
@@ -46,6 +47,33 @@ async function load(a) {
   res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, zmin, zmax, valid: DEM.valid };
   if ("buildings" in a) { BLD = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); BLD = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: BLD.length, note: r.note, feats: BLD }; } else res.buildings = { count: 0 }; }
   if ("boundaries" in a) { BOUND = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); BOUND = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: BOUND.length, note: r.note, props: BOUND.map((f) => f.properties || {}), feats: BOUND }; } else res.boundaries = { count: 0 }; }
+  if ("landcover" in a) {
+    LCR = a.landcover ? await Model.readRaster(a.landcover, GeoTIFF, CAT, "Land cover") : null;
+    if (LCR) { const cnt = {}; let nd = 0; for (const v of LCR.data) { if (v === v) cnt[v] = (cnt[v] || 0) + 1; else nd++; } const codes = Object.keys(cnt);
+      if (codes.length > 64) throw new Error(`Land cover has ${codes.length} distinct values; it should be a class map (for example NLCD codes)`);
+      res.landcover = { nx: LCR.nx, ny: LCR.ny, res: LCR.rx, epsg: LCR.epsg, crsName: LCR.crsName, classes: codes.map(Number).sort((x, y) => x - y), counts: cnt, sameCrs: !LCR.proj4 || LCR.epsg === DEM.epsg }; }
+    else res.landcover = null;
+  }
+  if ("soils" in a) {
+    SOIL = null; res.soils = null;
+    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); SOIL = { kind: "polygons", feats: r.feats }; const g = {}; let dual = 0; for (const f of r.feats) { const p = f.properties || {}, v = p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd, c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
+    else if (a.soils) { const R = await Model.readRaster(a.soils, GeoTIFF, CAT, "Soils"); SOIL = { kind: "raster", R }; res.soils = { kind: "raster", nx: R.nx, ny: R.ny, epsg: R.epsg }; }
+  }
+  if ("inlets" in a) {
+    INLETS = null; res.inlets = null;
+    if (a.inlets) {
+      const gj = parseJson(a.inlets, "Inlets"), c = geojsonCrs(gj); let fwd = null;
+      if (c !== "same" && c !== DEM.epsg) { if (!DEM.proj4) throw new Error("Inlets need reprojecting but the DEM's CRS is unknown"); const from = c === "lonlat" ? "EPSG:4326" : (Model.lookupCrs(CAT, c) || {}).proj4; if (!from) throw new Error(`Inlets: EPSG ${c} is not in the projection list`); fwd = proj4(from, DEM.proj4); }
+      const num = (v) => (v === undefined || v === null || v === "" ? undefined : Number(v)); const bad = [];
+      INLETS = (gj.features || []).filter((f) => f.geometry && f.geometry.type === "Point").map((f, i) => {
+        const p = f.properties || {}, xy = fwd ? fwd.forward(f.geometry.coordinates.slice(0, 2)) : f.geometry.coordinates;
+        if (!p.node) bad.push(i + 1);
+        return { x: xy[0], y: xy[1], node: p.node ? String(p.node) : "", lw: num(p.weir_length_ft), area: num(p.orifice_area_sqft), cw: num(p.cw), co: num(p.co), rimFt: num(p.rim_ft) };
+      });
+      if (bad.length) throw new Error(`Inlets ${bad.slice(0, 5).join(", ")} have no "node" property (the SWMM junction they drain to)`);
+      res.inlets = { count: INLETS.length, nodes: [...new Set(INLETS.map((i) => i.node))], pts: INLETS.map((i) => [i.x, i.y, i.node]), reprojected: !!fwd };
+    }
+  }
   if ("inp" in a) { MODEL = a.inp ? SWMM.parseInp(a.inp) : null; INP = a.inp || null; }
   if ("out" in a) { OUT = a.out ? SWMM.readOut(a.out) : null; }
   if (MODEL) {
@@ -71,9 +99,18 @@ async function load(a) {
 function build(o) {
   if (!DEM) throw new Error("Load a DEM first");
   const bspec = (o.boundaries || []).map((b) => ({ key: b.key, feature: BOUND[b.index] }));
-  B = Model.buildGrid(DEM, { cellSize: o.cellSize, hUnitFt: DEM.hUnitFt || o.hUnitFt, vUnitFt: o.vUnitFt, buildings: o.useBuildings ? BLD : [], boundaries: bspec,
-    imperv: o.imperv, nImp: o.nImp, nPerv: o.nPerv, ksInHr: o.ksInHr, suctionIn: o.suctionIn, imd: o.imd, roofToGround: o.roofToGround });
-  if (o.closedEdges) { const { nx, ny } = B.G; for (let k = 0; k < B.g.N; k++) { const r = (k / nx) | 0, c = k % nx; if (r === 0 || c === 0 || r === ny - 1 || c === nx - 1) { if (B.type[k] !== 1) { B.type[k] = 1; B.g.aux[4 * k + 2] = (B.g.aux[4 * k + 2] & ~3) | 1; } } } }
+  // land cover and soils sampled at the cell centres (reprojected when their CRS differs from the DEM's)
+  const G0 = { x0: DEM.x0, y1: DEM.y1, cs: o.cellSize, nx: Math.floor(DEM.nx / Math.round(o.cellSize / DEM.res)), ny: Math.floor(DEM.ny / Math.round(o.cellSize / DEM.res)) };
+  const projTo = (R) => { if (!R.proj4 || !DEM.proj4 || R.epsg === DEM.epsg) return null; const P = proj4(DEM.proj4, R.proj4); return (xy) => P.forward(xy); };
+  const extra = [];
+  let lcClass = null, hsg = null;
+  if (LCR && o.useLandcover !== false) { if (!LCR.proj4 && LCR.epsg !== DEM.epsg) extra.push("Land cover has no known CRS; it is taken to be in the DEM's CRS"); lcClass = Model.sampleRaster(LCR, G0, projTo(LCR)); }
+  if (SOIL && o.useSoils !== false) {
+    if (SOIL.kind === "polygons") { const r = Model.rasterizeHsg(SOIL.feats, G0); hsg = r.hsg; if (r.unknown) extra.push(`${r.unknown} soil polygons have no recognizable hydrologic soil group and are ignored`); }
+    else { const v = Model.sampleRaster(SOIL.R, G0, projTo(SOIL.R)); hsg = new Uint8Array(v.length); for (let k = 0; k < v.length; k++) hsg[k] = v[k] >= 1 && v[k] <= 4 ? Math.round(v[k]) : 0; }
+  }
+  B = Model.buildGrid(DEM, { lcClass, lcTable: o.lcTable, hsg, soilTable: o.soilTable, cellSize: o.cellSize, hUnitFt: DEM.hUnitFt || o.hUnitFt, vUnitFt: o.vUnitFt, buildings: o.useBuildings ? BLD : [], boundaries: bspec,
+    imperv: o.imperv, nImp: o.nImp, nPerv: o.nPerv, ksInHr: o.ksInHr, suctionIn: o.suctionIn, imd: o.imd, roofToGround: o.roofToGround, closedEdges: o.closedEdges });
   // cells beside each building (open cells next to its wall cells) for the "buildings reached" count
   const nb = B.g.bldStart.length - 1, nx = B.G.nx, ny = B.G.ny, ring = [], start = new Int32Array(nb + 1);
   for (let i = 0; i < nb; i++) {
@@ -83,7 +120,7 @@ function build(o) {
   }
   start[nb] = ring.length; B.ring = Int32Array.from(ring); B.ringStart = start;
   const z = B.z.slice(), type = B.type.slice();
-  return { __transfer: [z.buffer, type.buffer], res: { G: B.G, z, type, info: B.info, warnings: B.warnings } };
+  return { __transfer: [z.buffer, type.buffer], res: { G: B.G, z, type, info: B.info, warnings: extra.concat(B.warnings) } };
 }
 
 // depth quantization for frames: q = round(255 * sqrt(h / 25)); fine near 0 (0.0004 ft), 0.08 ft at 5 ft
@@ -99,7 +136,7 @@ async function run(o, id) {
     if (!MODEL || !INP) throw new Error("Two-way coupling needs the SWMM .inp");
     if (o.t0 > (MODEL.end && MODEL.start ? (MODEL.end - MODEL.start) / 3600000 : Infinity)) throw new Error("The start is after the end of the SWMM run");
     post({ id, progress: { phase: "note", text: "Starting SWMM 5.2.4 (WebAssembly) for two-way coupling" } });
-    two = await Couple2.makeCoupler(B, createSWMM, INP, MODEL, { cw: o.cw, lw: o.lw, co: o.co, area: o.inletArea, searchFt: o.searchFt ?? 30 });
+    two = await Couple2.makeCoupler(B, createSWMM, INP, MODEL, { cw: o.cw, lw: o.lw, co: o.co, area: o.inletArea, searchFt: o.searchFt ?? 30, inlets: INLETS || [], defaultInlets: o.defaultInlets !== false });
     cpl.sources = two.sources; cpl.sourceAt = two.sourceAt; cpl.warnings = two.warnings; cpl.nodeMap = two.nodeMap;
     for (const b of bspec) if (!b.node && !Number.isFinite(b.level)) throw new Error(`Level boundary ${b.key} needs a level or a SWMM node`);
     cpl.stageAt = () => bspec.map((b) => (b.node ? two.headFt(b.node) : b.level));
@@ -115,7 +152,7 @@ async function run(o, id) {
   if (o.rainSource === "gauge") { const r = cpl.rain; rainStep = r.stepSec; rainAt = (i) => (i >= 0 && i < r.values.length ? r.values[i] : 0); }
   else if (o.rainSource === "uniform") { const ih = o.rainInHr, dur = o.rainHours; if (!(ih >= 0) || !(dur > 0)) throw new Error("Uniform rain needs an intensity and a duration"); rainStep = 300; rainAt = (i) => (i * 300 < dur * 3600 ? ih : 0); }
   const sources = cpl.sources;
-  const fr0 = { sources: sources.map((s) => ({ name: s.name, cell: s.cell })), warnings: cpl.warnings || [], nodeMap: cpl.nodeMap || [] };
+  const fr0 = { sources: (two ? two.nodes : sources).map((s) => ({ name: s.name, cell: s.cell })), warnings: cpl.warnings || [], nodeMap: cpl.nodeMap || [] };
   post({ id, progress: { phase: "start", ...fr0 } });
   let solver;
   const want = o.engine || "auto";
@@ -152,11 +189,13 @@ async function run(o, id) {
   let swmm2 = null;
   if (two) {   // finish SWMM to the end of its run so that its report and output are complete
     two.engine.advance(1e12, []); const fin = two.finish();
-    swmm2 = { tally: two.tally, massBalance: fin.massBalance, rpt: fin.rpt, out: fin.out ? fin.out.buffer : null, nodeMap: two.nodeMap, notes: two.engine.notes };
+    swmm2 = { tally: two.tally, massBalance: fin.massBalance, rpt: fin.rpt, out: fin.out ? fin.out.buffer : null, nodeMap: two.nodeMap, notes: two.engine.notes, inlets: two.inlets };
   }
   for (let k = 0; k < N; k++) if (!(hmax[k] > 0)) tmax[k] = NaN;
   const bReached = bMax.reduce((s, v) => s + (v > bthr ? 1 : 0), 0);
-  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer], res: { hmax, tmax, bMax, bReached, ledger: r.ledger, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
+  const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N);
+  for (let k = 0; k < N; k++) if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; }
+  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, ledger: r.ledger, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }
 
 self.onmessage = async (e) => {

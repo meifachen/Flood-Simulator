@@ -68,6 +68,12 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
     const r = await F.simulate(b.g, new F.CpuSolver(b.g), { t0: 0.5, t1: 0.75, rainAt: () => 0, stageAt: c.stageAt, sources: c.sources, sourceAt: c.sourceAt, readSec: 900 });
     const L = r.ledger; ok("coupled CPU run closes the water balance", Math.abs(L.err) / L.inflow < 1e-4 && L.inflow > 1000, `inflow ${L.inflow.toFixed(0)} cf, to boundary ${L.toLakes.toFixed(0)} cf, edges ${L.edge.toFixed(0)} cf, closure ${L.err.toFixed(2)} cf`);
   }
+  // closed edges with rain: the rain ledger counts only cells that receive rain, so the balance closes
+  {
+    const { dem } = B.synthetic_us, b = M.buildGrid(dem, { cellSize: 12, hUnitFt: dem.hUnitFt, vUnitFt: 1, closedEdges: true, imperv: 1 });
+    const r = await F.simulate(b.g, new F.CpuSolver(b.g), { t0: 0, t1: 0.5, rainAt: () => 3, stageAt: () => [], readSec: 1800 });
+    ok("closed edges with rain: water balance closes and nothing leaves at the edges", Math.abs(r.ledger.err) / r.ledger.rain < 1e-5 && r.ledger.edge === 0, `closure ${r.ledger.err.toFixed(2)} cf of ${r.ledger.rain.toFixed(0)} cf rain; edge ${r.ledger.edge}`);
+  }
   // GeoTIFF out: read back with geotiff.js
   {
     const { b } = B.synthetic_us; const zt = Float32Array.from(b.z, (v, k) => (b.noData[k] ? NaN : v));

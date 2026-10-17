@@ -9,7 +9,7 @@ import argparse, base64, gzip, hashlib, json, os, sys, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 SRC, VEN, EXA = ROOT / "src", ROOT / "vendor", ROOT / "examples"
 EXAMPLES = [("synthetic_us", "none"), ("public_demo", "osm"), ("synthetic_si", "none")]
 
@@ -29,14 +29,14 @@ def main(a):
     libs = "\n;\n".join(r(VEN / f) for f in ["leaflet/leaflet.js", "three/three.min.js", "three/OrbitControls.js", "plotly/plotly-basic.min.js", "proj4/proj4.js",
                                               ]) + "\n;\n" + "\n;\n".join(r(SRC / f) for f in ["engine/flood2d.js", "core/model.js"])
     worker = "\n;\n".join(r(p) for p in [VEN / "geotiff/geotiff.js", VEN / "proj4/proj4.js", SRC / "engine/flood2d.js", SRC / "io/swmm.js", SRC / "core/model.js", VEN / "swmm-wasm/swmm5.js", SRC / "core/couple2way.js", SRC / "app/worker.js"])
-    app = r(SRC / "app/view3d.js") + "\n;\n" + r(SRC / "app/app.js")
+    app = r(SRC / "app/results_io.js") + "\n;\n" + r(SRC / "app/view3d.js") + "\n;\n" + r(SRC / "app/app.js")
     cat = (VEN / "crs_catalog.json").read_bytes(); used.append(VEN / "crs_catalog.json")
     exs = []
     if not a.no_examples:
         for d, bm in EXAMPLES:
             meta = json.loads(read(EXA / d / "example.json")); used.append(EXA / d / "example.json")
             files = {}
-            for k in ("dem", "buildings", "boundaries", "inp", "out"):
+            for k in ("dem", "buildings", "boundaries", "landcover", "soils", "inp", "out", "inlets"):
                 if meta.get(k):
                     p = EXA / d / meta[k]; used.append(p); files[k] = b64gz(p.read_bytes())
             exs.append({"name": meta["name"], "note": meta.get("note", ""), "basemap": bm, "files": files})

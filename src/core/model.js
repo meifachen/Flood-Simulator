@@ -37,6 +37,50 @@
       bounds: [ox, oy - ny * Math.abs(ry), ox + nx * Math.abs(rx), oy] };
   }
 
+  /* any single-band GeoTIFF (land cover, soils): {nx, ny, x0, y1, rx, ry, data (Float32, NaN = NoData), epsg, proj4} */
+  async function readRaster(arrayBuffer, GeoTIFF, catalog, what) {
+    const tiff = await GeoTIFF.fromArrayBuffer(arrayBuffer), img = await tiff.getImage();
+    const nx = img.getWidth(), ny = img.getHeight(); if (nx * ny > 60e6) throw new Error(`${what} has ${nx} x ${ny} cells; clip it first`);
+    const [rx, ry] = img.getResolution(), [ox, oy] = img.getOrigin();
+    if (img.getFileDirectory().ModelTransformation) throw new Error(`${what}: rotated GeoTIFFs are not supported`);
+    const ras = await img.readRasters({ interleave: true, samples: [0] }), nd = img.getGDALNoData(), data = new Float32Array(nx * ny);
+    for (let i = 0; i < data.length; i++) { const v = ras[i]; data[i] = !Number.isFinite(v) || (nd !== null && v === nd) ? NaN : v; }
+    const gk = img.getGeoKeys() || {}; let epsg = gk.ProjectedCSTypeGeoKey && gk.ProjectedCSTypeGeoKey !== 32767 ? gk.ProjectedCSTypeGeoKey : null;
+    if (!epsg && gk.GeographicTypeGeoKey === 4326) epsg = 4326;
+    const c = epsg === 4326 ? { proj4: "+proj=longlat +datum=WGS84 +no_defs", name: "WGS 84" } : epsg ? lookupCrs(catalog, epsg) : null;
+    return { nx, ny, x0: ox, y1: oy, rx: Math.abs(rx), ry: Math.abs(ry), data, epsg, proj4: c ? c.proj4 : null, crsName: c ? c.name : null };
+  }
+  /* value of raster R at each grid cell centre (NaN outside or NoData); proj: function [x, y] in the grid CRS -> raster CRS, or null when the CRS is the same */
+  function sampleRaster(R, G, proj) {
+    const N = G.nx * G.ny, out = new Float32Array(N).fill(NaN);
+    for (let r = 0; r < G.ny; r++) for (let c = 0; c < G.nx; c++) {
+      let x = G.x0 + (c + 0.5) * G.cs, y = G.y1 - (r + 0.5) * G.cs;
+      if (proj) { const p = proj([x, y]); x = p[0]; y = p[1]; }
+      const i = Math.floor((x - R.x0) / R.rx), j = Math.floor((R.y1 - y) / R.ry);
+      if (i >= 0 && j >= 0 && i < R.nx && j < R.ny) out[r * G.nx + c] = R.data[j * R.nx + i];
+    }
+    return out;
+  }
+  /* hydrologic soil group code: "A".."D" or 1..4; a dual group ("B/D") takes the undrained group (D) */
+  function hsgCode(v) {
+    if (v === null || v === undefined) return 0; if (typeof v === "number") return v >= 1 && v <= 4 ? Math.round(v) : 0;
+    const s = String(v).trim().toUpperCase(); const last = s.split("/").pop(); const i = "ABCD".indexOf(last); return i >= 0 && last.length === 1 ? i + 1 : 0;
+  }
+  function rasterizeHsg(features, G) {
+    const out = new Uint8Array(G.nx * G.ny); let unknown = 0;
+    for (const f of features) { const p = f.properties || {}, code = hsgCode(p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd); if (!code) { unknown++; continue; } fillRings(featureRings(f), G, (k) => { out[k] = code; }); }
+    return { hsg: out, unknown };
+  }
+  /* Manning n for NLCD classes (Kalyanapu et al. 2009); impervious % from the NLCD developed-class ranges (midpoints) */
+  const NLCD = {
+    11: ["Open water", 0.040, 100], 21: ["Developed, open space", 0.0404, 10], 22: ["Developed, low intensity", 0.0678, 35], 23: ["Developed, medium intensity", 0.0678, 65],
+    24: ["Developed, high intensity", 0.0404, 90], 31: ["Barren land", 0.0113, 0], 41: ["Deciduous forest", 0.36, 0], 42: ["Evergreen forest", 0.32, 0], 43: ["Mixed forest", 0.40, 0],
+    52: ["Shrub/scrub", 0.40, 0], 71: ["Grassland/herbaceous", 0.368, 0], 81: ["Pasture/hay", 0.325, 0], 82: ["Cultivated crops", 0.037, 0], 90: ["Woody wetlands", 0.086, 0], 95: ["Emergent herbaceous wetlands", 0.1825, 0] };
+  /* Green-Ampt by hydrologic soil group, from the Rawls et al. (1983) texture values in the SWMM Reference Manual:
+   * A loamy sand, B silt loam, C sandy clay loam, D clay loam; IMD 0.3 (editable) */
+  const HSG = { 1: { name: "A", texture: "loamy sand", ks: 1.18, suction: 2.40, imd: 0.3 }, 2: { name: "B", texture: "silt loam", ks: 0.26, suction: 6.69, imd: 0.3 },
+    3: { name: "C", texture: "sandy clay loam", ks: 0.06, suction: 8.66, imd: 0.3 }, 4: { name: "D", texture: "clay loam", ks: 0.04, suction: 8.27, imd: 0.3 } };
+
   // ------------------------------------------------------------------ polygons
   /* rings of a GeoJSON Polygon/MultiPolygon feature */
   function featureRings(f) {
@@ -84,6 +128,8 @@
       if (m * 2 < f * f) { type[k] = 1; z[k] = 0; noData[k] = 1; nodata++; } else z[k] = s / m * o.vUnitFt;
     }
     if (nodata) warnings.push(`${nodata} cells have no ground data and act as walls`);
+    // closed grid edges: the outer ring becomes wall, with no rain on it (like cells without ground data)
+    if (o.closedEdges) for (let k = 0; k < N; k++) { const r = (k / nx) | 0, c = k % nx; if ((r === 0 || c === 0 || r === ny - 1 || c === nx - 1) && type[k] !== 1) { type[k] = 1; noData[k] = 1; } }
     // buildings -> walls (cell centre inside the footprint)
     let bCells = 0; const bld = o.buildings || [];
     const bStart = new Int32Array(bld.length + 1), bList = [];
@@ -100,6 +146,26 @@
     const imp = o.imperv ?? 0.4, ks = (o.ksInHr ?? 0.5) / 12 / 3600, psi = (o.suctionIn ?? 4) / 12, imd = o.imd ?? 0.3;
     const n = new Float32Array(N).fill(imp * (o.nImp ?? 0.015) + (1 - imp) * (o.nPerv ?? 0.1)), perv = new Float32Array(N).fill(1 - imp),
       ksA = new Float32Array(N).fill(ks), psimd = new Float32Array(N).fill(psi * imd), imdA = new Float32Array(N).fill(imd), mult = new Float32Array(N).fill(1);
+    // land cover: per-cell Manning n and impervious fraction from the class table; classes not in the table keep the global values
+    const lcInfo = { cells: 0, missing: {} };
+    if (o.lcClass) {
+      for (let k = 0; k < N; k++) {
+        const c = o.lcClass[k]; if (!(c === c)) continue; const e = o.lcTable && o.lcTable[c];
+        if (!e) { lcInfo.missing[c] = (lcInfo.missing[c] || 0) + 1; continue; }
+        if (!(e.n > 0) || !(e.imp >= 0 && e.imp <= 100)) throw new Error(`Land cover class ${c}: Manning n ${e.n} or impervious ${e.imp}% is not valid`);
+        n[k] = e.n; perv[k] = 1 - e.imp / 100; lcInfo.cells++;
+      }
+      const miss = Object.keys(lcInfo.missing); if (miss.length) warnings.push(`Land cover classes ${miss.join(", ")} are not in the table; those cells use the global roughness and imperviousness`);
+    }
+    // soils: per-cell Green-Ampt parameters from the hydrologic soil group (1-4 = A-D)
+    const soilInfo = { cells: 0 };
+    if (o.hsg) {
+      for (let k = 0; k < N; k++) {
+        const gI = o.hsg[k]; if (!gI) continue; const e = o.soilTable && o.soilTable[gI]; if (!e) continue;
+        if (!(e.ks >= 0) || !(e.suction >= 0) || !(e.imd >= 0 && e.imd <= 1)) throw new Error(`Soil group ${"ABCD"[gI - 1]}: Green-Ampt values are not valid`);
+        ksA[k] = e.ks / 12 / 3600; psimd[k] = e.suction / 12 * e.imd; imdA[k] = e.imd; soilInfo.cells++;
+      }
+    }
     // rain on roofs: to the nearest open cell (multi-source BFS from open cells), or lost
     if (o.roofToGround !== false) {
       const near = new Int32Array(N).fill(-1), q = new Int32Array(N); let qh = 0, qt = 0;
@@ -110,7 +176,7 @@
     const g = F2D.makeGrid({ nx, ny, dx: G.dxFt, z, type, node, n, perv, ks: ksA, psimd, imd: imdA, mult, K: (o.boundaries || []).length });
     g.bldStart = bStart; g.bldCells = Int32Array.from(bList);
     let open = 0; for (let k = 0; k < N; k++) if (type[k] === 0) open++;
-    return { g, G, z, type, bnd, noData, info: { nx, ny, cells: N, open, wallCells: bCells, nodataCells: nodata, levelCells: lvlCells, factor: f, buildings: bld.length }, warnings };
+    return { g, G, z, type, bnd, noData, n, perv, ksA, info: { nx, ny, cells: N, open, wallCells: bCells, nodataCells: nodata, levelCells: lvlCells, factor: f, buildings: bld.length, landcoverCells: lcInfo.cells, soilCells: soilInfo.cells }, warnings };
   }
   function cellOf(G, x, y) { const c = Math.floor((x - G.x0) / G.cs), r = Math.floor((G.y1 - y) / G.cs); return (c >= 0 && r >= 0 && c < G.nx && r < G.ny) ? r * G.nx + c : -1; }
   /* nearest open cell within maxCells (Chebyshev rings), or -1 */
@@ -221,6 +287,6 @@
     return buf;
   }
 
-  const api = { proj4UnitFt, lookupCrs, readDEM, featureRings, fillRings, buildGrid, cellOf, nearestOpen, coupleSwmm, geoTiff };
+  const api = { readRaster, sampleRaster, hsgCode, rasterizeHsg, NLCD, HSG, proj4UnitFt, lookupCrs, readDEM, featureRings, fillRings, buildGrid, cellOf, nearestOpen, coupleSwmm, geoTiff };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FloodModel = api;
 })(typeof self !== "undefined" ? self : this);

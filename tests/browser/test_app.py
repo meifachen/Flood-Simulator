@@ -44,8 +44,12 @@ with sync_playwright() as p:
     ok("B2 SWMM inflow volume matches the node series over the window", abs(L["inflow"] - expect) / expect < 0.002, f"ledger {L['inflow']:.0f} cf, series {expect:.0f} cf")
     nfr = pg.evaluate("S.frames.length")
     ok("B2 one map every 10 minutes", nfr == 6, f"{nfr} maps")
+    info = pg.evaluate("S.grid.info")
+    ok("B14 land cover and soils set the surface of every cell", info["landcoverCells"] > 0.99 * info["cells"] and info["soilCells"] == info["cells"] and "41 Deciduous forest" in pg.inner_text("#lc-table") and "silt loam" in pg.inner_text("#soil-table"),
+       f"{info['landcoverCells']} land cover cells, {info['soilCells']} soil cells of {info['cells']}")
     cpu_hmax = np.array(pg.evaluate("Array.from(S.final.hmax)"))
     us_type = np.array(pg.evaluate("Array.from(S.grid.type)"))
+    cpu_vmax = np.array(pg.evaluate("Array.from(S.final.vmax)"))
 
     # ---- B3 map shows water, KPIs filled, clicking the map gives a point series
     pix = pg.evaluate("""new Promise(r=>{const im=new Image(); im.onload=()=>{const c=document.createElement('canvas'); c.width=im.width; c.height=im.height; const x=c.getContext('2d'); x.drawImage(im,0,0); const d=x.getImageData(0,0,c.width,c.height).data; let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>0) n++; r(n);}; im.src=MAP._layers2.depth._url;})""")
@@ -57,6 +61,12 @@ with sync_playwright() as p:
     pg.wait_for_timeout(500)
     ok("B3 map click picks a point and charts its depth", pg.evaluate("S.sel") == wettest and pg.evaluate("document.getElementById('c-pt').data[0].y.length") == nfr, pg.evaluate("S.sel"))
 
+    pg.select_option("#view", "vmax"); pg.wait_for_timeout(600)
+    ok("B3 velocity view: legend and KPI", "Maximum velocity (ft/s)" in pg.inner_text("#legend") and "Fastest flow" in pg.inner_text("#kpis"), pg.inner_text("#legend")[:80])
+    pg.select_option("#view", "dv"); pg.wait_for_timeout(600)
+    ok("B3 depth x velocity view: legend and KPI", "depth × velocity" in pg.inner_text("#legend") and "Highest depth × velocity" in pg.inner_text("#kpis"), "")
+    pg.select_option("#view", "now"); pg.wait_for_timeout(300)
+
     # ---- B4 exports
     with pg.expect_download() as d: pg.click("#x-tif")
     tif = os.path.join(TMP, d.value.suggested_filename); d.value.save_as(tif)
@@ -64,7 +74,10 @@ with sync_playwright() as p:
         a = ds.read(1); nod = ds.nodata; crs = ds.crs.to_epsg(); nb = ds.count; desc = ds.descriptions
     G = pg.evaluate("S.grid.G"); h_app = cpu_hmax.reshape(G["ny"], G["nx"])
     open_mask = np.array(pg.evaluate("Array.from(S.grid.type)")).reshape(G["ny"], G["nx"]) == 0
-    ok("B4 GeoTIFF: CRS, 3 bands, NoData, values equal the run", crs == 2236 and nb == 3 and nod == -9999 and np.allclose(a[open_mask], h_app[open_mask], atol=1e-6) and (a[~open_mask] == -9999).all(),
+    with rasterio.open(tif) as ds: v4 = ds.read(4); v5 = ds.read(5)
+    vapp = np.array(pg.evaluate("Array.from(S.final.vmax)")).reshape(G["ny"], G["nx"]); wetm = open_mask & (h_app > 0)
+    ok("B4 GeoTIFF velocity and depth x velocity bands equal the run", np.allclose(v4[wetm], vapp[wetm], atol=1e-6) and (v5[wetm] >= 0).all() and v4.max() > 0, f"max velocity {v4.max():.2f} ft/s, max D x V {v5.max():.2f} ft2/s")
+    ok("B4 GeoTIFF: CRS, 5 bands, NoData, values equal the run", crs == 2236 and nb == 5 and nod == -9999 and np.allclose(a[open_mask], h_app[open_mask], atol=1e-6) and (a[~open_mask] == -9999).all(),
        f"EPSG {crs}, {nb} bands {desc}, max {a.max():.3f} ft")
     with pg.expect_download() as d: pg.click("#x-csv")
     csvb = os.path.join(TMP, "b.csv"); d.value.save_as(csvb); rows = open(csvb).read().strip().splitlines()
@@ -72,6 +85,29 @@ with sync_playwright() as p:
     with pg.expect_download() as d: pg.click("#x-nodes")
     csvn = os.path.join(TMP, "n.csv"); d.value.save_as(csvn); rows = open(csvn).read().strip().splitlines()
     ok("B4 SWMM inflow CSV has a column per inflow node", len(rows[0].split(",")) == 2 + len(pg.evaluate("S.sources")) and len(rows) == nfr + 1, rows[0])
+
+    # ---- B16 save, reload the page, open: the same results without the inputs
+    kp0 = pg.inner_text("#kpis"); h0 = cpu_hmax
+    with pg.expect_download() as d: pg.click("#x-save")
+    resf = os.path.join(TMP, d.value.suggested_filename); d.value.save_as(resf)
+    pg.reload(); pg.wait_for_selector("#ex-load")
+    pg.set_input_files("#f-res", resf); pg.wait_for_function("/Opened|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    h1 = np.array(pg.evaluate("Array.from(S.final.hmax)")); kp1 = pg.inner_text("#kpis")
+    pg.select_option("#view", "now"); pg.evaluate(f"S.frame = S.frames.length - 1; paint()"); pg.wait_for_timeout(300)
+    ok("B16 reopened results equal the run (maxima, maps, KPIs) with no inputs loaded", "Opened" in pg.inner_text("#msg") and np.array_equal(h0, h1) and pg.evaluate("S.frames.length") == nfr and pg.is_disabled("#b-run"),
+       f"{pg.inner_text('#msg')[:70]}; {os.path.getsize(resf) / 1e6:.2f} MB")
+    with pg.expect_download() as d: pg.click("#x-tif")
+    tif2 = os.path.join(TMP, "re.tif"); d.value.save_as(tif2)
+    with rasterio.open(tif) as a1, rasterio.open(tif2) as a2: same_tif = np.array_equal(a1.read(), a2.read()) and a1.transform == a2.transform and a1.crs == a2.crs
+    ok("B16 GeoTIFF from the reopened results is identical", same_tif)
+    import gzip as _gz
+    raw = _gz.decompress(open(resf, "rb").read())
+    for label, data in [("truncated", _gz.compress(raw[: len(raw) // 2])), ("not gzip or results", b"hello world"), ("future version", _gz.compress(raw.replace(b'"version":1', b'"version":9', 1)))]:
+        bp = os.path.join(TMP, "bad.fsim.gz"); open(bp, "wb").write(data)
+        pg.set_input_files("#f-res", bp); pg.wait_for_function("/Opened|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+        ok(f"B16 refuses a {label} file", "Could not open" in pg.inner_text("#msg"), pg.inner_text("#msg"))
+    pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
+    settings(pg); pg.click("#b-run"); wait_done(pg)
 
     # ---- B5 3D view renders water
     pg.click("#t-3d"); pg.wait_for_timeout(3000)
@@ -84,6 +120,8 @@ with sync_playwright() as p:
         settings(pg, engine="gpu"); pg.click("#b-run"); msg = wait_done(pg)
         gpu_hmax = np.array(pg.evaluate("Array.from(S.final.hmax)"))
         ok("B6 GPU run matches the CPU (max depth within 0.005 ft)", "on the GPU" in msg and np.abs(gpu_hmax - cpu_hmax).max() < 5e-3, f"{msg[:80]}; max diff {np.abs(gpu_hmax - cpu_hmax).max():.2e} ft")
+        gpu_vmax = np.array(pg.evaluate("Array.from(S.final.vmax)"))
+        ok("B6 GPU velocity maxima match the CPU (within 0.01 ft/s)", np.abs(gpu_vmax - cpu_vmax).max() < 1e-2 and gpu_vmax.max() > 0, f"max diff {np.abs(gpu_vmax - cpu_vmax).max():.2e} ft/s; fastest {gpu_vmax.max():.2f} ft/s")
     else:
         ok("B6 GPU run (skipped: no WebGPU in this browser)", True, "not tested")
 
@@ -101,8 +139,12 @@ with sync_playwright() as p:
     si = os.path.join(ROOT, "examples", "synthetic_si")
     gpd.read_file(os.path.join(si, "buildings.geojson")).to_crs(4326).to_file(os.path.join(TMP, "bld_lonlat.geojson"), driver="GeoJSON")
     pg.set_input_files("#f-dem", os.path.join(si, "dem.tif")); pg.wait_for_function("/Loaded dem.tif|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    ok("B8 a new DEM clears the layers of the previous site", pg.evaluate("!S.bld && !S.bnd && !S.lc && !S.soil && !S.inl && !S.swmm") and "were cleared" in pg.inner_text("#msg"), pg.inner_text("#msg")[:120])
     pg.set_input_files("#f-bld", os.path.join(TMP, "bld_lonlat.geojson")); pg.wait_for_function("/Loaded bld_lonlat|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
     pg.set_input_files("#f-bnd", os.path.join(si, "pond.geojson")); pg.wait_for_function("/Loaded pond|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    pg.set_input_files("#f-lc", os.path.join(si, "landcover.tif")); pg.wait_for_function("/Loaded landcover|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    pg.set_input_files("#f-soil", os.path.join(si, "soils.geojson")); pg.wait_for_function("/Loaded soils|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    ok("B8 land cover and soils load through the file inputs", "EPSG 5070" in pg.inner_text("#st-lc") and "treated as D" in pg.inner_text("#st-soil"), pg.inner_text("#st-lc")[:60] + " | " + pg.inner_text("#st-soil")[:120])
     pg.set_input_files("#f-inp", os.path.join(si, "model.inp")); pg.wait_for_function("/Loaded model.inp|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
     pg.set_input_files("#f-out", os.path.join(si, "model.out")); pg.wait_for_function("/Loaded model.out|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
     ok("B8 SI files load through the file inputs", "EPSG 26917" in pg.inner_text("#st-dem") and "reprojected from longitude/latitude" in pg.inner_text("#st-bld") and "CMS" in pg.inner_text("#st-inp"),
@@ -130,6 +172,7 @@ with sync_playwright() as p:
         ok("B12 two-way run: water goes into the inlets and the exchange balances", msg.startswith("Done") and t2["sentToSwmm"] > 1000 and abs(net2d - netsw) / t2["fromSwmm"] < 1e-6 and abs(L2["errPct"]) < 0.01,
            f"into inlets {t2['sentToSwmm']:.0f} cf, out of nodes {t2['fromSwmm']:.0f} cf; net 2D {net2d:.1f} = SWMM {netsw:.1f} cf; 2D closure {L2['errPct']:.5f}%")
         ok("B12 SWMM continuity within 1%", abs(r2["mb"]["flow"]) < 1, f"{r2['mb']['flow']:.3f}%")
+        ninl = pg.evaluate("S.final.swmm2.inlets.length"); ok("B15 the 14 listed curb inlets are used", ninl == 14 and "14 inlets on 7 junctions" in pg.inner_text("#st-inl"), f"{ninl} inlets")
     else: ok("B12 two-way run", False, msg)
     ok("B12 exchange chart and SWMM table shown", "exchange" in pg.evaluate("document.getElementById('c-in').layout.title.text") and "two-way coupling" in pg.inner_text("#ledger"), "")
     with pg.expect_download() as d: pg.click("#dl-rpt")

@@ -74,52 +74,76 @@
     }
   }
 
-  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (0.5), searchFt (30)}
-   * Returns {sources, sourceAt (async), tally, nodeMap, warnings, finish()} for Flood2D.simulate. */
+  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (0.5), searchFt (30),
+   *   inlets: [{x, y, node, lw, area, cw, co, rimFt}] (optional; inlet points in the grid CRS, each tied to a SWMM junction),
+   *   defaultInlets: true (junctions without an inlet in the list get one at the node with the default size)}
+   * Overflow leaves SWMM at each coupled node's cell; capture enters through each inlet's cell. The engine gets one source per node
+   * (overflow, >= 0) and one sink per inlet (<= 0). rates() gives the net exchange per coupled node (+ out of SWMM). */
   async function makeCoupler(B, createSWMM, inpText, model, o = {}) {
     const sw = await SwmmEngine.open(createSWMM, inpText);
-    const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, maxCells = Math.max(1, Math.ceil((o.searchFt ?? 30) / Gd.dxFt));
-    const cw = o.cw ?? 3.0, lw = o.lw ?? 3.0, co = o.co ?? 0.6, area = o.area ?? 4.0, capFrac = o.capFrac ?? 0.5;
-    const sources = [], links = [], nodeMap = [];
+    const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = Math.max(1, Math.ceil(searchFt / Gd.dxFt));
+    const def = { cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0 }, capFrac = o.capFrac ?? 0.5;
+    const links = [], nodeMap = [], byName = {};
     for (let i = 0; i < sw.nNodes; i++) {
       const name = sw.names[i], nd = model.nodes[model.nodeIndex[name]], type = Math.round(sw.get(P.NODE_TYPE, i));
-      const rec = { name, type: ["JUNCTION", "OUTFALL", "STORAGE", "DIVIDER"][type], status: "" }; nodeMap.push(rec);
+      const rec = { name, type: ["JUNCTION", "OUTFALL", "STORAGE", "DIVIDER"][type], status: "", inlets: 0 }; nodeMap.push(rec);
       if (!nd || !Number.isFinite(nd.x)) { rec.status = "no coordinates: not coupled"; continue; }
       const k0 = Model.cellOf(Gd, nd.x, nd.y); if (k0 < 0) { rec.status = "outside the grid: not coupled"; continue; }
       if (B.type[k0] === 2) { rec.status = "inside a level boundary: not coupled"; continue; }
       if (type === 1) { rec.status = "outfall: not coupled"; continue; }
-      const k = Model.nearestOpen(B.type, Gd, k0, maxCells); if (k < 0) { rec.status = `no open cell within ${o.searchFt ?? 30} ft: not coupled`; continue; }
+      const k = Model.nearestOpen(B.type, Gd, k0, maxCells); if (k < 0) { rec.status = `no open cell within ${searchFt} ft: not coupled`; continue; }
       const rim = (sw.get(P.NODE_ELEV, i) + sw.get(P.NODE_MAXDEPTH, i)) * sw.lf;
-      rec.status = type === 0 ? "two-way (inlet and overflow)" : "overflow only"; rec.cell = k; rec.rimFt = rim;
-      sources.push({ cell: k, name, sink: type === 0 }); links.push({ i, k, rim, z: B.g.aux[4 * k], inlet: type === 0 });
+      rec.status = type === 0 ? "two-way" : "overflow only"; rec.cell = k; rec.rimFt = rim;
+      byName[name] = links.length; links.push({ i, k, rim, z: B.g.aux[4 * k], junction: type === 0, name, rec });
     }
-    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })) };
+    // inlets: from the list, else one default inlet at each coupled junction
+    const inlets = [], given = new Set();
+    for (const [n, it] of (o.inlets || []).entries()) {
+      const j = byName[it.node];
+      if (j === undefined) { W.push(`Inlet ${n + 1}: node ${it.node} is not a coupled SWMM junction; inlet ignored`); continue; }
+      if (!links[j].junction) { W.push(`Inlet ${n + 1}: node ${it.node} is not a junction; inlet ignored`); continue; }
+      const k = Model.nearestOpen(B.type, Gd, Model.cellOf(Gd, it.x, it.y), maxCells); if (k < 0) { W.push(`Inlet ${n + 1} (${it.node}) has no open cell within ${searchFt} ft; inlet ignored`); continue; }
+      const p = { lw: it.lw ?? def.lw, area: it.area ?? def.area, cw: it.cw ?? def.cw, co: it.co ?? def.co };
+      for (const [key, v] of Object.entries(p)) if (!(Number.isFinite(v) && v >= 0)) throw new Error(`Inlet ${n + 1} (${it.node}): ${key} ${v} is not a valid number`);
+      inlets.push(Object.assign({ j, k, z: B.g.aux[4 * k], rim: Number.isFinite(it.rimFt) ? it.rimFt : null, name: `${it.node} inlet ${n + 1}` }, p)); given.add(j); links[j].rec.inlets++;
+    }
+    if (o.defaultInlets !== false) links.forEach((l, j) => { if (l.junction && !given.has(j)) { inlets.push(Object.assign({ j, k: l.k, z: l.z, rim: l.rim, name: `${l.name} inlet` }, def)); l.rec.inlets++; } });
+    for (const l of links) if (l.junction && !l.rec.inlets) l.rec.status = "overflow only (no inlet)";
+    // engine sources: overflow at each node cell, capture at each inlet cell
+    const sources = links.map((l) => ({ cell: l.k, name: l.name })).concat(inlets.map((it) => ({ cell: it.k, name: it.name, sink: true })));
+    // several inlets in one cell share the cell's water
+    const perCell = {}; for (const it of inlets) perCell[it.k] = (perCell[it.k] || 0) + 1;
+    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
     let lastRates = links.map(() => 0);
+    const inletCells = inlets.map((it) => it.k);
     async function sourceAt(h0, h1, solver) {
-      const dt = (h1 - h0) * 3600; if (!(dt > 0)) return lastRates;
+      const dt = (h1 - h0) * 3600; if (!(dt > 0)) return sources.map(() => 0);
       if (sw.tSec < h0 * 3600 - 1e-6) sw.advance(h0 * 3600, []);   // a run that starts later than SWMM: SWMM catches up without exchange
-      const h = await solver.readCells(links.map((l) => l.k));
-      const qin = links.map((l, j) => {
-        if (!l.inlet || sw.done) return 0;   // after the SWMM run ends nothing can be passed to it
-        const d = Math.max(h[j], 0); if (!(d > 1e-3)) { sw.set(P.NODE_LATFLOW, l.i, 0); return 0; }
-        const H2 = l.z + d, Hn = sw.get(P.NODE_HEAD, l.i) * sw.lf;
+      const h = await solver.readCells(inletCells);
+      const lat = new Float64Array(links.length);
+      const qin = inlets.map((it, m) => {
+        if (sw.done) return 0;   // after the SWMM run ends nothing can be passed to it
+        const d = Math.max(h[m], 0); if (!(d > 1e-3)) return 0;
+        const l = links[it.j], H2 = it.z + d, Hn = sw.get(P.NODE_HEAD, l.i) * sw.lf, rim = it.rim !== null ? it.rim : it.z;
         let q = 0;
-        if (Hn <= l.rim) { const hw = Math.min(d, Math.max(H2 - l.rim, 0)); if (hw > 0) q = Math.min(cw * lw * Math.pow(hw, 1.5), co * area * Math.sqrt(2 * G * hw)); }
-        else if (H2 > Hn) q = co * area * Math.sqrt(2 * G * (H2 - Hn));
-        q = Math.min(q, capFrac * d * A / dt);
-        sw.set(P.NODE_LATFLOW, l.i, q / sw.qf);
-        return q;
+        if (Hn <= rim) { const hw = Math.min(d, Math.max(H2 - rim, 0)); if (hw > 0) q = Math.min(it.cw * it.lw * Math.pow(hw, 1.5), it.co * it.area * Math.sqrt(2 * G * hw)); }
+        else if (H2 > Hn) q = it.co * it.area * Math.sqrt(2 * G * (H2 - Hn));
+        q = Math.min(q, capFrac * d * A / dt / perCell[it.k]);
+        lat[it.j] += q; return q;
       });
+      links.forEach((l, j) => { if (l.junction) sw.set(P.NODE_LATFLOW, l.i, lat[j] / sw.qf); });
       const over = sw.advance(h1 * 3600, allIdx);
       for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += over[i] * dt;
-      lastRates = links.map((l, j) => { const qo = over[l.i]; tally.perNode[j].in += qin[j] * dt; tally.perNode[j].out += qo * dt; tally.sentToSwmm += qin[j] * dt; tally.fromSwmm += qo * dt; return qo - qin[j]; });
-      return lastRates;
+      lastRates = links.map((l, j) => { const qo = over[l.i]; tally.perNode[j].in += lat[j] * dt; tally.perNode[j].out += qo * dt; tally.sentToSwmm += lat[j] * dt; tally.fromSwmm += qo * dt; return qo - lat[j]; });
+      qin.forEach((q, m) => (tally.perInlet[m] += q * dt));
+      return links.map((l) => over[l.i]).concat(qin.map((q) => -q));
     }
-    const uncoupledFlooding = nodeMap.filter((r) => /not coupled/.test(r.status)).length;
-    if (uncoupledFlooding) W.push(`${uncoupledFlooding} SWMM nodes are not coupled (outside the grid, outfalls, inside a level boundary or without an open cell nearby); their overflow is counted as lost`);
+    const uncoupled = nodeMap.filter((r) => /not coupled/.test(r.status)).length;
+    if (uncoupled) W.push(`${uncoupled} SWMM nodes are not coupled (outside the grid, outfalls, inside a level boundary or without an open cell nearby); their overflow is counted as lost`);
     const headFt = (name) => { const i = sw.names.indexOf(name); if (i < 0) throw new Error(`Node ${name} is not in the SWMM model`); return sw.get(P.NODE_HEAD, i) * sw.lf; };
-    return { sources, sourceAt, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), finish: () => sw.finish() };
+    return { sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, lw: it.lw, area: it.area })),
+      sourceAt, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), finish: () => sw.finish() };
   }
 
   const api = { makeCoupler, prepareInp, SwmmEngine, P };

@@ -11,7 +11,7 @@
  */
 (function (root) {
   "use strict";
-  const G = 32.174, KN = 1.486 * 1.486, HMIN = 1e-3;
+  const G = 32.174, KN = 1.486 * 1.486, HMIN = 1e-3, VEL_H = 0.05;   // velocity maxima only where the water is deeper than VEL_H (ft)
 
   // ------------------------------------------------------------------ grid
   function b64dec(s, T) {
@@ -57,9 +57,11 @@
       this.acc = new Float32Array(4 * N);  // infiltration, drain, edge outflow, boundary inflow (boundary cells) / clamp (open cells)
       this.nqx = (g.nx + 1) * g.ny; this.q = new Float32Array(this.nqx + g.nx * (g.ny + 1)); this.qo = new Float32Array(this.q.length);
       this.theta = g.theta ?? 0.8; this.kind = "cpu"; this.src = new Float32Array(N);   // point-source depth rate (ft/s) per cell
+      this.vmx = new Float32Array(N); this.dvmx = new Float32Array(N);   // running maxima of speed (ft/s) and depth x speed (ft2/s)
     }
     async init() { return this; }
-    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); }
+    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); this.vmx.fill(0); this.dvmx.fill(0); }
+    async readVel() { return { vmax: this.vmx.slice(), dvmax: this.dvmx.slice() }; }
     setSources(list) { const A = this.g.dx * this.g.dx; this.src.fill(0); for (const s of list || []) this.src[s.cell] += s.rate / A; }
     setBoundary(stages) {
       const g = this.g, a = g.aux, st = this.st;
@@ -148,6 +150,10 @@
         let dr = 0;
         if (drain > 0 && (info & 4096) && h > 0) { dr = Math.min(drain * dt, h); h -= dr; }
         let cl = 0; if (h < 0) { cl = -h; h = 0; }
+        if (h > VEL_H) {   // cell velocity from the mean of the two face flows in each direction
+          const qx = 0.5 * (qW + qE), qy = 0.5 * (qN + qS), dv = Math.sqrt(qx * qx + qy * qy), sp = dv / h;
+          if (sp > this.vmx[k]) this.vmx[k] = sp; if (dv > this.dvmx[k]) this.dvmx[k] = dv;
+        }
         st[4 * k] = h; acc[4 * k] += inf; acc[4 * k + 1] += dr; acc[4 * k + 2] += edgeOut + pipeOut; acc[4 * k + 3] += cl;
         if (h > st[4 * k + 2]) { st[4 * k + 2] = h; st[4 * k + 3] = tHours; }
       }
@@ -178,7 +184,7 @@ struct P { nx: u32, ny: u32, nqx: u32, nf: u32, dx: f32, dt: f32, rain: f32, dra
 @group(0) @binding(6) var<storage, read_write> acc: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read_write> misc: array<atomic<u32>>;
 @group(0) @binding(8) var<storage, read> qo: array<f32>;
-@group(0) @binding(9) var<storage, read> src: array<f32>;
+@group(0) @binding(9) var<storage, read_write> src: array<vec4<f32>>;   // x: point-source depth rate, y: max speed, z: max depth x speed
 var<workgroup> wmax: atomic<u32>;
 
 fn ctype(k: i32) -> u32 { return u32(aux[k].z) & 3u; }
@@ -291,7 +297,8 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups
   if (c == 0u) { eo = eo - qW; } if (c == U.nx - 1u) { eo = eo + qE; } if (r == 0u) { eo = eo - qN; } if (r == U.ny - 1u) { eo = eo + qS; }
   eo = eo * U.dt / U.dx;
   var s = st[k];
-  var h = s.x + dh + U.rain * a.y * U.dt + src[k] * U.dt;
+  var sv = src[k];
+  var h = s.x + dh + U.rain * a.y * U.dt + sv.x * U.dt;
   var po: f32 = 0.0;
   for (var i = 0u; i < u32(U.npipe); i = i + 1u) {
     let pp = U.pipe[i];
@@ -311,6 +318,10 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups
   var dr: f32 = 0.0;
   if (U.drain > 0.0 && (info & 4096u) != 0u && h > 0.0) { dr = min(U.drain * U.dt, h); h = h - dr; }
   var cl: f32 = 0.0; if (h < 0.0) { cl = -h; h = 0.0; }
+  if (h > ${VEL_H}) {
+    let qx = 0.5 * (qW + qE); let qy = 0.5 * (qN + qS); let dv = sqrt(qx * qx + qy * qy);
+    sv.y = max(sv.y, dv / h); sv.z = max(sv.z, dv); src[k] = sv;
+  }
   s.x = h;
   if (h > s.z) { s.z = h; s.w = U.tHours; }
   st[k] = s;
@@ -347,7 +358,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       this.bAux = mk(16 * N, B.STORAGE, g.aux); this.bPrm = mk(16 * N, B.STORAGE, g.prm);
       this.bSt = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bRat = mk(4 * N, B.STORAGE, new Float32Array(N).fill(1));
       this.bQ = mk(4 * this.nf, B.STORAGE | B.COPY_DST); this.bQ2 = mk(4 * this.nf, B.STORAGE | B.COPY_DST); this.par = 0; this.bAcc = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST);
-      this.bMisc = mk(16, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bSrc = mk(4 * N, B.STORAGE | B.COPY_DST); this.srcCells = [];
+      this.bMisc = mk(16, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bSrc = mk(16 * N, B.STORAGE | B.COPY_DST | B.COPY_SRC); this.srcCells = [];
       this.rdMisc = d.createBuffer({ size: 16, usage: B.MAP_READ | B.COPY_DST });
       this.rdSt = d.createBuffer({ size: 16 * N, usage: B.MAP_READ | B.COPY_DST }); this.rdAcc = d.createBuffer({ size: 16 * N, usage: B.MAP_READ | B.COPY_DST });
       const mod = d.createShaderModule({ code: WGSL });
@@ -358,7 +369,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         ...[3, 4, 5, 6, 7].map((b) => ({ binding: b, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } })),
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } }] });
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }] });
       const pl = d.createPipelineLayout({ bindGroupLayouts: [layout] });
       this.pipe = {}; for (const e of ["faces", "ratio", "update", "boundary"]) this.pipe[e] = d.createComputePipeline({ layout: pl, compute: { module: mod, entryPoint: e } });
       const mkbg = (qn, qold) => d.createBindGroup({ layout, entries: [this.bU, this.bAux, this.bPrm, this.bSt, this.bRat, qn, this.bAcc, this.bMisc, qold, this.bSrc].map((buffer, binding) => ({ binding, resource: { buffer } })) });
@@ -376,8 +387,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     }
     setSources(list) {   // sparse update: zero the cells set last time, then write this chunk's rates (duplicates summed)
       const A = this.g.dx * this.g.dx, m = new Map(); for (const s of list || []) m.set(s.cell, (m.get(s.cell) || 0) + s.rate / A);
-      const z = new Float32Array(1); for (const c of this.srcCells) if (!m.has(c)) this.dev.queue.writeBuffer(this.bSrc, 4 * c, z);
-      for (const [c, v] of m) this.dev.queue.writeBuffer(this.bSrc, 4 * c, new Float32Array([v]));
+      const z = new Float32Array(1); for (const c of this.srcCells) if (!m.has(c)) this.dev.queue.writeBuffer(this.bSrc, 16 * c, z);
+      for (const [c, v] of m) this.dev.queue.writeBuffer(this.bSrc, 16 * c, new Float32Array([v]));
       this.srcCells = [...m.keys()];
     }
     async chunk(o) {
@@ -409,6 +420,13 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(this.bSt, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
       await this.rdCells.mapAsync(GPUMapMode.READ, 0, 16 * M); const a = new Float32Array(this.rdCells.getMappedRange(0, 16 * M).slice(0)); this.rdCells.unmap();
       const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i]; return h;
+    }
+    async readVel() {
+      const d = this.dev, N = this.g.N, rb = d.createBuffer({ size: 16 * N, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const enc = d.createCommandEncoder(); enc.copyBufferToBuffer(this.bSrc, 0, rb, 0, 16 * N); d.queue.submit([enc.finish()]);
+      await rb.mapAsync(GPUMapMode.READ); const a = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); rb.destroy();
+      const vmax = new Float32Array(N), dvmax = new Float32Array(N); for (let k = 0; k < N; k++) { vmax[k] = a[4 * k + 1]; dvmax[k] = a[4 * k + 2]; }
+      return { vmax, dvmax };
     }
     async read(resetAcc = true) {
       const d = this.dev, enc = d.createCommandEncoder();
@@ -519,7 +537,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (now() - lastYield > 50) { await yieldTask(); lastYield = now(); }
     }
     if (stopped && (!frames.length || frames[frames.length - 1].tHours < t / 3600 - 1e-9)) frames.push(await doRead(true));
-    return { ledger: L, steps, chunks, frames, stopped };
+    const vel = solver.readVel ? await solver.readVel() : null;
+    return { ledger: L, steps, chunks, frames, stopped, vmax: vel && vel.vmax, dvmax: vel && vel.dvmax };
   }
 
   // ------------------------------------------------------------------ lake-level spill (steady state of the 2D model with no rain)
@@ -572,6 +591,6 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     return { wetAc: wet * A / 43560, wetMaxAc: wetMax * A / 43560, depthMax: hmx, depthMaxEver: hmxMax, bldNow: bn, bldMax: bm, bldTotal: nb, bMax, bDepth, roadNow: rCutNow, roadMax: rCutMax, rNow, rMax };
   }
 
-  const api = { G, KN, HMIN, levelFill, pipeSeeds, makeGrid, CpuSolver, GpuSolver, simulate, readouts, WGSL, b64dec, gaStep };
+  const api = { G, KN, HMIN, VEL_H, levelFill, pipeSeeds, makeGrid, CpuSolver, GpuSolver, simulate, readouts, WGSL, b64dec, gaStep };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.Flood2D = api;
 })(typeof self !== "undefined" ? self : this);
