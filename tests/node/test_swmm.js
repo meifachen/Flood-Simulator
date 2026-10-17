@@ -6,7 +6,7 @@ const res = []; const ok = (name, pass, info) => { res.push({ name, pass: !!pass
 const ex = (d) => path.join(__dirname, "../../examples", d);
 function expectError(name, fn, re) { try { fn(); ok(name, false, "no error"); } catch (e) { ok(name, re.test(e.message), "error: " + e.message); } }
 
-for (const d of ["synthetic_us", "synthetic_si"]) {
+for (const d of ["synthetic_us", "synthetic_si", "public_demo"]) {
   const ref = JSON.parse(fs.readFileSync(path.join(ex(d), "swmm_reference.json")));
   const m = S.parseInp(fs.readFileSync(path.join(ex(d), "model.inp"), "utf8"));
   // nodes: names, types, inverts, depths as the SWMM engine reads them
@@ -19,7 +19,7 @@ for (const d of ["synthetic_us", "synthetic_si"]) {
   }
   ok(`[${d}] .inp nodes match the SWMM engine`, m.nodes.length === ref.nodes.length && typeOk && worst < 1e-3, `${m.nodes.length} nodes; worst invert/depth difference ${worst.toExponential(2)}; types ${typeOk ? "match" : "differ"}`);
   ok(`[${d}] .inp nodes all have coordinates`, m.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y)) && m.warnings.length === 0, `warnings: ${JSON.stringify(m.warnings)}`);
-  ok(`[${d}] .inp units`, m.unitSystem === (d.endsWith("si") ? "SI" : "US") && m.reportStepSec === 300 && m.start.toISOString() === "2024-07-15T00:00:00.000Z", `${m.flowUnits} ${m.unitSystem}, report step ${m.reportStepSec} s, start ${m.start.toISOString()}`);
+  ok(`[${d}] .inp units`, m.unitSystem === (d.endsWith("si") ? "SI" : "US") && m.reportStepSec === 300 && m.start.toISOString() === (d === "public_demo" ? "2024-08-01T00:00:00.000Z" : "2024-07-15T00:00:00.000Z"), `${m.flowUnits} ${m.unitSystem}, report step ${m.reportStepSec} s, start ${m.start.toISOString()}`);
   // rain: the gauge total equals the report's total precipitation (inches; SI report is mm)
   const rain = S.gaugeRain(m, "RG1"), rptIn = d.endsWith("si") ? ref.rptTotalPrecipDepth / 25.4 : ref.rptTotalPrecipDepth;
   ok(`[${d}] rain gauge total equals the SWMM report`, Math.abs(rain.totalIn - rptIn) < 0.01 && rain.stepSec === 300, `${rain.totalIn.toFixed(4)} in from the series, ${rptIn.toFixed(4)} in in the report, step ${rain.stepSec} s, ${rain.values.length} intervals`);
