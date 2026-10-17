@@ -1,0 +1,11 @@
+{
+ "name": "Synthetic street sewer (SI)",
+ "epsg": 26917,
+ "units": "SI",
+ "dem": "dem.tif",
+ "buildings": "buildings.geojson",
+ "boundaries": "pond.geojson",
+ "inp": "model.inp",
+ "out": "model.out",
+ "note": "Invented place and model for testing. Georeferenced in a real CRS so the files are valid; turn the basemap off."
+}

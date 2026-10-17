@@ -1,0 +1,240 @@
+[TITLE]
+Synthetic street sewer that floods at a sag (invented place)
+
+[OPTIONS]
+FLOW_UNITS           CMS
+INFILTRATION         GREEN_AMPT
+FLOW_ROUTING         DYNWAVE
+LINK_OFFSETS         ELEVATION
+MIN_SLOPE            0
+ALLOW_PONDING        NO
+SKIP_STEADY_STATE    NO
+START_DATE           07/15/2024
+START_TIME           00:00:00
+REPORT_START_DATE    07/15/2024
+REPORT_START_TIME    00:00:00
+END_DATE             07/15/2024
+END_TIME             06:00:00
+SWEEP_START          01/01
+SWEEP_END            12/31
+DRY_DAYS             0
+REPORT_STEP          00:05:00
+WET_STEP             00:01:00
+DRY_STEP             01:00:00
+ROUTING_STEP         0:00:05
+INERTIAL_DAMPING     PARTIAL
+NORMAL_FLOW_LIMITED  BOTH
+FORCE_MAIN_EQUATION  H-W
+VARIABLE_STEP        0.75
+LENGTHENING_STEP     0
+MIN_SURFAREA         12.557
+MAX_TRIALS           8
+HEAD_TOLERANCE       0.005
+SYS_FLOW_TOL         5
+LAT_FLOW_TOL         5
+THREADS              1
+
+[RAINGAGES]
+;;Name Format Interval SCF Source
+RG1              INTENSITY 0:05     1.0      TIMESERIES DESIGN
+
+[SUBCATCHMENTS]
+;;Name Raingage Outlet Area %Imperv Width %Slope CurbLen
+S1N              RG1 J1       1.6187 55 121.92 2.0 0
+S1S              RG1 J1       1.6187 55 121.92 2.0 0
+S2N              RG1 J2       1.6187 55 121.92 2.0 0
+S2S              RG1 J2       1.6187 55 121.92 2.0 0
+S3N              RG1 J3       1.6187 55 121.92 2.0 0
+S3S              RG1 J3       1.6187 55 121.92 2.0 0
+S4N              RG1 J4       1.6187 55 121.92 2.0 0
+S4S              RG1 J4       1.6187 55 121.92 2.0 0
+S5N              RG1 J5       1.6187 55 121.92 2.0 0
+S5S              RG1 J5       1.6187 55 121.92 2.0 0
+S6N              RG1 J6       1.6187 55 121.92 2.0 0
+S6S              RG1 J6       1.6187 55 121.92 2.0 0
+S7N              RG1 J7       1.6187 55 121.92 2.0 0
+S7S              RG1 J7       1.6187 55 121.92 2.0 0
+
+[SUBAREAS]
+;;Subcatchment N-Imperv N-Perv S-Imperv S-Perv PctZero RouteTo
+S1N              0.015 0.15 1.52 3.81 25 OUTLET
+S1S              0.015 0.15 1.52 3.81 25 OUTLET
+S2N              0.015 0.15 1.52 3.81 25 OUTLET
+S2S              0.015 0.15 1.52 3.81 25 OUTLET
+S3N              0.015 0.15 1.52 3.81 25 OUTLET
+S3S              0.015 0.15 1.52 3.81 25 OUTLET
+S4N              0.015 0.15 1.52 3.81 25 OUTLET
+S4S              0.015 0.15 1.52 3.81 25 OUTLET
+S5N              0.015 0.15 1.52 3.81 25 OUTLET
+S5S              0.015 0.15 1.52 3.81 25 OUTLET
+S6N              0.015 0.15 1.52 3.81 25 OUTLET
+S6S              0.015 0.15 1.52 3.81 25 OUTLET
+S7N              0.015 0.15 1.52 3.81 25 OUTLET
+S7S              0.015 0.15 1.52 3.81 25 OUTLET
+
+[INFILTRATION]
+;;Subcatchment Suction Ksat IMD
+S1N              88.9 5.08 0.3
+S1S              88.9 5.08 0.3
+S2N              88.9 5.08 0.3
+S2S              88.9 5.08 0.3
+S3N              88.9 5.08 0.3
+S3S              88.9 5.08 0.3
+S4N              88.9 5.08 0.3
+S4S              88.9 5.08 0.3
+S5N              88.9 5.08 0.3
+S5S              88.9 5.08 0.3
+S6N              88.9 5.08 0.3
+S6S              88.9 5.08 0.3
+S7N              88.9 5.08 0.3
+S7S              88.9 5.08 0.3
+
+[JUNCTIONS]
+;;Name Elevation MaxDepth InitDepth SurDepth Aponded
+J1               16.655 2.134 0 0 0
+J2               16.289 2.134 0 0 0
+J3               15.902 2.134 0 0 0
+J4               14.887 2.134 0 0 0
+J5               14.613 2.694 0 0 0
+J6               14.338 2.621 0 0 0
+J7               14.064 2.530 0 0 0
+
+[OUTFALLS]
+;;Name Elevation Type Stage Gated
+OF1              17.881 FREE NO
+
+[STORAGE]
+;;Name Elev MaxDepth InitDepth Shape Curve/Params SurDepth Fevap
+POND             16.394 1.829 0.305 FUNCTIONAL 2787.1 0 0 0 0
+
+[CONDUITS]
+;;Name From To Length Roughness InOffset OutOffset InitFlow MaxFlow
+C1       J1       J2       91.44 0.013 16.655 16.289 0 0
+C2       J2       J3       91.44 0.013 16.289 15.902 0 0
+C3       J3       J4       91.44 0.013 15.902 14.887 0 0
+C4       J4       J5       91.44 0.013 14.887 14.613 0 0
+C5       J5       J6       91.44 0.013 14.613 14.338 0 0
+C6       J6       J7       91.44 0.013 14.338 14.064 0 0
+C7       J7       POND     110.95 0.013 14.064 16.394 0 0
+
+[ORIFICES]
+;;Name From To Type Offset Qcoeff Gated CloseTime
+OR1      POND     OF1      SIDE     17.884 0.65 NO 0
+
+[XSECTIONS]
+;;Link Shape Geom1 Geom2 Geom3 Geom4 Barrels
+C1       CIRCULAR 0.4572 0 0 0 1
+C2       CIRCULAR 0.4572 0 0 0 1
+C3       CIRCULAR 0.4572 0 0 0 1
+C4       CIRCULAR 0.4572 0 0 0 1
+C5       CIRCULAR 0.6096 0 0 0 1
+C6       CIRCULAR 0.6096 0 0 0 1
+C7       CIRCULAR 0.6096 0 0 0 1
+OR1      CIRCULAR 0.3048 0 0 0
+
+[TIMESERIES]
+;;Name Date Time Value
+DESIGN   0:00 11.5434
+DESIGN   0:05 15.3912
+DESIGN   0:10 19.2390
+DESIGN   0:15 25.0106
+DESIGN   0:20 32.7062
+DESIGN   0:25 44.2496
+DESIGN   0:30 61.5647
+DESIGN   0:35 92.3470
+DESIGN   0:40 144.2922
+DESIGN   0:45 173.1506
+DESIGN   0:50 115.4337
+DESIGN   0:55 76.9558
+DESIGN   1:00 53.8691
+DESIGN   1:05 40.4018
+DESIGN   1:10 30.7823
+DESIGN   1:15 25.0106
+DESIGN   1:20 21.1628
+DESIGN   1:25 17.3151
+DESIGN   1:30 15.3912
+DESIGN   1:35 13.4673
+DESIGN   1:40 11.5434
+DESIGN   1:45 9.6195
+DESIGN   1:50 8.6575
+DESIGN   1:55 7.6956
+DESIGN   2:00 0
+
+[REPORT]
+SUBCATCHMENTS ALL
+NODES ALL
+LINKS ALL
+
+[MAP]
+UNITS Meters
+
+[COORDINATES]
+;;Node X Y
+J1               460045.72 3169756.16
+J2               460137.16 3169756.16
+J3               460228.6 3169756.16
+J4               460320.04 3169756.16
+J5               460411.48 3169756.16
+J6               460502.92 3169756.16
+J7               460594.36 3169756.16
+POND             460624.84 3169649.48
+OF1              460713.232 3169603.76
+
+[POLYGONS]
+;;Subcatchment X Y
+S1N              460000.0 3169908.56
+S1N              460091.44 3169908.56
+S1N              460091.44 3169771.4
+S1N              460000.0 3169771.4
+S1S              460000.0 3169740.92
+S1S              460091.44 3169740.92
+S1S              460091.44 3169603.76
+S1S              460000.0 3169603.76
+S2N              460091.44 3169908.56
+S2N              460182.88 3169908.56
+S2N              460182.88 3169771.4
+S2N              460091.44 3169771.4
+S2S              460091.44 3169740.92
+S2S              460182.88 3169740.92
+S2S              460182.88 3169603.76
+S2S              460091.44 3169603.76
+S3N              460182.88 3169908.56
+S3N              460274.32 3169908.56
+S3N              460274.32 3169771.4
+S3N              460182.88 3169771.4
+S3S              460182.88 3169740.92
+S3S              460274.32 3169740.92
+S3S              460274.32 3169603.76
+S3S              460182.88 3169603.76
+S4N              460274.32 3169908.56
+S4N              460365.76 3169908.56
+S4N              460365.76 3169771.4
+S4N              460274.32 3169771.4
+S4S              460274.32 3169740.92
+S4S              460365.76 3169740.92
+S4S              460365.76 3169603.76
+S4S              460274.32 3169603.76
+S5N              460365.76 3169908.56
+S5N              460457.2 3169908.56
+S5N              460457.2 3169771.4
+S5N              460365.76 3169771.4
+S5S              460365.76 3169740.92
+S5S              460457.2 3169740.92
+S5S              460457.2 3169603.76
+S5S              460365.76 3169603.76
+S6N              460457.2 3169908.56
+S6N              460548.64 3169908.56
+S6N              460548.64 3169771.4
+S6N              460457.2 3169771.4
+S6S              460457.2 3169740.92
+S6S              460548.64 3169740.92
+S6S              460548.64 3169603.76
+S6S              460457.2 3169603.76
+S7N              460548.64 3169908.56
+S7N              460640.08 3169908.56
+S7N              460640.08 3169771.4
+S7N              460548.64 3169771.4
+S7S              460548.64 3169740.92
+S7S              460640.08 3169740.92
+S7S              460640.08 3169603.76
+S7S              460548.64 3169603.76

@@ -1,0 +1,240 @@
+[TITLE]
+Synthetic street sewer that floods at a sag (invented place)
+
+[OPTIONS]
+FLOW_UNITS           CFS
+INFILTRATION         GREEN_AMPT
+FLOW_ROUTING         DYNWAVE
+LINK_OFFSETS         ELEVATION
+MIN_SLOPE            0
+ALLOW_PONDING        NO
+SKIP_STEADY_STATE    NO
+START_DATE           07/15/2024
+START_TIME           00:00:00
+REPORT_START_DATE    07/15/2024
+REPORT_START_TIME    00:00:00
+END_DATE             07/15/2024
+END_TIME             06:00:00
+SWEEP_START          01/01
+SWEEP_END            12/31
+DRY_DAYS             0
+REPORT_STEP          00:05:00
+WET_STEP             00:01:00
+DRY_STEP             01:00:00
+ROUTING_STEP         0:00:05
+INERTIAL_DAMPING     PARTIAL
+NORMAL_FLOW_LIMITED  BOTH
+FORCE_MAIN_EQUATION  H-W
+VARIABLE_STEP        0.75
+LENGTHENING_STEP     0
+MIN_SURFAREA         12.557
+MAX_TRIALS           8
+HEAD_TOLERANCE       0.005
+SYS_FLOW_TOL         5
+LAT_FLOW_TOL         5
+THREADS              1
+
+[RAINGAGES]
+;;Name Format Interval SCF Source
+RG1              INTENSITY 0:05     1.0      TIMESERIES DESIGN
+
+[SUBCATCHMENTS]
+;;Name Raingage Outlet Area %Imperv Width %Slope CurbLen
+S1N              RG1 J1       4.0000 55 400.00 2.0 0
+S1S              RG1 J1       4.0000 55 400.00 2.0 0
+S2N              RG1 J2       4.0000 55 400.00 2.0 0
+S2S              RG1 J2       4.0000 55 400.00 2.0 0
+S3N              RG1 J3       4.0000 55 400.00 2.0 0
+S3S              RG1 J3       4.0000 55 400.00 2.0 0
+S4N              RG1 J4       4.0000 55 400.00 2.0 0
+S4S              RG1 J4       4.0000 55 400.00 2.0 0
+S5N              RG1 J5       4.0000 55 400.00 2.0 0
+S5S              RG1 J5       4.0000 55 400.00 2.0 0
+S6N              RG1 J6       4.0000 55 400.00 2.0 0
+S6S              RG1 J6       4.0000 55 400.00 2.0 0
+S7N              RG1 J7       4.0000 55 400.00 2.0 0
+S7S              RG1 J7       4.0000 55 400.00 2.0 0
+
+[SUBAREAS]
+;;Subcatchment N-Imperv N-Perv S-Imperv S-Perv PctZero RouteTo
+S1N              0.015 0.15 0.06 0.15 25 OUTLET
+S1S              0.015 0.15 0.06 0.15 25 OUTLET
+S2N              0.015 0.15 0.06 0.15 25 OUTLET
+S2S              0.015 0.15 0.06 0.15 25 OUTLET
+S3N              0.015 0.15 0.06 0.15 25 OUTLET
+S3S              0.015 0.15 0.06 0.15 25 OUTLET
+S4N              0.015 0.15 0.06 0.15 25 OUTLET
+S4S              0.015 0.15 0.06 0.15 25 OUTLET
+S5N              0.015 0.15 0.06 0.15 25 OUTLET
+S5S              0.015 0.15 0.06 0.15 25 OUTLET
+S6N              0.015 0.15 0.06 0.15 25 OUTLET
+S6S              0.015 0.15 0.06 0.15 25 OUTLET
+S7N              0.015 0.15 0.06 0.15 25 OUTLET
+S7S              0.015 0.15 0.06 0.15 25 OUTLET
+
+[INFILTRATION]
+;;Subcatchment Suction Ksat IMD
+S1N              3.5 0.2 0.3
+S1S              3.5 0.2 0.3
+S2N              3.5 0.2 0.3
+S2S              3.5 0.2 0.3
+S3N              3.5 0.2 0.3
+S3S              3.5 0.2 0.3
+S4N              3.5 0.2 0.3
+S4S              3.5 0.2 0.3
+S5N              3.5 0.2 0.3
+S5S              3.5 0.2 0.3
+S6N              3.5 0.2 0.3
+S6S              3.5 0.2 0.3
+S7N              3.5 0.2 0.3
+S7S              3.5 0.2 0.3
+
+[JUNCTIONS]
+;;Name Elevation MaxDepth InitDepth SurDepth Aponded
+J1               54.641 7.000 0 0 0
+J2               53.441 7.000 0 0 0
+J3               52.171 7.000 0 0 0
+J4               48.842 7.000 0 0 0
+J5               47.942 8.838 0 0 0
+J6               47.042 8.599 0 0 0
+J7               46.142 8.299 0 0 0
+
+[OUTFALLS]
+;;Name Elevation Type Stage Gated
+OF1              58.664 FREE NO
+
+[STORAGE]
+;;Name Elev MaxDepth InitDepth Shape Curve/Params SurDepth Fevap
+POND             53.785 6.000 1.000 FUNCTIONAL 30000.0 0 0 0 0
+
+[CONDUITS]
+;;Name From To Length Roughness InOffset OutOffset InitFlow MaxFlow
+C1       J1       J2       300.00 0.013 54.641 53.441 0 0
+C2       J2       J3       300.00 0.013 53.441 52.171 0 0
+C3       J3       J4       300.00 0.013 52.171 48.842 0 0
+C4       J4       J5       300.00 0.013 48.842 47.942 0 0
+C5       J5       J6       300.00 0.013 47.942 47.042 0 0
+C6       J6       J7       300.00 0.013 47.042 46.142 0 0
+C7       J7       POND     364.01 0.013 46.142 53.785 0 0
+
+[ORIFICES]
+;;Name From To Type Offset Qcoeff Gated CloseTime
+OR1      POND     OF1      SIDE     58.674 0.65 NO 0
+
+[XSECTIONS]
+;;Link Shape Geom1 Geom2 Geom3 Geom4 Barrels
+C1       CIRCULAR 1.5000 0 0 0 1
+C2       CIRCULAR 1.5000 0 0 0 1
+C3       CIRCULAR 1.5000 0 0 0 1
+C4       CIRCULAR 1.5000 0 0 0 1
+C5       CIRCULAR 2.0000 0 0 0 1
+C6       CIRCULAR 2.0000 0 0 0 1
+C7       CIRCULAR 2.0000 0 0 0 1
+OR1      CIRCULAR 1.0000 0 0 0
+
+[TIMESERIES]
+;;Name Date Time Value
+DESIGN   0:00 0.4545
+DESIGN   0:05 0.6060
+DESIGN   0:10 0.7574
+DESIGN   0:15 0.9847
+DESIGN   0:20 1.2876
+DESIGN   0:25 1.7421
+DESIGN   0:30 2.4238
+DESIGN   0:35 3.6357
+DESIGN   0:40 5.6808
+DESIGN   0:45 6.8170
+DESIGN   0:50 4.5446
+DESIGN   0:55 3.0298
+DESIGN   1:00 2.1208
+DESIGN   1:05 1.5906
+DESIGN   1:10 1.2119
+DESIGN   1:15 0.9847
+DESIGN   1:20 0.8332
+DESIGN   1:25 0.6817
+DESIGN   1:30 0.6060
+DESIGN   1:35 0.5302
+DESIGN   1:40 0.4545
+DESIGN   1:45 0.3787
+DESIGN   1:50 0.3408
+DESIGN   1:55 0.3030
+DESIGN   2:00 0
+
+[REPORT]
+SUBCATCHMENTS ALL
+NODES ALL
+LINKS ALL
+
+[MAP]
+UNITS Feet
+
+[COORDINATES]
+;;Node X Y
+J1               500150.0 1599200.0
+J2               500450.0 1599200.0
+J3               500750.0 1599200.0
+J4               501050.0 1599200.0
+J5               501350.0 1599200.0
+J6               501650.0 1599200.0
+J7               501950.0 1599200.0
+POND             502050.0 1598850.0
+OF1              502340.0 1598700.0
+
+[POLYGONS]
+;;Subcatchment X Y
+S1N              500000.0 1599700.0
+S1N              500300.0 1599700.0
+S1N              500300.0 1599250.0
+S1N              500000.0 1599250.0
+S1S              500000.0 1599150.0
+S1S              500300.0 1599150.0
+S1S              500300.0 1598700.0
+S1S              500000.0 1598700.0
+S2N              500300.0 1599700.0
+S2N              500600.0 1599700.0
+S2N              500600.0 1599250.0
+S2N              500300.0 1599250.0
+S2S              500300.0 1599150.0
+S2S              500600.0 1599150.0
+S2S              500600.0 1598700.0
+S2S              500300.0 1598700.0
+S3N              500600.0 1599700.0
+S3N              500900.0 1599700.0
+S3N              500900.0 1599250.0
+S3N              500600.0 1599250.0
+S3S              500600.0 1599150.0
+S3S              500900.0 1599150.0
+S3S              500900.0 1598700.0
+S3S              500600.0 1598700.0
+S4N              500900.0 1599700.0
+S4N              501200.0 1599700.0
+S4N              501200.0 1599250.0
+S4N              500900.0 1599250.0
+S4S              500900.0 1599150.0
+S4S              501200.0 1599150.0
+S4S              501200.0 1598700.0
+S4S              500900.0 1598700.0
+S5N              501200.0 1599700.0
+S5N              501500.0 1599700.0
+S5N              501500.0 1599250.0
+S5N              501200.0 1599250.0
+S5S              501200.0 1599150.0
+S5S              501500.0 1599150.0
+S5S              501500.0 1598700.0
+S5S              501200.0 1598700.0
+S6N              501500.0 1599700.0
+S6N              501800.0 1599700.0
+S6N              501800.0 1599250.0
+S6N              501500.0 1599250.0
+S6S              501500.0 1599150.0
+S6S              501800.0 1599150.0
+S6S              501800.0 1598700.0
+S6S              501500.0 1598700.0
+S7N              501800.0 1599700.0
+S7N              502100.0 1599700.0
+S7N              502100.0 1599250.0
+S7N              501800.0 1599250.0
+S7S              501800.0 1599150.0
+S7S              502100.0 1599150.0
+S7S              502100.0 1598700.0
+S7S              501800.0 1598700.0
