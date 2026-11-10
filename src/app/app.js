@@ -133,7 +133,9 @@ function boundaryTable() {
 function waterNotes() {
   const r = $("#rain").value; $("#rain-gauge").hidden = r !== "gauge"; $("#rain-uniform").hidden = r !== "uniform";
   const cp = $("#coupling").value; $("#two-box").hidden = cp !== "two";
-  $("#double-warn").hidden = !(r === "gauge" && cp !== "off");
+  // rain on the grid counts runoff twice only when SWMM also makes runoff from that gauge in its own subcatchments
+  const sw = S.swmm, gauge = $("#gauge").value;
+  $("#double-warn").hidden = !(r === "gauge" && cp !== "off" && sw && sw.subcatchments > 0 && (!sw.subcatchmentGauges || sw.subcatchmentGauges.includes(gauge)));
   const parts = []; if (cp === "one") parts.push("SWMM flooding (one way)"); if (cp === "two") parts.push("SWMM two way"); if (r !== "none") parts.push(r === "gauge" ? "gauge rain" : "uniform rain");
   $("#st-water").textContent = parts.join(" + ") || "none chosen";
 }
@@ -168,7 +170,7 @@ function wireInputs() {
   $("#crs-epsg").onchange = async (e) => { const v = parseInt(e.target.value, 10); if (!(v > 0)) return; await loadInputs({ epsg: v }, `EPSG ${v}`); };
   $("#vunit").onchange = refreshInputs;
   $("#cell").onchange = cellNote;
-  $("#rain").onchange = waterNotes; $("#coupling").onchange = waterNotes;
+  $("#rain").onchange = waterNotes; $("#coupling").onchange = waterNotes; $("#gauge").onchange = waterNotes;
   // values are checked where they are typed: out-of-range numbers are marked and block the run
   document.querySelectorAll("aside input[type=number]").forEach((i) => i.addEventListener("input", () => { const v = +i.value; const bad = i.value === "" || (i.min !== "" && v < +i.min) || (i.max !== "" && v > +i.max); i.style.borderColor = bad ? "var(--bad)" : ""; i.setAttribute("aria-invalid", bad); }));
 }

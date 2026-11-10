@@ -78,6 +78,19 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
     const expect = 3 / 12 * 0.5 * wet * b.G.dxFt * b.G.dxFt;
     ok("closed edges: no rain is put on the walled ring", Math.abs(r.ledger.rain - expect) / expect < 1e-6, `rain ${r.ledger.rain.toFixed(0)} cf; 1.5 in on ${wet} ground cells = ${expect.toFixed(0)} cf`);
   }
+  // roof rain is not sent into a pocket of open ground closed in by a building (a courtyard): the pocket keeps only its own rain
+  {
+    const nx = 21, res = 6, dem0 = { nx, ny: nx, x0: 0, y1: nx * res, res, data: new Float32Array(nx * nx).fill(100), hUnitFt: 1 };
+    const sq = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+    const ring = { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [sq(7 * res, 7 * res, 14 * res, 14 * res), sq(10 * res, 10 * res, 11 * res, 11 * res)] } };   // 7 x 7 roof with a 1-cell courtyard
+    const b = M.buildGrid(dem0, { cellSize: res, hUnitFt: 1, vUnitFt: 1, buildings: [ring], imperv: 1 }), kc = 10 * nx + 10;
+    let roof = 0, multSum = 0; for (let k = 0; k < b.g.N; k++) { if (b.type[k] === 1) roof++; if (b.type[k] === 0) multSum += b.g.aux[4 * k + 1]; }
+    const r = await F.simulate(b.g, new F.CpuSolver(b.g), { t0: 0, t1: 1, rainAt: () => 1, stageAt: () => [], readSec: 3600 });
+    const hc = r.frames[r.frames.length - 1].st[4 * kc];
+    ok("roof rain is not sent into a courtyard closed in by the building; it keeps its own rain and every roof cell drains elsewhere",
+      b.type[kc] === 0 && b.g.aux[4 * kc + 1] === 1 && Math.abs(multSum - (b.info.open + roof)) < 1e-6 && Math.abs(hc - 1 / 12) < 1e-3 && b.info.pockets === 1 && b.warnings.some((w) => /1 pockets of open ground \(1 cells\)/.test(w)),
+      `courtyard rain multiple ${b.g.aux[4 * kc + 1]}; depth after 1 in of rain ${hc.toFixed(4)} ft; ${roof} roof cells; ${b.warnings.join(" | ")}`);
+  }
   // GeoTIFF out: read back with geotiff.js
   {
     const { b } = B.synthetic_us; const zt = Float32Array.from(b.z, (v, k) => (b.noData[k] ? NaN : v));

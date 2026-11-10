@@ -184,17 +184,32 @@
       }
       coverNote("The soils layer", soilInfo.cells, "the global Green-Ampt values");
     }
-    // rain on roofs: to the nearest open cell (multi-source BFS from open cells), or lost
+    // open ground that cannot drain: areas of non-wall cells cut off by buildings from the grid edge, a level boundary and the main area
+    // (courtyards and gaps that close at this cell size). Roof rain must not go there, or a one-cell pocket collects a whole roof.
+    const comp = new Int32Array(N).fill(-1), compSize = [], compDrains = []; let pockets = 0, pocketCells = 0;
+    { const st = new Int32Array(N);
+      for (let s0 = 0; s0 < N; s0++) {
+        if (type[s0] === 1 || comp[s0] >= 0) continue; const id = compSize.length; let sp = 0, n = 0, drains = false; st[sp++] = s0; comp[s0] = id;
+        while (sp) { const k = st[--sp], r = (k / nx) | 0, c = k - r * nx; n++; if (type[k] === 2 || r === 0 || c === 0 || r === ny - 1 || c === nx - 1) drains = true;
+          for (const j of [c > 0 ? k - 1 : -1, c < nx - 1 ? k + 1 : -1, r > 0 ? k - nx : -1, r < ny - 1 ? k + nx : -1]) if (j >= 0 && type[j] !== 1 && comp[j] < 0) { comp[j] = id; st[sp++] = j; } }
+        compSize.push(n); compDrains.push(drains);
+      }
+      let big = -1; compSize.forEach((n, i) => { if (big < 0 || n > compSize[big]) big = i; }); if (big >= 0) compDrains[big] = true;
+      compSize.forEach((n, i) => { if (!compDrains[i]) { pockets++; pocketCells += n; } });
+    }
+    // rain on roofs: to the nearest open cell that drains (multi-source BFS from those cells), or lost
     if (o.roofToGround !== false) {
       const near = new Int32Array(N).fill(-1), q = new Int32Array(N); let qh = 0, qt = 0;
-      for (let k = 0; k < N; k++) if (type[k] === 0) { near[k] = k; q[qt++] = k; }
+      for (let k = 0; k < N; k++) if (type[k] === 0 && compDrains[comp[k]]) { near[k] = k; q[qt++] = k; }
+      for (let k = 0; k < N; k++) if (type[k] === 0 && !compDrains[comp[k]]) near[k] = k;   // a pocket keeps its own rain, and no more
       while (qh < qt) { const k = q[qh++], r = (k / nx) | 0, c = k - r * nx; for (const j of [c > 0 ? k - 1 : -1, c < nx - 1 ? k + 1 : -1, r > 0 ? k - nx : -1, r < ny - 1 ? k + nx : -1]) if (j >= 0 && near[j] < 0) { near[j] = near[k]; q[qt++] = j; } }
       for (let k = 0; k < N; k++) if (type[k] === 1 && !noData[k] && near[k] >= 0) mult[near[k]] += 1;
     }
+    if (pockets) warnings.push(`${pockets} pockets of open ground (${pocketCells} cells) are closed in by buildings at this cell size; they keep the rain that falls on them, and roof rain goes to open ground that drains`);
     const g = F2D.makeGrid({ nx, ny, dx: G.dxFt, z, type, node, n, perv, ks: ksA, psimd, imd: imdA, mult, K: (o.boundaries || []).length });
     g.bldStart = bStart; g.bldCells = Int32Array.from(bList);
     let open = 0; for (let k = 0; k < N; k++) if (type[k] === 0) open++;
-    return { g, G, z, type, bnd, noData, n, perv, ksA, info: { nx, ny, cells: N, open, wallCells: bCells, nodataCells: nodata, levelCells: lvlCells, factor: f, buildings: bld.length, landcoverCells: lcInfo.cells, soilCells: soilInfo.cells }, warnings };
+    return { g, G, z, type, bnd, noData, n, perv, ksA, info: { nx, ny, cells: N, open, pockets, pocketCells, wallCells: bCells, nodataCells: nodata, levelCells: lvlCells, factor: f, buildings: bld.length, landcoverCells: lcInfo.cells, soilCells: soilInfo.cells }, warnings };
   }
   function cellOf(G, x, y) { const c = Math.floor((x - G.x0) / G.cs), r = Math.floor((G.y1 - y) / G.cs); return (c >= 0 && r >= 0 && c < G.nx && r < G.ny) ? r * G.nx + c : -1; }
   /* nearest open cell within maxCells (Chebyshev rings), or -1 */

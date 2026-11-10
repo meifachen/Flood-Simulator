@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-11-10. Version 0.3.1: fixes for the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
+Updated 2026-11-10. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -33,6 +33,11 @@ Updated 2026-11-10. Version 0.3.1: fixes for the findings of the 0.3.0 review (d
   - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
   - Loading a new DEM clears the other layers and says so.
 
+- **New in 0.3.2:**
+  - `python/make_winter_haven_demo.py` builds a real-site example from public data: the City of Winter Haven storm sewer inventory, 3DEP lidar, NHD lakes, FEMA structures, NLCD, SSURGO and an Atlas 14 design storm (the data are downloaded, not stored in the repository).
+  - Roof rain no longer goes into pockets of open ground closed in by buildings (a one-cell courtyard had collected 66 ft of water at 6 ft cells); the build reports such pockets.
+  - The double-counting warning for rain on the grid shows only when the SWMM model has subcatchments that use that gauge.
+- **Measured on a real GPU (Intel Core 7 150U laptop graphics, headless Chrome):** 12 to 32 times faster than the CPU on the synthetic example (6 ft: 3.4 s vs 110.1 s), same maps within 1.4e-5 ft. Winter Haven, 8 h two-way: 19.3 s at 12 ft, 84.6 s at 6 ft, 831 s at 3 ft (1.33 M cells).
 - **Fixed in 0.3.1** (review IDs in brackets):
   - SWMM no longer keeps receiving the last inlet capture after the 2D run ends: the coupler zeroes the inlet inflow and then runs SWMM to its end [W9]. Test case: SWMM's external inflow 4,530 cf against 4,536 cf taken by the inlets (before: 104,326 cf extra in the reviewer's case).
   - A refused land cover, soils, inlets, buildings or boundary file leaves the layer loaded before in use, in the worker and on the page; its file box is cleared and the message says nothing was changed [W1, W2]. A DEM that fails to load changes nothing [AU-3]. A new DEM clears the worker's layers too [W5].
@@ -137,9 +142,12 @@ Updated 2026-11-10. Version 0.3.1: fixes for the findings of the 0.3.0 review (d
 - Land cover classes other than NLCD codes (other schemes need an edited table).
 - Results files from very large grids (file size and memory when reopening).
 - The 0.3.1 fixes were checked by the tests above, not by a second independent review round.
+- The work PC (only the home laptop's Intel GPU was tested).
+- Winter Haven results against observed flooding or the City's own models; lakes held at 2018 lidar levels; inlet sizes not in the inventory (app defaults used).
 - The browser checks were not run against 0.3.0 (its page lacks the new inputs), so their fail-first status is not established.
 
 ## Open items
+- Inlet capture is capped at half the cell's water per coupling interval, so it shrinks with the cell size (Winter Haven: 488,918 cf at 12 ft, 217,612 at 6 ft, 72,909 at 3 ft) and sits below the inlet equations' own capacity (net drained 24% lower than uncapped at 12 ft). Planned fix: take what the inlet equations ask, limited each step by the water in the cell, and send SWMM the volume actually taken.
 - Inlet clogging factors and inlet types (curb, grate, combination) with HEC-22 curves.
 - Time series of velocity (only maxima are kept).
 - Velocity and hazard checked against a benchmark (e.g. UK EA test 6A); only Manning flow is checked now.

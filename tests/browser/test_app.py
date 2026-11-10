@@ -202,6 +202,10 @@ with sync_playwright() as p:
     # ---- B12 two-way coupling: SWMM 5.2.4 runs in the page and takes water back through the inlets
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
     ok("B17 loading an example clears every file box, inlets included", all(pg.input_value(x) == "" for x in ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"]), "")
+    pg.select_option("#rain", "gauge"); pg.evaluate("waterNotes()"); warn_sub = pg.is_visible("#double-warn")
+    pg.evaluate("S.swmm.subcatchments = 0; waterNotes()"); warn_none = pg.is_visible("#double-warn")
+    ok("B17 the double-counting warning shows only when the SWMM model makes its own runoff (subcatchments)", warn_sub and not warn_none, f"with {pg.evaluate('S.swmm.subcatchmentGauges.length')} gauges used by subcatchments: {warn_sub}; with none: {warn_none}")
+    pg.select_option("#rain", "none"); pg.evaluate("waterNotes()")
     pg.select_option("#coupling", "two"); settings(pg, t0="0", t1="1.5")
     pg.click("#b-run"); msg = wait_done(pg)
     r2 = pg.evaluate("S.final.swmm2 && {t: S.final.swmm2.tally, mb: S.final.swmm2.massBalance, L: S.final.ledger}")

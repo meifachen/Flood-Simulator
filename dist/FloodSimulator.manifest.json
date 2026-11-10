@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.3.1",
- "bytes": 5619688,
- "sha256": "5a557a0a89b98303fb96f6531873698fa1b37685f36ceecb3c764e079b3c318e",
+ "version": "0.3.2",
+ "bytes": 5623466,
+ "sha256": "0949871f87e930d39dac6f1cb74fcba059029acea144c9edb7710ec97737aae9",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -98,7 +98,7 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "23d66b5450958b56b2fd74bcad27f2b7fec564198b0158e6b81834f8b1a39a7c"
+   "sha256": "bc5348a083e1a1b0466c97ceb1fd622bc60b3b45b8824ad91d1c497d3cad2877"
   },
   {
    "file": "src/app/help.html",
@@ -118,7 +118,7 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "6770dde9d9fa8a3600f97334341323ea9b9544abb0907feb17a0de9a700acd3f"
+   "sha256": "8ae5c7c0ac5425d740e67592ac9fd2af002533fc74c510ae79bccc707f33567f"
   },
   {
    "file": "src/core/couple2way.js",
@@ -126,7 +126,7 @@
   },
   {
    "file": "src/core/model.js",
-   "sha256": "030d55ae2bfb9610c039a2a78dddc4e76482f30acd47b0b21585fbfa6a7d5c3e"
+   "sha256": "ccb55bbb23c6fa4cb609896f8cecdeada847fdb7f9a03e8d2c784772cef3e9d6"
   },
   {
    "file": "src/engine/flood2d.js",

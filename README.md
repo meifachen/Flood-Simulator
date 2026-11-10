@@ -78,7 +78,7 @@ The WebAssembly build of SWMM is `vendor/swmm-wasm/swmm5.js`. It was built from 
 | `src/core/model.js` | DEM to grid, buildings to walls, boundary polygons, one-way SWMM coupling, GeoTIFF writer |
 | `src/app/` | Page, worker, 3D view, help |
 | `tools/build.py` | Builds `dist/FloodSimulator.html` with every library inlined |
-| `python/` | `prep_dem.py` (DEM and buildings prep), `make_synthetic.py`, `make_public_demo.py`, `make_landcover_example.py`, `make_inlets_example.py` |
+| `python/` | `prep_dem.py` (DEM and buildings prep), `make_synthetic.py`, `make_public_demo.py`, `make_landcover_example.py`, `make_inlets_example.py`, `make_winter_haven_demo.py` (real site from public data) |
 | `examples/` | Synthetic street sewer (US and SI units) and a public-data demo |
 | `tests/` | Node tests (engine, SWMM readers, model builder), Python reference generators, browser tests |
 
@@ -113,6 +113,12 @@ The SWMM readers are checked against the EPA SWMM 5.2 engine (`swmm-toolkit`), a
 - streets from US Census TIGER/Line (public domain).
 
 The storm sewer in the public-data demo was generated from the street centerlines by `make_public_demo.py`. It is illustrative and is **not** the real drainage system of that place.
+
+**Real site, Winter Haven, Florida (Lake Martha):** `python python/make_winter_haven_demo.py examples/winter_haven` downloads and builds it; the data are not stored in the repository.
+- storm sewer: City of Winter Haven stormwater inventory (public ArcGIS Online view): 145 pipes with inverts and sizes, 84 curb and grate inlets;
+- ground: USGS 3DEP 1 m lidar (2018 FL Peninsular), resampled to 3 ft; lakes: USGS NHD, held at the lidar water surface;
+- buildings: FEMA USA Structures; land cover: NLCD 2021; soils: USDA SSURGO; rain: NOAA Atlas 14, 25-year 24-hour (7.69 in) as a nested storm.
+The SWMM model is built from the inventory as is (rims from the lidar, no subcatchments); `build_report.json` lists every assumption and data gap. It is a test of the method on real data, not a calibrated model of the city's system.
 
 ## License
 
