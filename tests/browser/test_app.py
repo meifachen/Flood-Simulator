@@ -215,7 +215,7 @@ with sync_playwright() as p:
     pg.click("#b-run"); msg = wait_done(pg)
     r2 = pg.evaluate("S.final.swmm2 && {t: S.final.swmm2.tally, mb: S.final.swmm2.massBalance, L: S.final.ledger}")
     if r2:
-        t2, L2 = r2["t"], r2["L"]; net2d, netsw = L2["inflow"] - L2["captured"], t2["fromSwmm"] - t2["sentToSwmm"]
+        t2, L2 = r2["t"], r2["L"]; net2d, netsw = L2["inflow"] - (L2["captured"] - t2["shortfall"]), t2["fromSwmm"] - t2["pendingOverflow"] - t2["sentToSwmm"]   # overflow reaches the 2D one interval later; demand a cell could not supply was not taken
         ok("B12 two-way run: water goes into the inlets and the exchange balances", msg.startswith("Done") and t2["sentToSwmm"] > 1000 and abs(net2d - netsw) / t2["fromSwmm"] < 1e-6 and abs(L2["errPct"]) < 0.01,
            f"into inlets {t2['sentToSwmm']:.0f} cf, out of nodes {t2['fromSwmm']:.0f} cf; net 2D {net2d:.1f} = SWMM {netsw:.1f} cf; 2D closure {L2['errPct']:.5f}%")
         ok("B12 SWMM continuity within 1%", abs(r2["mb"]["flow"]) < 1, f"{r2['mb']['flow']:.3f}%")

@@ -2173,6 +2173,8 @@ table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
       return hm;
     }
     async readCells(cells) { const h = new Float32Array(cells.length); for (let i = 0; i < cells.length; i++) h[i] = this.st[4 * cells[i]]; return h; }
+    /* the depth clamped at zero so far at a few cells (ft; reset with the other tallies at each reading): a withdrawal the cell could not supply */
+    async readClamp(cells) { const c = new Float64Array(cells.length); for (let i = 0; i < cells.length; i++) c[i] = this.acc[4 * cells[i] + 3]; return c; }
     async read(resetAcc = true) {
       const out = { st: this.st.slice(), acc: this.acc.slice() };
       if (resetAcc) this.acc.fill(0);
@@ -2423,13 +2425,15 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const hm = new Float32Array(this.rdMisc.getMappedRange().slice(0))[0]; this.rdMisc.unmap();
       return hm;
     }
-    async readCells(cells) {   // water depth at a few cells (two-way coupling), copied 16 bytes per cell
+    async cellsOf(buf, cells, comp) {   // one component of a vec4 buffer at a few cells (two-way coupling), copied 16 bytes per cell
       const d = this.dev, M = cells.length; if (!M) return new Float32Array(0);
       if (!this.rdCells || this.rdCells.size < 16 * M) { if (this.rdCells) this.rdCells.destroy(); this.rdCells = d.createBuffer({ size: 16 * M, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); }
-      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(this.bSt, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
+      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(buf, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
       await this.rdCells.mapAsync(GPUMapMode.READ, 0, 16 * M); const a = new Float32Array(this.rdCells.getMappedRange(0, 16 * M).slice(0)); this.rdCells.unmap();
-      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i]; return h;
+      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i + comp]; return h;
     }
+    async readCells(cells) { return this.cellsOf(this.bSt, cells, 0); }
+    async readClamp(cells) { return Float64Array.from(await this.cellsOf(this.bAcc, cells, 3)); }
     async readVel() {
       const d = this.dev, N = this.g.N, rb = d.createBuffer({ size: 16 * N, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
       const enc = d.createCommandEncoder(); enc.copyBufferToBuffer(this.bSrc, 0, rb, 0, 16 * N); d.queue.submit([enc.finish()]);
@@ -2458,7 +2462,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
   /* o: {t0, t1 (hours), rainAt(i) -> in/hr for rain interval i = floor(t / rainStep) (rainStep s, default 3600, so i is the hour),
    *     stageAt(tHours) -> array (ft), drainInHr, pipes, init (initial state; alone it is an initial condition and the depth maxima restart from it),
    *     initVel ({vmax, dvmax, froude}: with init, a hot start that carries both the depth and the velocity maxima over), cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
-   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source}
+   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source,
+   *     afterChunk(tHours0, tHours1, solver) called once the interval has run (tHours1 is where it stopped; two-way coupling reads what the inlets took)}
    * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
    * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
    * 50 ms so a stop request sent as a message is seen. The solver is reset at the start, so nothing carries over from an earlier run. */
@@ -2555,6 +2560,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         if (stopped) span = dt * done;
       } else hmC = await solver.chunk(co);
       L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done; L.captured += qSink * dt * done;
+      if (o.afterChunk) await o.afterChunk(t / 3600, (t + dt * done) / 3600, solver);
       // next chunk: allow for the depth to grow by a quarter before the next reading
       hm = Math.max(hmC * 1.25, 0.05); o._dt = dt;
       t += span; steps += done; chunks++;
@@ -3126,6 +3132,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       return hm;
     }
     async readCells(cells) { const h = new Float32Array(cells.length); for (let i = 0; i < cells.length; i++) h[i] = this.st[4 * cells[i]]; return h; }
+    /* the depth clamped at zero so far at a few cells (ft; reset with the other tallies at each reading): a withdrawal the cell could not supply */
+    async readClamp(cells) { const c = new Float64Array(cells.length); for (let i = 0; i < cells.length; i++) c[i] = this.acc[4 * cells[i] + 3]; return c; }
     async read(resetAcc = true) {
       const out = { st: this.st.slice(), acc: this.acc.slice() };
       if (resetAcc) this.acc.fill(0);
@@ -3376,13 +3384,15 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const hm = new Float32Array(this.rdMisc.getMappedRange().slice(0))[0]; this.rdMisc.unmap();
       return hm;
     }
-    async readCells(cells) {   // water depth at a few cells (two-way coupling), copied 16 bytes per cell
+    async cellsOf(buf, cells, comp) {   // one component of a vec4 buffer at a few cells (two-way coupling), copied 16 bytes per cell
       const d = this.dev, M = cells.length; if (!M) return new Float32Array(0);
       if (!this.rdCells || this.rdCells.size < 16 * M) { if (this.rdCells) this.rdCells.destroy(); this.rdCells = d.createBuffer({ size: 16 * M, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); }
-      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(this.bSt, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
+      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(buf, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
       await this.rdCells.mapAsync(GPUMapMode.READ, 0, 16 * M); const a = new Float32Array(this.rdCells.getMappedRange(0, 16 * M).slice(0)); this.rdCells.unmap();
-      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i]; return h;
+      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i + comp]; return h;
     }
+    async readCells(cells) { return this.cellsOf(this.bSt, cells, 0); }
+    async readClamp(cells) { return Float64Array.from(await this.cellsOf(this.bAcc, cells, 3)); }
     async readVel() {
       const d = this.dev, N = this.g.N, rb = d.createBuffer({ size: 16 * N, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
       const enc = d.createCommandEncoder(); enc.copyBufferToBuffer(this.bSrc, 0, rb, 0, 16 * N); d.queue.submit([enc.finish()]);
@@ -3411,7 +3421,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
   /* o: {t0, t1 (hours), rainAt(i) -> in/hr for rain interval i = floor(t / rainStep) (rainStep s, default 3600, so i is the hour),
    *     stageAt(tHours) -> array (ft), drainInHr, pipes, init (initial state; alone it is an initial condition and the depth maxima restart from it),
    *     initVel ({vmax, dvmax, froude}: with init, a hot start that carries both the depth and the velocity maxima over), cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
-   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source}
+   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source,
+   *     afterChunk(tHours0, tHours1, solver) called once the interval has run (tHours1 is where it stopped; two-way coupling reads what the inlets took)}
    * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
    * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
    * 50 ms so a stop request sent as a message is seen. The solver is reset at the start, so nothing carries over from an earlier run. */
@@ -3508,6 +3519,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         if (stopped) span = dt * done;
       } else hmC = await solver.chunk(co);
       L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done; L.captured += qSink * dt * done;
+      if (o.afterChunk) await o.afterChunk(t / 3600, (t + dt * done) / 3600, solver);
       // next chunk: allow for the depth to grow by a quarter before the next reading
       hm = Math.max(hmC * 1.25, 0.05); o._dt = dt;
       t += span; steps += done; chunks++;
@@ -4121,16 +4133,17 @@ else if (typeof define === 'function' && define['amd'])
 /* Two-way SWMM <-> 2D coupling with EPA SWMM 5.2.4 compiled to WebAssembly (vendor/swmm-wasm/swmm5.js).
  *
  * Each coupling interval [t0, t1] (one engine chunk):
- *   1. read the 2D depth at each coupled cell;
- *   2. inlet capture Qin (surface -> SWMM) at each coupled junction:
+ *   1. before the interval (sourceAt): read the 2D depth at each inlet cell and set each inlet's demand
  *        Qin = min(weir Cw*Lw*Hw^1.5, orifice Co*A*sqrt(2 g Ho)), Hw = water depth over the inlet crest (at most the cell depth),
  *        Ho = Hw while the node head Hn is at or below the crest, else the smaller of Hw and (H2 - Hn) (H2 = 2D water level; no capture once Hn >= H2).
- *        The two regimes meet at Hn = crest, so the exchange does not jump when a flooding node sits exactly at its rim;
- *        capped at a fraction of the water standing in the cell over the interval;
- *   3. SWMM gets Qin as lateral inflow and steps to t1; the node overflow (SWMM flooding, ALLOW_PONDING NO) is averaged over its steps;
- *   4. the 2D gets (overflow - Qin) at the cell. Explicit, so the 2D sees SWMM's response one interval later.
+ *        The two regimes meet at Hn = crest, so the exchange does not jump when a flooding node sits exactly at its rim.
+ *        The 2D gets the demand as a sink and the overflow SWMM produced in the previous interval as a source (its volume, spread over this one);
+ *   2. the 2D runs the interval. Each step a sink takes what its cell holds, at most the demand; what the cell could not supply is the
+ *        clamp at that cell, so no water is created and the inlet takes no more than reaches it (no per-interval cap tied to the cell size);
+ *   3. after the interval (afterChunk): the volume each inlet actually took (demand x interval - its share of the clamp at its cell) goes to
+ *        SWMM as lateral inflow while SWMM steps over the same interval; the node overflow (ALLOW_PONDING NO) is stored for the next interval.
+ * Explicit: the 2D sees SWMM's overflow one interval later; SWMM receives exactly the water the 2D lost through the inlets.
  * Nodes that are outside the grid or have no open cell nearby are not coupled; their flooding leaves the system and is tallied as lost.
- * Water conservation is tallied on both sides: volume sent to SWMM = volume taken from the 2D (any shortfall shows as the 2D clamp term).
  */
 (function (root) {
   "use strict";
@@ -4197,7 +4210,7 @@ else if (typeof define === 'function' && define['amd'])
     }
   }
 
-  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (0.5), searchFt (30),
+  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (none), searchFt (30),
    *   inlets: [{x, y, node, lw, area, cw, co, rimFt}] (optional; inlet points in the grid CRS, each tied to a SWMM junction;
    *     rimFt, the inlet crest, defaults to the SWMM rim of its node, the same crest a default inlet has),
    *   defaultInlets: true (junctions with no inlet in the list get one at the node with the default size; a junction whose listed inlets
@@ -4207,7 +4220,7 @@ else if (typeof define === 'function' && define['amd'])
   async function makeCoupler(B, createSWMM, inpText, model, o = {}) {
     const sw = await SwmmEngine.open(createSWMM, inpText);
     const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = Math.max(1, Math.ceil(searchFt / Gd.dxFt));
-    const def = { cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0 }, capFrac = o.capFrac ?? 0.5;
+    const def = { cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0 }, capFrac = o.capFrac ?? Infinity;   // capFrac: optional extra limit (fraction of the cell's water per interval)
     const links = [], nodeMap = [], byName = {};
     for (let i = 0; i < sw.nNodes; i++) {
       const name = sw.names[i], nd = model.nodes[model.nodeIndex[name]], type = Math.round(sw.get(P.NODE_TYPE, i));
@@ -4249,15 +4262,16 @@ else if (typeof define === 'function' && define['amd'])
     const sources = links.map((l) => ({ cell: l.k, name: l.name })).concat(inlets.map((it) => ({ cell: it.k, name: it.name, sink: true })));
     // several inlets in one cell share the cell's water
     const perCell = {}; for (const it of inlets) perCell[it.k] = (perCell[it.k] || 0) + 1;
-    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
+    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, demanded: 0, shortfall: 0, pendingOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
-    let lastRates = links.map(() => 0);
-    const inletCells = inlets.map((it) => it.k);
+    let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null;
+    const inletCells = inlets.map((it) => it.k), cells = [...new Set(inletCells)];
+    const clampAt = async (solver) => (solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length));
+    /* before an interval: inlet demands from the depths now, and last interval's overflow volume as this interval's source */
     async function sourceAt(h0, h1, solver) {
       const dt = (h1 - h0) * 3600; if (!(dt > 0)) return sources.map(() => 0);
       if (sw.tSec < h0 * 3600 - 1e-6) sw.advance(h0 * 3600, []);   // a run that starts later than SWMM: SWMM catches up without exchange
       const h = await solver.readCells(inletCells);
-      const lat = new Float64Array(links.length);
       const qin = inlets.map((it, m) => {
         if (sw.done) return 0;   // after the SWMM run ends nothing can be passed to it
         const d = Math.max(h[m], 0); if (!(d > 1e-3)) return 0;
@@ -4265,15 +4279,33 @@ else if (typeof define === 'function' && define['amd'])
         const hw = Math.min(d, Math.max(H2 - rim, 0)), ho = Hn <= rim ? hw : Math.min(hw, H2 - Hn);
         let q = 0;
         if (hw > 0 && ho > 0) q = Math.min(it.cw * it.lw * Math.pow(hw, 1.5), it.co * it.area * Math.sqrt(2 * G * ho));
-        q = Math.min(q, capFrac * d * A / dt / perCell[it.k]);
-        lat[it.j] += q; return q;
+        return Math.min(q, capFrac * d * A / dt / perCell[it.k]);
       });
-      links.forEach((l, j) => { if (l.junction) sw.set(P.NODE_LATFLOW, l.i, lat[j] / sw.qf); });
-      const over = sw.advance(h1 * 3600, allIdx);
-      for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += over[i] * dt;
-      lastRates = links.map((l, j) => { const qo = over[l.i]; tally.perNode[j].in += lat[j] * dt; tally.perNode[j].out += qo * dt; tally.sentToSwmm += lat[j] * dt; tally.fromSwmm += qo * dt; return qo - lat[j]; });
-      qin.forEach((q, m) => (tally.perInlet[m] += q * dt));
-      return links.map((l) => over[l.i]).concat(qin.map((q) => -q));
+      const over = pendV.map((v) => v / dt); pendV = links.map(() => 0);
+      cur = { h0, qin, over, c0: await clampAt(solver) };
+      return over.concat(qin.map((q) => -q));
+    }
+    /* after an interval (h1 is where it stopped): what the inlets took goes to SWMM, which steps over the same interval */
+    async function afterChunk(h0, h1, solver) {
+      if (!cur) return; const c = cur; cur = null; const dt = (h1 - h0) * 3600; if (!(dt > 0)) return;
+      const c1 = await clampAt(solver), demCell = {};
+      inlets.forEach((it, m) => (demCell[it.k] = (demCell[it.k] || 0) + c.qin[m] * dt));
+      // the clamp that built up at an inlet cell over this interval is demand the cell could not supply; inlets in a cell share it by demand.
+      // (the tallies are reset when the 2D writes a map, which happens after this call, so c1 - c0 is this interval's clamp)
+      const shortCell = {}; cells.forEach((k, i) => (shortCell[k] = Math.min(Math.max((c1[i] - c.c0[i]) * A, 0), demCell[k] || 0)));
+      const lat = new Float64Array(links.length), took = inlets.map((it, m) => {
+        const dem = c.qin[m] * dt, v = dem - (demCell[it.k] > 0 ? shortCell[it.k] * dem / demCell[it.k] : 0);
+        tally.demanded += dem; tally.shortfall += dem - v; lat[it.j] += v / dt; return v;
+      });
+      links.forEach((l, j) => { if (l.junction && !sw.done) sw.set(P.NODE_LATFLOW, l.i, lat[j] / sw.qf); });
+      const t0 = sw.tSec, ov = sw.advance(h1 * 3600, allIdx), dts = Math.max(sw.tSec - t0, 0);
+      for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += ov[i] * dts;
+      lastRates = links.map((l, j) => {
+        const v = ov[l.i] * dts; pendV[j] += v; tally.fromSwmm += v; tally.perNode[j].out += v; tally.perNode[j].in += lat[j] * dt; tally.sentToSwmm += lat[j] * dt;
+        return c.over[j] - lat[j];   // net exchange during this interval (+ out of SWMM onto the 2D)
+      });
+      took.forEach((v, m) => (tally.perInlet[m] += v));
+      tally.pendingOverflow = pendV.reduce((a, v) => a + v, 0);   // overflow SWMM made in the last interval, given to the 2D in the next one
     }
     const uncoupled = nodeMap.filter((r) => /not coupled/.test(r.status)).length;
     if (uncoupled) W.push(`${uncoupled} SWMM nodes are not coupled (outside the grid, outfalls, inside a level boundary or without an open cell nearby); their overflow is counted as lost`);
@@ -4284,7 +4316,7 @@ else if (typeof define === 'function' && define['amd'])
     /* stop the exchange, run SWMM to the end of its simulation and close it */
     const finish = () => { stop(); sw.advance(1e12, []); return sw.finish(); };
     return { sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, lw: it.lw, area: it.area, rimFt: it.rim })),
-      sourceAt, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), stop, finish };
+      sourceAt, afterChunk, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), stop, finish };
   }
 
   const api = { makeCoupler, prepareInp, SwmmEngine, P };
@@ -4499,7 +4531,7 @@ async function run(o, id) {
   const t0w = Date.now(), simLen = (o.t1 - o.t0) * 3600;
   const isOpen = (k) => (g.aux[4 * k + 2] & 3) === 0;
   const r = await Flood2D.simulate(g, solver, {
-    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
+    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
     shouldStop: () => STOP,
     onRead: async (fr) => {
       const st = fr.st, q = new Uint8Array(N); let wet = 0, vol = 0, dmax = 0, bNow = 0;
@@ -5190,7 +5222,9 @@ function pointChart() {
 }
 function ledger() {
   const L0 = S.final.ledger, ac = (v) => fmt(v / 43560, 3);
-  const rows = [["Rain on the grid", L0.rain], ["SWMM node flooding (into the 2D)", L0.inflow], ["Taken by SWMM inlets", -(L0.captured || 0)], ["Infiltration", -L0.inf], ["Out at the grid edges", -L0.edge], ["Into level boundaries (– means out of them)", -L0.toLakes], ["Change in water on the surface", -(L0.v1 - L0.v0)], ["Depth clamped at zero (numerical)", L0.clamp], ["Closure (should be about 0)", -L0.err]];
+  // two-way: inlet demand the cell could not supply shows in the engine as a clamp; net it out of both rows so they read as water actually moved
+  const sf = (S.final.swmm2 && S.final.swmm2.tally && S.final.swmm2.tally.shortfall) || 0;
+  const rows = [["Rain on the grid", L0.rain], ["SWMM node flooding (into the 2D)", L0.inflow], ["Taken by SWMM inlets", -((L0.captured || 0) - sf)], ["Infiltration", -L0.inf], ["Out at the grid edges", -L0.edge], ["Into level boundaries (– means out of them)", -L0.toLakes], ["Change in water on the surface", -(L0.v1 - L0.v0)], ["Depth clamped at zero (numerical)", L0.clamp - sf], ["Closure (should be about 0)", -L0.err]];
   $("#ledger").innerHTML = `<table class="t"><thead><tr><th>Term</th><th class="n">ac-ft</th><th class="n">cubic feet</th></tr></thead><tbody>${rows.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="n">${ac(v)}</td><td class="n">${fmt(v, 0)}</td></tr>`).join("")}</tbody></table>
     <p class="note">Positive terms add water to the surface. Closure is ${fmt(Math.abs(L0.errPct), 5)}% of the water moved.</p>` + swmm2Html();
   const r2 = S.final.swmm2;
@@ -5203,6 +5237,8 @@ function swmm2Html() {
     <tr><td>Overflow from SWMM nodes onto the 2D</td><td class="n">${ac(t.fromSwmm)} ac-ft</td></tr>
     <tr><td>Surface water into SWMM inlets</td><td class="n">${ac(t.sentToSwmm)} ac-ft</td></tr>
     <tr><td>Overflow at nodes not coupled (lost)</td><td class="n">${ac(t.lostOverflow)} ac-ft</td></tr>
+    <tr><td>Inlet demand the surface could not supply</td><td class="n">${ac(t.shortfall || 0)} ac-ft</td></tr>
+    <tr><td>Overflow made in the last interval (after the 2D ended)</td><td class="n">${ac(t.pendingOverflow || 0)} ac-ft</td></tr>
     <tr><td>Inlets used</td><td class="n">${(r2.inlets || []).length}</td></tr>
     <tr><td>SWMM flow routing continuity error</td><td class="n">${fmt(r2.massBalance.flow, 3)} %</td></tr></tbody></table>
     ${r2.notes && r2.notes.length ? `<p class="warn">${r2.notes.map(esc).join("<br>")}</p>` : ""}

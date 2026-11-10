@@ -205,7 +205,7 @@ async function run(o, id) {
   const t0w = Date.now(), simLen = (o.t1 - o.t0) * 3600;
   const isOpen = (k) => (g.aux[4 * k + 2] & 3) === 0;
   const r = await Flood2D.simulate(g, solver, {
-    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
+    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
     shouldStop: () => STOP,
     onRead: async (fr) => {
       const st = fr.st, q = new Uint8Array(N); let wet = 0, vol = 0, dmax = 0, bNow = 0;

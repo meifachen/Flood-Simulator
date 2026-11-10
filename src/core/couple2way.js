@@ -1,16 +1,17 @@
 /* Two-way SWMM <-> 2D coupling with EPA SWMM 5.2.4 compiled to WebAssembly (vendor/swmm-wasm/swmm5.js).
  *
  * Each coupling interval [t0, t1] (one engine chunk):
- *   1. read the 2D depth at each coupled cell;
- *   2. inlet capture Qin (surface -> SWMM) at each coupled junction:
+ *   1. before the interval (sourceAt): read the 2D depth at each inlet cell and set each inlet's demand
  *        Qin = min(weir Cw*Lw*Hw^1.5, orifice Co*A*sqrt(2 g Ho)), Hw = water depth over the inlet crest (at most the cell depth),
  *        Ho = Hw while the node head Hn is at or below the crest, else the smaller of Hw and (H2 - Hn) (H2 = 2D water level; no capture once Hn >= H2).
- *        The two regimes meet at Hn = crest, so the exchange does not jump when a flooding node sits exactly at its rim;
- *        capped at a fraction of the water standing in the cell over the interval;
- *   3. SWMM gets Qin as lateral inflow and steps to t1; the node overflow (SWMM flooding, ALLOW_PONDING NO) is averaged over its steps;
- *   4. the 2D gets (overflow - Qin) at the cell. Explicit, so the 2D sees SWMM's response one interval later.
+ *        The two regimes meet at Hn = crest, so the exchange does not jump when a flooding node sits exactly at its rim.
+ *        The 2D gets the demand as a sink and the overflow SWMM produced in the previous interval as a source (its volume, spread over this one);
+ *   2. the 2D runs the interval. Each step a sink takes what its cell holds, at most the demand; what the cell could not supply is the
+ *        clamp at that cell, so no water is created and the inlet takes no more than reaches it (no per-interval cap tied to the cell size);
+ *   3. after the interval (afterChunk): the volume each inlet actually took (demand x interval - its share of the clamp at its cell) goes to
+ *        SWMM as lateral inflow while SWMM steps over the same interval; the node overflow (ALLOW_PONDING NO) is stored for the next interval.
+ * Explicit: the 2D sees SWMM's overflow one interval later; SWMM receives exactly the water the 2D lost through the inlets.
  * Nodes that are outside the grid or have no open cell nearby are not coupled; their flooding leaves the system and is tallied as lost.
- * Water conservation is tallied on both sides: volume sent to SWMM = volume taken from the 2D (any shortfall shows as the 2D clamp term).
  */
 (function (root) {
   "use strict";
@@ -77,7 +78,7 @@
     }
   }
 
-  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (0.5), searchFt (30),
+  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (none), searchFt (30),
    *   inlets: [{x, y, node, lw, area, cw, co, rimFt}] (optional; inlet points in the grid CRS, each tied to a SWMM junction;
    *     rimFt, the inlet crest, defaults to the SWMM rim of its node, the same crest a default inlet has),
    *   defaultInlets: true (junctions with no inlet in the list get one at the node with the default size; a junction whose listed inlets
@@ -87,7 +88,7 @@
   async function makeCoupler(B, createSWMM, inpText, model, o = {}) {
     const sw = await SwmmEngine.open(createSWMM, inpText);
     const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = Math.max(1, Math.ceil(searchFt / Gd.dxFt));
-    const def = { cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0 }, capFrac = o.capFrac ?? 0.5;
+    const def = { cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0 }, capFrac = o.capFrac ?? Infinity;   // capFrac: optional extra limit (fraction of the cell's water per interval)
     const links = [], nodeMap = [], byName = {};
     for (let i = 0; i < sw.nNodes; i++) {
       const name = sw.names[i], nd = model.nodes[model.nodeIndex[name]], type = Math.round(sw.get(P.NODE_TYPE, i));
@@ -129,15 +130,16 @@
     const sources = links.map((l) => ({ cell: l.k, name: l.name })).concat(inlets.map((it) => ({ cell: it.k, name: it.name, sink: true })));
     // several inlets in one cell share the cell's water
     const perCell = {}; for (const it of inlets) perCell[it.k] = (perCell[it.k] || 0) + 1;
-    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
+    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, demanded: 0, shortfall: 0, pendingOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
-    let lastRates = links.map(() => 0);
-    const inletCells = inlets.map((it) => it.k);
+    let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null;
+    const inletCells = inlets.map((it) => it.k), cells = [...new Set(inletCells)];
+    const clampAt = async (solver) => (solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length));
+    /* before an interval: inlet demands from the depths now, and last interval's overflow volume as this interval's source */
     async function sourceAt(h0, h1, solver) {
       const dt = (h1 - h0) * 3600; if (!(dt > 0)) return sources.map(() => 0);
       if (sw.tSec < h0 * 3600 - 1e-6) sw.advance(h0 * 3600, []);   // a run that starts later than SWMM: SWMM catches up without exchange
       const h = await solver.readCells(inletCells);
-      const lat = new Float64Array(links.length);
       const qin = inlets.map((it, m) => {
         if (sw.done) return 0;   // after the SWMM run ends nothing can be passed to it
         const d = Math.max(h[m], 0); if (!(d > 1e-3)) return 0;
@@ -145,15 +147,33 @@
         const hw = Math.min(d, Math.max(H2 - rim, 0)), ho = Hn <= rim ? hw : Math.min(hw, H2 - Hn);
         let q = 0;
         if (hw > 0 && ho > 0) q = Math.min(it.cw * it.lw * Math.pow(hw, 1.5), it.co * it.area * Math.sqrt(2 * G * ho));
-        q = Math.min(q, capFrac * d * A / dt / perCell[it.k]);
-        lat[it.j] += q; return q;
+        return Math.min(q, capFrac * d * A / dt / perCell[it.k]);
       });
-      links.forEach((l, j) => { if (l.junction) sw.set(P.NODE_LATFLOW, l.i, lat[j] / sw.qf); });
-      const over = sw.advance(h1 * 3600, allIdx);
-      for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += over[i] * dt;
-      lastRates = links.map((l, j) => { const qo = over[l.i]; tally.perNode[j].in += lat[j] * dt; tally.perNode[j].out += qo * dt; tally.sentToSwmm += lat[j] * dt; tally.fromSwmm += qo * dt; return qo - lat[j]; });
-      qin.forEach((q, m) => (tally.perInlet[m] += q * dt));
-      return links.map((l) => over[l.i]).concat(qin.map((q) => -q));
+      const over = pendV.map((v) => v / dt); pendV = links.map(() => 0);
+      cur = { h0, qin, over, c0: await clampAt(solver) };
+      return over.concat(qin.map((q) => -q));
+    }
+    /* after an interval (h1 is where it stopped): what the inlets took goes to SWMM, which steps over the same interval */
+    async function afterChunk(h0, h1, solver) {
+      if (!cur) return; const c = cur; cur = null; const dt = (h1 - h0) * 3600; if (!(dt > 0)) return;
+      const c1 = await clampAt(solver), demCell = {};
+      inlets.forEach((it, m) => (demCell[it.k] = (demCell[it.k] || 0) + c.qin[m] * dt));
+      // the clamp that built up at an inlet cell over this interval is demand the cell could not supply; inlets in a cell share it by demand.
+      // (the tallies are reset when the 2D writes a map, which happens after this call, so c1 - c0 is this interval's clamp)
+      const shortCell = {}; cells.forEach((k, i) => (shortCell[k] = Math.min(Math.max((c1[i] - c.c0[i]) * A, 0), demCell[k] || 0)));
+      const lat = new Float64Array(links.length), took = inlets.map((it, m) => {
+        const dem = c.qin[m] * dt, v = dem - (demCell[it.k] > 0 ? shortCell[it.k] * dem / demCell[it.k] : 0);
+        tally.demanded += dem; tally.shortfall += dem - v; lat[it.j] += v / dt; return v;
+      });
+      links.forEach((l, j) => { if (l.junction && !sw.done) sw.set(P.NODE_LATFLOW, l.i, lat[j] / sw.qf); });
+      const t0 = sw.tSec, ov = sw.advance(h1 * 3600, allIdx), dts = Math.max(sw.tSec - t0, 0);
+      for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += ov[i] * dts;
+      lastRates = links.map((l, j) => {
+        const v = ov[l.i] * dts; pendV[j] += v; tally.fromSwmm += v; tally.perNode[j].out += v; tally.perNode[j].in += lat[j] * dt; tally.sentToSwmm += lat[j] * dt;
+        return c.over[j] - lat[j];   // net exchange during this interval (+ out of SWMM onto the 2D)
+      });
+      took.forEach((v, m) => (tally.perInlet[m] += v));
+      tally.pendingOverflow = pendV.reduce((a, v) => a + v, 0);   // overflow SWMM made in the last interval, given to the 2D in the next one
     }
     const uncoupled = nodeMap.filter((r) => /not coupled/.test(r.status)).length;
     if (uncoupled) W.push(`${uncoupled} SWMM nodes are not coupled (outside the grid, outfalls, inside a level boundary or without an open cell nearby); their overflow is counted as lost`);
@@ -164,7 +184,7 @@
     /* stop the exchange, run SWMM to the end of its simulation and close it */
     const finish = () => { stop(); sw.advance(1e12, []); return sw.finish(); };
     return { sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, lw: it.lw, area: it.area, rimFt: it.rim })),
-      sourceAt, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), stop, finish };
+      sourceAt, afterChunk, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), stop, finish };
   }
 
   const api = { makeCoupler, prepareInp, SwmmEngine, P };

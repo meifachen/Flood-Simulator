@@ -168,6 +168,8 @@
       return hm;
     }
     async readCells(cells) { const h = new Float32Array(cells.length); for (let i = 0; i < cells.length; i++) h[i] = this.st[4 * cells[i]]; return h; }
+    /* the depth clamped at zero so far at a few cells (ft; reset with the other tallies at each reading): a withdrawal the cell could not supply */
+    async readClamp(cells) { const c = new Float64Array(cells.length); for (let i = 0; i < cells.length; i++) c[i] = this.acc[4 * cells[i] + 3]; return c; }
     async read(resetAcc = true) {
       const out = { st: this.st.slice(), acc: this.acc.slice() };
       if (resetAcc) this.acc.fill(0);
@@ -418,13 +420,15 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const hm = new Float32Array(this.rdMisc.getMappedRange().slice(0))[0]; this.rdMisc.unmap();
       return hm;
     }
-    async readCells(cells) {   // water depth at a few cells (two-way coupling), copied 16 bytes per cell
+    async cellsOf(buf, cells, comp) {   // one component of a vec4 buffer at a few cells (two-way coupling), copied 16 bytes per cell
       const d = this.dev, M = cells.length; if (!M) return new Float32Array(0);
       if (!this.rdCells || this.rdCells.size < 16 * M) { if (this.rdCells) this.rdCells.destroy(); this.rdCells = d.createBuffer({ size: 16 * M, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); }
-      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(this.bSt, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
+      const enc = d.createCommandEncoder(); cells.forEach((k, i) => enc.copyBufferToBuffer(buf, 16 * k, this.rdCells, 16 * i, 16)); d.queue.submit([enc.finish()]);
       await this.rdCells.mapAsync(GPUMapMode.READ, 0, 16 * M); const a = new Float32Array(this.rdCells.getMappedRange(0, 16 * M).slice(0)); this.rdCells.unmap();
-      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i]; return h;
+      const h = new Float32Array(M); for (let i = 0; i < M; i++) h[i] = a[4 * i + comp]; return h;
     }
+    async readCells(cells) { return this.cellsOf(this.bSt, cells, 0); }
+    async readClamp(cells) { return Float64Array.from(await this.cellsOf(this.bAcc, cells, 3)); }
     async readVel() {
       const d = this.dev, N = this.g.N, rb = d.createBuffer({ size: 16 * N, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
       const enc = d.createCommandEncoder(); enc.copyBufferToBuffer(this.bSrc, 0, rb, 0, 16 * N); d.queue.submit([enc.finish()]);
@@ -453,7 +457,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
   /* o: {t0, t1 (hours), rainAt(i) -> in/hr for rain interval i = floor(t / rainStep) (rainStep s, default 3600, so i is the hour),
    *     stageAt(tHours) -> array (ft), drainInHr, pipes, init (initial state; alone it is an initial condition and the depth maxima restart from it),
    *     initVel ({vmax, dvmax, froude}: with init, a hot start that carries both the depth and the velocity maxima over), cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
-   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source}
+   *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source,
+   *     afterChunk(tHours0, tHours1, solver) called once the interval has run (tHours1 is where it stopped; two-way coupling reads what the inlets took)}
    * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
    * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
    * 50 ms so a stop request sent as a message is seen. The solver is reset at the start, so nothing carries over from an earlier run. */
@@ -550,6 +555,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         if (stopped) span = dt * done;
       } else hmC = await solver.chunk(co);
       L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done; L.captured += qSink * dt * done;
+      if (o.afterChunk) await o.afterChunk(t / 3600, (t + dt * done) / 3600, solver);
       // next chunk: allow for the depth to grow by a quarter before the next reading
       hm = Math.max(hmC * 1.25, 0.05); o._dt = dt;
       t += span; steps += done; chunks++;

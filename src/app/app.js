@@ -461,7 +461,9 @@ function pointChart() {
 }
 function ledger() {
   const L0 = S.final.ledger, ac = (v) => fmt(v / 43560, 3);
-  const rows = [["Rain on the grid", L0.rain], ["SWMM node flooding (into the 2D)", L0.inflow], ["Taken by SWMM inlets", -(L0.captured || 0)], ["Infiltration", -L0.inf], ["Out at the grid edges", -L0.edge], ["Into level boundaries (– means out of them)", -L0.toLakes], ["Change in water on the surface", -(L0.v1 - L0.v0)], ["Depth clamped at zero (numerical)", L0.clamp], ["Closure (should be about 0)", -L0.err]];
+  // two-way: inlet demand the cell could not supply shows in the engine as a clamp; net it out of both rows so they read as water actually moved
+  const sf = (S.final.swmm2 && S.final.swmm2.tally && S.final.swmm2.tally.shortfall) || 0;
+  const rows = [["Rain on the grid", L0.rain], ["SWMM node flooding (into the 2D)", L0.inflow], ["Taken by SWMM inlets", -((L0.captured || 0) - sf)], ["Infiltration", -L0.inf], ["Out at the grid edges", -L0.edge], ["Into level boundaries (– means out of them)", -L0.toLakes], ["Change in water on the surface", -(L0.v1 - L0.v0)], ["Depth clamped at zero (numerical)", L0.clamp - sf], ["Closure (should be about 0)", -L0.err]];
   $("#ledger").innerHTML = `<table class="t"><thead><tr><th>Term</th><th class="n">ac-ft</th><th class="n">cubic feet</th></tr></thead><tbody>${rows.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="n">${ac(v)}</td><td class="n">${fmt(v, 0)}</td></tr>`).join("")}</tbody></table>
     <p class="note">Positive terms add water to the surface. Closure is ${fmt(Math.abs(L0.errPct), 5)}% of the water moved.</p>` + swmm2Html();
   const r2 = S.final.swmm2;
@@ -474,6 +476,8 @@ function swmm2Html() {
     <tr><td>Overflow from SWMM nodes onto the 2D</td><td class="n">${ac(t.fromSwmm)} ac-ft</td></tr>
     <tr><td>Surface water into SWMM inlets</td><td class="n">${ac(t.sentToSwmm)} ac-ft</td></tr>
     <tr><td>Overflow at nodes not coupled (lost)</td><td class="n">${ac(t.lostOverflow)} ac-ft</td></tr>
+    <tr><td>Inlet demand the surface could not supply</td><td class="n">${ac(t.shortfall || 0)} ac-ft</td></tr>
+    <tr><td>Overflow made in the last interval (after the 2D ended)</td><td class="n">${ac(t.pendingOverflow || 0)} ac-ft</td></tr>
     <tr><td>Inlets used</td><td class="n">${(r2.inlets || []).length}</td></tr>
     <tr><td>SWMM flow routing continuity error</td><td class="n">${fmt(r2.massBalance.flow, 3)} %</td></tr></tbody></table>
     ${r2.notes && r2.notes.length ? `<p class="warn">${r2.notes.map(esc).join("<br>")}</p>` : ""}
