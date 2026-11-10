@@ -1,0 +1,6 @@
+# Keep the built app and binary data byte-exact on every platform, so dist/FloodSimulator.manifest.json matches the file on disk
+dist/FloodSimulator.html -text
+*.tif binary
+*.out binary
+*.gz binary
+*.bundle binary
