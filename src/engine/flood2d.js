@@ -58,10 +58,12 @@
       this.nqx = (g.nx + 1) * g.ny; this.q = new Float32Array(this.nqx + g.nx * (g.ny + 1)); this.qo = new Float32Array(this.q.length);
       this.theta = g.theta ?? 0.8; this.kind = "cpu"; this.src = new Float32Array(N);   // point-source depth rate (ft/s) per cell
       this.vmx = new Float32Array(N); this.dvmx = new Float32Array(N);   // running maxima of speed (ft/s) and depth x speed (ft2/s)
+      this.lim = new Uint8Array(N);   // 1 where a face of the cell hit the Froude limiter (flow capped at critical) with water deeper than VEL_H
     }
     async init() { return this; }
-    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); this.vmx.fill(0); this.dvmx.fill(0); }
-    async readVel() { return { vmax: this.vmx.slice(), dvmax: this.dvmx.slice() }; }
+    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); this.vmx.fill(0); this.dvmx.fill(0); this.lim.fill(0); }
+    async readVel() { return { vmax: this.vmx.slice(), dvmax: this.dvmx.slice(), froude: this.lim.slice() }; }
+    setVel(v) { this.vmx.set(v.vmax); this.dvmx.set(v.dvmax); if (v.froude) this.lim.set(v.froude); }
     setSources(list) { const A = this.g.dx * this.g.dx; this.src.fill(0); for (const s of list || []) this.src[s.cell] += s.rate / A; }
     setBoundary(stages) {
       const g = this.g, a = g.aux, st = this.st;
@@ -73,14 +75,14 @@
     step(dt, rain, drain, tHours) {
       const g = this.g, N = g.N, nx = g.nx, ny = g.ny, a = g.aux, p = g.prm, st = this.st, r = this.r, acc = this.acc, nqx = this.nqx, dx = g.dx;
       const qo = this.q, q = this.qo; this.q = q; this.qo = qo;   // qo: previous step, q: this step
-      const sqKN = Math.sqrt(KN), gdt = G * dt, th = this.theta, th2 = (1 - th) / 2;
+      const sqKN = Math.sqrt(KN), gdt = G * dt, th = this.theta, th2 = (1 - th) / 2, lim = this.lim;
       let hm = 0;
       // (A) faces from the previous step's limited flows (de Almeida et al. 2012 weighting with the two neighbouring faces)
       const edgeQ = (k, opp, e) => {
         if ((a[4 * k + 2] & 3) !== 0) return 0;
         const h = st[4 * k]; if (!(h > HMIN)) return 0;
         const sl = Math.max((a[4 * opp] - a[4 * k]) / dx, 0.001);
-        let v = sqKN / p[4 * k] * h * Math.cbrt(h * h) * Math.sqrt(sl); const qm = h * Math.sqrt(G * h); if (v > qm) v = qm;
+        let v = sqKN / p[4 * k] * h * Math.cbrt(h * h) * Math.sqrt(sl); const qm = h * Math.sqrt(G * h); if (v > qm) { v = qm; if (h > VEL_H) lim[k] = 1; }
         if (h > hm) hm = h; return e * v;
       };
       // interior face between L and R; f face index; fa/fb neighbouring faces in the same direction (or -1); La/Rb the cells beyond
@@ -96,7 +98,8 @@
         if (fb >= 0) { v0 = qo[fb]; qb = v0 * (v0 > 0 ? r[R] : r[Rb]); }
         const n = 0.5 * (p[4 * L] + p[4 * R]);
         let v = (th * qe + th2 * (qa + qb) - gdt * hf * (eR - eL) / dx) / (1 + gdt * n * n * (qe < 0 ? -qe : qe) / (KN * hf * hf * Math.cbrt(hf)));
-        const qm = hf * Math.sqrt(G * hf); if (v > qm) v = qm; else if (v < -qm) v = -qm;
+        const qm = hf * Math.sqrt(G * hf);
+        if (v > qm || v < -qm) { v = v > 0 ? qm : -qm; if (hf > VEL_H) { lim[L] = 1; lim[R] = 1; } }
         if (hf > hm) hm = hf; return v;
       };
       for (let rr = 0; rr < ny; rr++) {
@@ -184,7 +187,7 @@ struct P { nx: u32, ny: u32, nqx: u32, nf: u32, dx: f32, dt: f32, rain: f32, dra
 @group(0) @binding(6) var<storage, read_write> acc: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read_write> misc: array<atomic<u32>>;
 @group(0) @binding(8) var<storage, read> qo: array<f32>;
-@group(0) @binding(9) var<storage, read_write> src: array<vec4<f32>>;   // x: point-source depth rate, y: max speed, z: max depth x speed
+@group(0) @binding(9) var<storage, read_write> src: array<vec4<f32>>;   // x: point-source depth rate, y: max speed, z: max depth x speed, w: 1 where the Froude limiter acted
 var<workgroup> wmax: atomic<u32>;
 
 fn ctype(k: i32) -> u32 { return u32(aux[k].z) & 3u; }
@@ -213,7 +216,8 @@ fn faces(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         if (f < U.nqx) { if (e > 0.0) { opp = k - 1; } else { opp = k + 1; } } else { if (e > 0.0) { opp = k - nx; } else { opp = k + nx; } }
         let s = max((aux[opp].x - aux[k].x) / U.dx, 0.001);
         var qo = sqrt(U.kn) / prm[k].x * pow(h, 5.0 / 3.0) * sqrt(s);
-        qo = min(qo, h * sqrt(U.g * h));
+        let qc = h * sqrt(U.g * h);
+        if (qo > qc) { qo = qc; if (h > ${VEL_H}) { src[k].w = 1.0; } }
         qn = e * qo; hf = h;
       }
     } else {
@@ -229,7 +233,7 @@ fn faces(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
           let n = 0.5 * (prm[L].x + prm[R].x);
           var v = (U.theta * qe + 0.5 * (1.0 - U.theta) * (qa + qb) - U.g * d * U.dt * (eR - eL) / U.dx) / (1.0 + U.g * U.dt * n * n * abs(qe) / (U.kn * pow(d, 7.0 / 3.0)));
           let qm = d * sqrt(U.g * d);
-          v = clamp(v, -qm, qm);
+          if (abs(v) > qm) { v = clamp(v, -qm, qm); if (d > ${VEL_H}) { src[L].w = 1.0; src[R].w = 1.0; } }
           qn = v; hf = d;
         }
       }
@@ -320,7 +324,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups
   var cl: f32 = 0.0; if (h < 0.0) { cl = -h; h = 0.0; }
   if (h > ${VEL_H}) {
     let qx = 0.5 * (qW + qE); let qy = 0.5 * (qN + qS); let dv = sqrt(qx * qx + qy * qy);
-    sv.y = max(sv.y, dv / h); sv.z = max(sv.z, dv); src[k] = sv;
+    src[k].y = max(sv.y, dv / h); src[k].z = max(sv.z, dv);
   }
   s.x = h;
   if (h > s.z) { s.z = h; s.w = U.tHours; }
@@ -356,7 +360,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       this.nqx = (g.nx + 1) * g.ny; this.nf = this.nqx + g.nx * (g.ny + 1);
       this.bU = mk(384, B.UNIFORM | B.COPY_DST); if ((g.K || 0) > 64) throw new Error("At most 64 boundary nodes per tile");
       this.bAux = mk(16 * N, B.STORAGE, g.aux); this.bPrm = mk(16 * N, B.STORAGE, g.prm);
-      this.bSt = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bRat = mk(4 * N, B.STORAGE, new Float32Array(N).fill(1));
+      this.bSt = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bRat = mk(4 * N, B.STORAGE | B.COPY_DST, new Float32Array(N).fill(1));
       this.bQ = mk(4 * this.nf, B.STORAGE | B.COPY_DST); this.bQ2 = mk(4 * this.nf, B.STORAGE | B.COPY_DST); this.par = 0; this.bAcc = mk(16 * N, B.STORAGE | B.COPY_SRC | B.COPY_DST);
       this.bMisc = mk(16, B.STORAGE | B.COPY_SRC | B.COPY_DST); this.bSrc = mk(16 * N, B.STORAGE | B.COPY_DST | B.COPY_SRC); this.srcCells = [];
       this.rdMisc = d.createBuffer({ size: 16, usage: B.MAP_READ | B.COPY_DST });
@@ -425,8 +429,12 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const d = this.dev, N = this.g.N, rb = d.createBuffer({ size: 16 * N, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
       const enc = d.createCommandEncoder(); enc.copyBufferToBuffer(this.bSrc, 0, rb, 0, 16 * N); d.queue.submit([enc.finish()]);
       await rb.mapAsync(GPUMapMode.READ); const a = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); rb.destroy();
-      const vmax = new Float32Array(N), dvmax = new Float32Array(N); for (let k = 0; k < N; k++) { vmax[k] = a[4 * k + 1]; dvmax[k] = a[4 * k + 2]; }
-      return { vmax, dvmax };
+      const vmax = new Float32Array(N), dvmax = new Float32Array(N), froude = new Uint8Array(N); for (let k = 0; k < N; k++) { vmax[k] = a[4 * k + 1]; dvmax[k] = a[4 * k + 2]; froude[k] = a[4 * k + 3] > 0 ? 1 : 0; }
+      return { vmax, dvmax, froude };
+    }
+    setVel(v) {   // carry velocity maxima over from an earlier run (hot start); the source rates (x) start at zero
+      const N = this.g.N, a = new Float32Array(4 * N); for (let k = 0; k < N; k++) { a[4 * k + 1] = v.vmax[k]; a[4 * k + 2] = v.dvmax[k]; a[4 * k + 3] = v.froude ? v.froude[k] : 0; }
+      this.dev.queue.writeBuffer(this.bSrc, 0, a); this.srcCells = [];
     }
     async read(resetAcc = true) {
       const d = this.dev, enc = d.createCommandEncoder();
@@ -443,7 +451,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
 
   // ------------------------------------------------------------------ driver
   /* o: {t0, t1 (hours), rainAt(i) -> in/hr for rain interval i = floor(t / rainStep) (rainStep s, default 3600, so i is the hour),
-   *     stageAt(tHours) -> array (ft), drainInHr, pipes, init, cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
+   *     stageAt(tHours) -> array (ft), drainInHr, pipes, init (initial state; alone it is an initial condition and the depth maxima restart from it),
+   *     initVel ({vmax, dvmax, froude}: with init, a hot start that carries both the depth and the velocity maxima over), cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
    *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source}
    * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
    * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
@@ -470,9 +479,16 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     const s0 = checkStages(o.stageAt(o.t0), o.t0);
     for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 2) st0[4 * k] = Math.max(s0[(g.aux[4 * k + 2] >> 4) & 255] - g.aux[4 * k], 0);
     if (o.init) { if (o.init.length !== 4 * N) throw new Error("Initial state has the wrong size"); st0.set(o.init); }
+    // init alone is an initial condition (for example a lake at rest): the depth and velocity maxima both start at this moment.
+    // init with initVel is a hot start that continues an earlier run: both maxima carry over, so they always cover the same period.
+    if (o.init && !o.initVel) for (let k = 0; k < N; k++) { st0[4 * k + 2] = st0[4 * k]; st0[4 * k + 3] = st0[4 * k] > 0 ? o.t0 : 0; }
+    if (o.initVel && !(o.initVel.vmax && o.initVel.vmax.length === N && o.initVel.dvmax && o.initVel.dvmax.length === N)) throw new Error("initVel has the wrong size");
     for (let k = 0; k < 4 * N; k++) if (!Number.isFinite(st0[k])) throw new Error("Initial state contains a value that is not a number");
     solver.reset();
     if (solver.kind === "gpu") solver.upload(st0); else solver.st.set(st0);
+    if (o.initVel) solver.setVel(o.initVel);
+    let maxMult = 0; for (let k = 0; k < N; k++) if (g.aux[4 * k + 1] > maxMult) maxMult = g.aux[4 * k + 1];
+    const sqG = Math.sqrt(G);
     const vol = (st) => { let v = 0; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 0) v += st[4 * k]; return v * A; };
     const isPipe = new Uint8Array(N); for (const pp of pipes) isPipe[pp.cell] = 1;
     const L = { rain: 0, inflow: 0, captured: 0, inf: 0, drain: 0, edge: 0, pipe: 0, toLakes: 0, clamp: 0, v0: vol(st0), v1: 0, err: 0, errPct: 0 };
@@ -500,22 +516,27 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     while (t < tEnd - 1e-6) {
       if (o.shouldStop && o.shouldStop()) { stopped = true; break; }
       const hourEnd = (Math.floor(t / rainStep + 1e-9) + 1) * rainStep;   // end of this rain interval
-      const dtC = Math.min(dtMax, cfl * g.dx / Math.sqrt(G * Math.max(hm, 0.05)));
       let span = Math.min(chunkSec, hourEnd - t, tEnd - t, nextRead - t);
-      const n = Math.max(1, Math.ceil(span / dtC)), dt = span / n;
       const th = (t + span / 2) / 3600, hr = Math.floor(t / rainStep + 1e-9);
       const rainInHr = o.rainAt(hr);
       if (!(Number.isFinite(rainInHr) && rainInHr >= 0)) throw new Error(`Rainfall missing or invalid at hour ${hr} (${rainInHr})`);
       const rain = rainInHr / 12 / 3600, drainInHr = o.drainInHr || 0;
       if (!(Number.isFinite(drainInHr) && drainInHr >= 0)) throw new Error(`Invalid drain allowance ${drainInHr}`);
       const stages = checkStages(o.stageAt(th), th);
-      let sources = null, qSrc = 0, qSink = 0;
+      let sources = null, qSrc = 0, qSink = 0, hSrc = 0;
       if (srcs.length) {
         // sourceAt may be async (two-way coupling reads depths and advances SWMM); a negative rate is a withdrawal, allowed only for sources marked sink
         const rates = await o.sourceAt(t / 3600, (t + span) / 3600, solver);
         if (!rates || rates.length !== srcs.length) throw new Error(`Point inflows missing at hour ${(t / 3600).toFixed(2)}`);
-        sources = srcs.map((sc, i) => { const q = rates[i]; if (!(Number.isFinite(q) && (q >= 0 || sc.sink))) throw new Error(`Point inflow ${sc.name || sc.cell} is invalid at hour ${(t / 3600).toFixed(2)} (${q})`); if (q >= 0) qSrc += q; else qSink -= q; return { cell: sc.cell, rate: q }; });
+        const perCell = new Map();
+        sources = srcs.map((sc, i) => { const q = rates[i]; if (!(Number.isFinite(q) && (q >= 0 || sc.sink))) throw new Error(`Point inflow ${sc.name || sc.cell} is invalid at hour ${(t / 3600).toFixed(2)} (${q})`); if (q >= 0) qSrc += q; else qSink -= q; perCell.set(sc.cell, (perCell.get(sc.cell) || 0) + q); return { cell: sc.cell, rate: q }; });
+        // depth a point inflow can build in its cell before this chunk ends: the growth with no outflow, but no more than the depth at which
+        // the inflow leaves through a single face at critical flow, Q = dx sqrt(g) h^1.5 (the Froude limiter caps every face there)
+        for (const q of perCell.values()) if (q > 0) hSrc = Math.max(hSrc, Math.min(hm + q / A * span, Math.pow(q / (g.dx * sqG), 2 / 3)));
       }
+      // step size: Courant number cfl at the deepest water expected in this chunk (the last reading, point inflows, rain on the wettest cell)
+      const dtC = Math.min(dtMax, cfl * g.dx / Math.sqrt(G * Math.max(hm, hSrc, Math.max(hm, 0.05) + rain * maxMult * span)));
+      const n = Math.max(1, Math.ceil(span / dtC)), dt = span / n;
       const co = { dt, n, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
       let hmC = 0, done = n;
       if (solver.kind === "cpu") {
@@ -538,7 +559,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     }
     if (stopped && (!frames.length || frames[frames.length - 1].tHours < t / 3600 - 1e-9)) frames.push(await doRead(true));
     const vel = solver.readVel ? await solver.readVel() : null;
-    return { ledger: L, steps, chunks, frames, stopped, vmax: vel && vel.vmax, dvmax: vel && vel.dvmax };
+    return { ledger: L, steps, chunks, frames, stopped, vmax: vel && vel.vmax, dvmax: vel && vel.dvmax, froude: vel && vel.froude };
   }
 
   // ------------------------------------------------------------------ lake-level spill (steady state of the 2D model with no rain)

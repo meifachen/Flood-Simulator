@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Curb inlets for the synthetic example: two inlets per junction, 30 ft either side of the manhole on opposite gutters,
+"""Curb inlets for the synthetic example: two inlets per junction, 33.1 ft from the manhole (30 ft along the street and 14 ft across) on opposite gutters,
 4 ft weir and 2 sq ft opening each. Writes <example>/inlets.geojson and adds it to example.json.
 
     python python/make_inlets_example.py examples/synthetic_us

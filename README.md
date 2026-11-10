@@ -18,10 +18,10 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
 - **Results:**
   - animated depth map over a hillshade or basemap;
   - 3D view with buildings and water;
-  - maximum velocity and maximum depth × velocity maps;
+  - maximum velocity and maximum depth × velocity maps, with the cells where the solver capped the flow at critical speed hatched (speed there is a lower bound);
   - charts of flooded area, SWMM exchange, boundary levels and the depth at any point;
   - water-balance table;
-  - exports: a 5-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity), buildings CSV and SWMM exchange CSV;
+  - exports: a 6-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity, critical-flow cap flag), buildings CSV and SWMM exchange CSV;
   - save a run to a `.fsim.gz` file and open it later without the inputs.
 
 ![screenshot](docs/screenshot.png)
@@ -63,7 +63,8 @@ Notes:
 - **Two-way settings:**
   - the coupling is explicit, with a default interval of 30 s; the 2D sees SWMM's response one interval later;
   - `ALLOW_PONDING` is forced to `NO` in the in-memory copy so that overflow reaches the surface, and the app says so;
-  - in the inlets file, each point names its junction (`node`) and can set `weir_length_ft`, `orifice_area_sqft`, `cw`, `co` and `rim_ft`. The defaults in the app apply to anything not given.
+  - in the inlets file, each point names its junction (`node`) and can set `weir_length_ft`, `orifice_area_sqft`, `cw`, `co` and `rim_ft`. The defaults in the app apply to anything not given; without `rim_ft` the crest is the SWMM rim of the node, as for a default inlet.
+  - when the 2D run ends before SWMM's, the inlet inflow is reset to zero and SWMM finishes on its own, so its report holds only what the inlets took.
 - **Double counting:** rain on the grid together with SWMM counts runoff twice where the grid overlaps SWMM subcatchments. The app warns about this.
 
 The WebAssembly build of SWMM is `vendor/swmm-wasm/swmm5.js`. It was built from the EPA source (public domain), tag v5.2.4, with Emscripten 3.1.64; see `tools/build_swmm_wasm.sh`.
@@ -93,6 +94,8 @@ node tests/node/test_model.js
 node tests/node/test_couple2way.js
 node tests/node/test_velocity.js
 node tests/node/test_landcover.js
+node tests/node/test_worker.js
+node tests/node/test_results_io.js
 python tools/build.py && python tests/browser/test_app.py
 ```
 

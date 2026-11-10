@@ -12,8 +12,10 @@ const post = (m, tr) => self.postMessage(m, tr || []);
 function geojsonCrs(gj) {
   const n = gj && gj.crs && gj.crs.properties && gj.crs.properties.name;
   if (n) { if (/CRS84|4326/.test(n)) return "lonlat"; const m = /EPSG:{1,2}(\d+)/.exec(n); if (m) return Number(m[1]); }
+  // no crs member: RFC 7946 GeoJSON is longitude/latitude; take it as such when every coordinate (of any geometry type) fits in degrees
   let deg = true, any = false;
-  for (const f of gj.features || []) for (const ring of Model.featureRings(f)) for (const p of ring) { any = true; if (Math.abs(p[0]) > 180 || Math.abs(p[1]) > 90) { deg = false; break; } }
+  const walk = (c) => { if (!deg || !Array.isArray(c)) return; if (typeof c[0] === "number") { any = true; if (!(Math.abs(c[0]) <= 180 && Math.abs(c[1]) <= 90)) deg = false; } else for (const x of c) walk(x); };
+  for (const f of gj.features || []) if (f && f.geometry) walk(f.geometry.coordinates);
   return any && deg ? "lonlat" : "same";
 }
 function toDemCrs(gj, what) {
@@ -36,43 +38,65 @@ function parseJson(text, what) { try { const j = JSON.parse(text); if (!j || !Ar
 async function load(a) {
   if (a.catalog) CAT = a.catalog;
   const res = {};
+  // Every layer is read and checked into a local first and only replaces the stored one once it is accepted:
+  // a refused file leaves the worker exactly as it was.
   if (a.dem) {
-    DEM = await Model.readDEM(a.dem, GeoTIFF, CAT);
-    if (a.epsg) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); }
-    B = null;
+    const dem = await Model.readDEM(a.dem, GeoTIFF, CAT);
+    if (a.epsg) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(dem, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); }
+    // a new DEM is a new site: nothing loaded for the previous ground carries over
+    DEM = dem; B = null; LCR = null; SOIL = null; INLETS = null; BLD = []; BOUND = [];
+    res.cleared = true;
   }
   if (!DEM) throw new Error("Load a DEM first");
   if (a.epsg && !a.dem) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); }
   const z = DEM.data; let zmin = Infinity, zmax = -Infinity; for (const v of z) if (v === v) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
   res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, zmin, zmax, valid: DEM.valid };
-  if ("buildings" in a) { BLD = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); BLD = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: BLD.length, note: r.note, feats: BLD }; } else res.buildings = { count: 0 }; }
-  if ("boundaries" in a) { BOUND = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); BOUND = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: BOUND.length, note: r.note, props: BOUND.map((f) => f.properties || {}), feats: BOUND }; } else res.boundaries = { count: 0 }; }
+  if ("buildings" in a) { let bld = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); bld = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: bld.length, note: r.note, feats: bld }; } else res.buildings = { count: 0 }; BLD = bld; }
+  if ("boundaries" in a) { let bnd = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); bnd = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: bnd.length, note: r.note, props: bnd.map((f) => f.properties || {}), feats: bnd }; } else res.boundaries = { count: 0 }; BOUND = bnd; }
   if ("landcover" in a) {
-    LCR = a.landcover ? await Model.readRaster(a.landcover, GeoTIFF, CAT, "Land cover") : null;
-    if (LCR) { const cnt = {}; let nd = 0; for (const v of LCR.data) { if (v === v) cnt[v] = (cnt[v] || 0) + 1; else nd++; } const codes = Object.keys(cnt);
+    const R = a.landcover ? await Model.readRaster(a.landcover, GeoTIFF, CAT, "Land cover") : null;
+    if (R) { const cnt = {}; for (const v of R.data) if (v === v) cnt[v] = (cnt[v] || 0) + 1; const codes = Object.keys(cnt);
       if (codes.length > 64) throw new Error(`Land cover has ${codes.length} distinct values; it should be a class map (for example NLCD codes)`);
-      res.landcover = { nx: LCR.nx, ny: LCR.ny, res: LCR.rx, epsg: LCR.epsg, crsName: LCR.crsName, classes: codes.map(Number).sort((x, y) => x - y), counts: cnt, sameCrs: !LCR.proj4 || LCR.epsg === DEM.epsg }; }
+      res.landcover = { nx: R.nx, ny: R.ny, res: R.rx, epsg: R.epsg, crsName: R.crsName, classes: codes.map(Number).sort((x, y) => x - y), counts: cnt, sameCrs: !R.proj4 || R.epsg === DEM.epsg, crsNote: crsNote(R, "Land cover") }; }
     else res.landcover = null;
+    LCR = R;
   }
   if ("soils" in a) {
-    SOIL = null; res.soils = null;
-    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); SOIL = { kind: "polygons", feats: r.feats }; const g = {}; let dual = 0; for (const f of r.feats) { const p = f.properties || {}, v = p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd, c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
-    else if (a.soils) { const R = await Model.readRaster(a.soils, GeoTIFF, CAT, "Soils"); SOIL = { kind: "raster", R }; res.soils = { kind: "raster", nx: R.nx, ny: R.ny, epsg: R.epsg }; }
+    let soil = null; res.soils = null;
+    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); soil = { kind: "polygons", feats: r.feats }; const g = {}; let dual = 0; for (const f of r.feats) { const p = f.properties || {}, v = p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd, c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
+    else if (a.soils) {
+      const R = await Model.readRaster(a.soils, GeoTIFF, CAT, "Soils"), g = {}; let other = 0;
+      for (const v of R.data) { if (v !== v) continue; const c = Model.hsgCode(v); if (c) g["ABCD"[c - 1]] = (g["ABCD"[c - 1]] || 0) + 1; else other++; }
+      if (!Object.keys(g).length) throw new Error("Soils raster has no cells coded 1-4 (A-D); code the hydrologic soil groups as 1 = A, 2 = B, 3 = C, 4 = D");
+      soil = { kind: "raster", R }; res.soils = { kind: "raster", nx: R.nx, ny: R.ny, epsg: R.epsg, groups: g, other, note: (crsNote(R, "Soils") || `EPSG ${R.epsg || "unknown"}`) + (other ? `; ${other} cells have other codes (not 1-4) and use the global values` : "") };
+    }
+    SOIL = soil;
   }
   if ("inlets" in a) {
-    INLETS = null; res.inlets = null;
+    let list = null; res.inlets = null;
     if (a.inlets) {
       const gj = parseJson(a.inlets, "Inlets"), c = geojsonCrs(gj); let fwd = null;
       if (c !== "same" && c !== DEM.epsg) { if (!DEM.proj4) throw new Error("Inlets need reprojecting but the DEM's CRS is unknown"); const from = c === "lonlat" ? "EPSG:4326" : (Model.lookupCrs(CAT, c) || {}).proj4; if (!from) throw new Error(`Inlets: EPSG ${c} is not in the projection list`); fwd = proj4(from, DEM.proj4); }
-      const num = (v) => (v === undefined || v === null || v === "" ? undefined : Number(v)); const bad = [];
-      INLETS = (gj.features || []).filter((f) => f.geometry && f.geometry.type === "Point").map((f, i) => {
-        const p = f.properties || {}, xy = fwd ? fwd.forward(f.geometry.coordinates.slice(0, 2)) : f.geometry.coordinates;
-        if (!p.node) bad.push(i + 1);
-        return { x: xy[0], y: xy[1], node: p.node ? String(p.node) : "", lw: num(p.weir_length_ft), area: num(p.orifice_area_sqft), cw: num(p.cw), co: num(p.co), rimFt: num(p.rim_ft) };
+      const errs = [], skipped = []; list = [];
+      const num = (fi, key, v, positive) => {   // a size or level: absent, or a finite number (text such as "3 ft" is refused here, at load)
+        if (v === undefined || v === null || v === "") return undefined; const x = typeof v === "number" ? v : Number(String(v).trim());
+        if (!Number.isFinite(x) || (positive && !(x > 0))) errs.push(`inlet ${fi}: ${key} ${JSON.stringify(v)} is not ${positive ? "a positive number" : "a number"}`);
+        return x;
+      };
+      (gj.features || []).forEach((f, i) => {
+        const fi = i + 1, g = f && f.geometry, p = (f && f.properties) || {};
+        const pts = g && g.type === "Point" ? [g.coordinates] : g && g.type === "MultiPoint" ? g.coordinates : null;
+        if (!pts) { skipped.push(fi); return; }
+        const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
+        if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
+        const props = { node, lw: num(fi, "weir_length_ft", p.weir_length_ft, true), area: num(fi, "orifice_area_sqft", p.orifice_area_sqft, true), cw: num(fi, "cw", p.cw, true), co: num(fi, "co", p.co, true), rimFt: num(fi, "rim_ft", p.rim_ft, false) };
+        for (const c0 of pts) { const xy = fwd ? fwd.forward([c0[0], c0[1]]) : c0; list.push(Object.assign({ x: xy[0], y: xy[1], feature: fi }, props)); }
       });
-      if (bad.length) throw new Error(`Inlets ${bad.slice(0, 5).join(", ")} have no "node" property (the SWMM junction they drain to)`);
-      res.inlets = { count: INLETS.length, nodes: [...new Set(INLETS.map((i) => i.node))], pts: INLETS.map((i) => [i.x, i.y, i.node]), reprojected: !!fwd };
+      if (errs.length) throw new Error(`Inlets: ${errs.slice(0, 5).join("; ")}${errs.length > 5 ? `; and ${errs.length - 5} more` : ""}`);
+      if (!list.length) throw new Error("Inlets: the file has no point features");
+      res.inlets = { count: list.length, nodes: [...new Set(list.map((i) => i.node))], pts: list.map((i) => [i.x, i.y, i.node]), reprojected: !!fwd, note: fwd ? `reprojected from ${c === "lonlat" ? "longitude/latitude" : "EPSG " + c}` : "in the DEM's CRS", skipped: skipped.length };
     }
+    INLETS = list;
   }
   if ("inp" in a) { MODEL = a.inp ? SWMM.parseInp(a.inp) : null; INP = a.inp || null; }
   if ("out" in a) { OUT = a.out ? SWMM.readOut(a.out) : null; }
@@ -96,18 +120,31 @@ async function load(a) {
   return res;
 }
 
+/* a note when a raster's CRS cannot be matched to the DEM's (it is then read as if in the DEM's CRS) */
+function crsNote(R, what) {
+  if (!R.proj4 && R.epsg !== DEM.epsg) return `${what} has no known CRS; it is taken to be in the DEM's CRS`;
+  if (R.proj4 && !DEM.proj4 && R.epsg !== DEM.epsg) return `${what} is in EPSG ${R.epsg} but the DEM's CRS is unknown; it is taken to be in the DEM's CRS`;
+  return "";
+}
 function build(o) {
   if (!DEM) throw new Error("Load a DEM first");
+  const f = o.cellSize / DEM.res;
+  if (!(f >= 1 - 1e-9) || Math.abs(f - Math.round(f)) > 1e-6 * f) throw new Error(`Cell size ${o.cellSize} must be a whole multiple of the DEM resolution ${DEM.res}`);
   const bspec = (o.boundaries || []).map((b) => ({ key: b.key, feature: BOUND[b.index] }));
   // land cover and soils sampled at the cell centres (reprojected when their CRS differs from the DEM's)
   const G0 = { x0: DEM.x0, y1: DEM.y1, cs: o.cellSize, nx: Math.floor(DEM.nx / Math.round(o.cellSize / DEM.res)), ny: Math.floor(DEM.ny / Math.round(o.cellSize / DEM.res)) };
   const projTo = (R) => { if (!R.proj4 || !DEM.proj4 || R.epsg === DEM.epsg) return null; const P = proj4(DEM.proj4, R.proj4); return (xy) => P.forward(xy); };
   const extra = [];
   let lcClass = null, hsg = null;
-  if (LCR && o.useLandcover !== false) { if (!LCR.proj4 && LCR.epsg !== DEM.epsg) extra.push("Land cover has no known CRS; it is taken to be in the DEM's CRS"); lcClass = Model.sampleRaster(LCR, G0, projTo(LCR)); }
+  if (LCR && o.useLandcover !== false) { const n = crsNote(LCR, "Land cover"); if (n) extra.push(n); lcClass = Model.sampleRaster(LCR, G0, projTo(LCR)); }
   if (SOIL && o.useSoils !== false) {
     if (SOIL.kind === "polygons") { const r = Model.rasterizeHsg(SOIL.feats, G0); hsg = r.hsg; if (r.unknown) extra.push(`${r.unknown} soil polygons have no recognizable hydrologic soil group and are ignored`); }
-    else { const v = Model.sampleRaster(SOIL.R, G0, projTo(SOIL.R)); hsg = new Uint8Array(v.length); for (let k = 0; k < v.length; k++) hsg[k] = v[k] >= 1 && v[k] <= 4 ? Math.round(v[k]) : 0; }
+    else {
+      const n = crsNote(SOIL.R, "Soils"); if (n) extra.push(n);
+      const v = Model.sampleRaster(SOIL.R, G0, projTo(SOIL.R)); hsg = new Uint8Array(v.length); let other = 0;
+      for (let k = 0; k < v.length; k++) { hsg[k] = Model.hsgCode(v[k] === v[k] ? v[k] : null); if (!hsg[k] && v[k] === v[k]) other++; }
+      if (other) extra.push(`${other} grid cells have soil codes other than 1-4 (A-D); they use the global Green-Ampt values`);
+    }
   }
   B = Model.buildGrid(DEM, { lcClass, lcTable: o.lcTable, hsg, soilTable: o.soilTable, cellSize: o.cellSize, hUnitFt: DEM.hUnitFt || o.hUnitFt, vUnitFt: o.vUnitFt, buildings: o.useBuildings ? BLD : [], boundaries: bspec,
     imperv: o.imperv, nImp: o.nImp, nPerv: o.nPerv, ksInHr: o.ksInHr, suctionIn: o.suctionIn, imd: o.imd, roofToGround: o.roofToGround, closedEdges: o.closedEdges });
@@ -188,14 +225,14 @@ async function run(o, id) {
   if (solver.destroy) solver.destroy();
   let swmm2 = null;
   if (two) {   // finish SWMM to the end of its run so that its report and output are complete
-    two.engine.advance(1e12, []); const fin = two.finish();
+    const fin = two.finish();   // zeroes the inlet inflow, then runs SWMM to its end
     swmm2 = { tally: two.tally, massBalance: fin.massBalance, rpt: fin.rpt, out: fin.out ? fin.out.buffer : null, nodeMap: two.nodeMap, notes: two.engine.notes, inlets: two.inlets };
   }
   for (let k = 0; k < N; k++) if (!(hmax[k] > 0)) tmax[k] = NaN;
   const bReached = bMax.reduce((s, v) => s + (v > bthr ? 1 : 0), 0);
-  const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N);
-  for (let k = 0; k < N; k++) if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; }
-  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, ledger: r.ledger, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
+  const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N), froude = r.froude || new Uint8Array(N);
+  let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; } froudeCells += froude[k]; }
+  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, froudeCells, ledger: r.ledger, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }
 
 self.onmessage = async (e) => {

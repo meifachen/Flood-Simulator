@@ -1,0 +1,84 @@
+// The app's worker (src/app/worker.js) driven directly in node: refused files, new sites, inlet files, end of a two-way run.
+// node tests/node/test_worker.js   (exit 1 on failure)
+const fs = require("fs"), path = require("path"), vm = require("vm");
+const GeoTIFF = require("../../tools/node_modules/geotiff"), proj4 = require("../../vendor/proj4/proj4.js");
+const Model = require("../../src/core/model.js"), Flood2D = require("../../src/engine/flood2d.js"), SWMM = require("../../src/io/swmm.js");
+const Couple2 = require("../../src/core/couple2way.js"), createSWMM = require("../../vendor/swmm-wasm/swmm5.js");
+const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "../../vendor/crs_catalog.json")));
+const res = []; const ok = (name, pass, info) => { res.push({ name, pass: !!pass, info }); console.log((pass ? "PASS " : "FAIL ") + name + "  " + info); };
+const ex = (d, f) => path.join(__dirname, "../../examples", d, f);
+const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); };
+
+// a fresh worker: worker.js evaluated with the globals the build puts in front of it
+function newWorker() {
+  const posted = [], self = { FloodModel: Model, postMessage: (m) => posted.push(m) };
+  const ctx = vm.createContext({ self, GeoTIFF, proj4, Flood2D, SWMM, Couple2, createSWMM, console, Date, Math });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, process.env.WORKERJS || "../../src/app/worker.js"), "utf8"), ctx);
+  return { load: (a) => ctx.load(a), build: (o) => ctx.build(o).res, run: async (o) => (await ctx.run(o, 1)).res, peek: (expr) => vm.runInContext(expr, ctx), posted };
+}
+const refused = async (p) => { try { await p; return ""; } catch (e) { return e.message; } };
+const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
+
+(async () => {
+  const US = "synthetic_us", dem = await Model.readDEM(ab(ex(US, "dem.tif")), GeoTIFF, catalog);
+  // land cover rasters on the US DEM's footprint (EPSG 2236): forest everywhere, 100 distinct values, and one placed far away
+  const G = { x0: dem.x0, y1: dem.y1, cs: dem.res * 4, nx: Math.floor(dem.nx / 4), ny: Math.floor(dem.ny / 4) }, M = G.nx * G.ny;
+  const forest = Model.geoTiff(G, 2236, [{ name: "lc", data: new Float32Array(M).fill(41) }], "us-ft");
+  const many = Model.geoTiff(G, 2236, [{ name: "lc", data: Float32Array.from({ length: M }, (_, k) => k % 100) }], "us-ft");
+  const far = Model.geoTiff(Object.assign({}, G, { x0: G.x0 + 1e6 }), 2236, [{ name: "lc", data: new Float32Array(M).fill(41) }], "us-ft");
+  const soil7 = Model.geoTiff(G, 2236, [{ name: "hsg", data: Float32Array.from({ length: M }, (_, k) => ((k / G.nx) | 0) < G.ny / 2 ? 4 : 7) }], "us-ft");
+  const lcTable = { 41: { n: 0.36, imp: 0 } }, bopt = { cellSize: 12, hUnitFt: dem.hUnitFt, vUnitFt: 1, lcTable, soilTable: Model.HSG };
+
+  // W1 a refused land cover file leaves the accepted one in use
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")) });
+    await w.load({ landcover: forest }); const good = w.build(bopt).info.landcoverCells;
+    const msg = await refused(w.load({ landcover: many })), after = w.build(bopt);
+    ok("W1 a refused land cover file leaves the accepted one in use", /100 distinct values/.test(msg) && good > 0 && after.info.landcoverCells === good && !after.warnings.some((x) => /not in the table/.test(x)),
+      `refused: "${msg.slice(0, 50)}"; land cover cells ${good} before, ${after.info.landcoverCells} after`);
+  }
+  // W2 a refused inlets file leaves the accepted inlets in place
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    await w.load({ inlets: text(US, "inlets.geojson") }); const n0 = w.peek("INLETS.length");
+    const bad = JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { node: "J3", weir_length_ft: 20 }, geometry: { type: "Point", coordinates: [500750, 1599200] } }, { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [500760, 1599200] } }] });
+    const msg = await refused(w.load({ inlets: bad }));
+    ok("W2 a refused inlets file leaves the accepted inlets in place", /inlet 2: no "node" property/.test(msg) && n0 === 14 && w.peek("INLETS.length") === 14 && w.peek("INLETS.every((i) => i.lw !== 20)"), `refused: "${msg}"; inlets ${n0} before, ${w.peek("INLETS.length")} after`);
+  }
+  // W3 RFC 7946 GeoJSON (no crs member, longitude/latitude) points are reprojected; W8 load-time checks on inlet values
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    const P = proj4(dem.proj4, "EPSG:4326"), ll = P.forward([500750, 1599200]);
+    const r = await w.load({ inlets: JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { node: "J3" }, geometry: { type: "Point", coordinates: ll } }] }) });
+    const it = w.peek("INLETS[0]");
+    ok("W3 longitude/latitude inlets without a crs member are reprojected to the DEM's CRS", r.inlets.reprojected && Math.abs(it.x - 500750) < 0.01 && Math.abs(it.y - 1599200) < 0.01, `${ll.map((v) => v.toFixed(6))} -> ${it.x.toFixed(3)}, ${it.y.toFixed(3)}`);
+    const fc = (feats) => JSON.stringify({ type: "FeatureCollection", features: feats }), pt = (props, xy = [500750, 1599200]) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: xy } });
+    const msgs = [await refused(w.load({ inlets: fc([pt({ node: "J3", weir_length_ft: "3 ft" })]) })), await refused(w.load({ inlets: fc([pt({ node: "J3", co: 0 })]) })), await refused(w.load({ inlets: fc([pt({ node: "J3", rim_ft: "high" })]) })),
+      await refused(w.load({ inlets: fc([{ type: "Feature", properties: { node: "J1" }, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }, pt({ node: "J3" }), pt({}) ]) }))];
+    ok("W8 text, zero and missing inlet values are refused at load, numbered as in the file", /inlet 1: weir_length_ft "3 ft"/.test(msgs[0]) && /inlet 1: co 0/.test(msgs[1]) && /inlet 1: rim_ft "high"/.test(msgs[2]) && /inlet 3: no "node"/.test(msgs[3]), msgs.join(" | "));
+    const r2 = await w.load({ inlets: fc([pt({ node: 7, weir_length_ft: "4" }), { type: "Feature", properties: { node: "J4" }, geometry: { type: "MultiPoint", coordinates: [[500000, 1599000], [500010, 1599000]] } }]) });
+    ok("W8 a numeric node name, a numeric string size and MultiPoint inlets are read", r2.inlets.count === 3 && w.peek("INLETS[0].node") === "7" && w.peek("INLETS[0].lw") === 4, `${r2.inlets.count} inlets; node ${w.peek("INLETS[0].node")}, weir ${w.peek("INLETS[0].lw")}`);
+  }
+  // W5 a new DEM is a new site; W4 land cover that misses the grid is reported; W6 soil raster codes outside 1-4; W7 cell size check
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    await w.load({ landcover: forest, soils: soil7, inlets: text(US, "inlets.geojson"), buildings: text(US, "buildings.geojson") });
+    const s7 = w.build(bopt);
+    ok("W6 soil raster codes other than 1-4 are counted and reported", s7.info.soilCells > 0 && s7.info.soilCells < s7.info.cells && s7.warnings.some((x) => /soil codes other than 1-4/.test(x)), s7.warnings.filter((x) => /soil|cover/.test(x)).join(" | "));
+    const m7 = await refused(Promise.resolve().then(() => w.build(Object.assign({}, bopt, { cellSize: 2 }))));
+    ok("W7 a cell size below the DEM resolution is refused with the cell size message (land cover loaded)", /Cell size 2 must be a whole multiple of the DEM resolution 6/.test(m7), m7);
+    const r = await w.load({ dem: ab(ex(US, "dem.tif")) }), b = w.build(bopt);
+    ok("W5 a new DEM clears the land cover, soils, inlets and buildings of the previous site", r.cleared && b.info.landcoverCells === 0 && b.info.soilCells === 0 && b.info.wallCells === 0 && w.peek("INLETS") === null, `land cover ${b.info.landcoverCells}, soils ${b.info.soilCells}, building cells ${b.info.wallCells}, inlets ${w.peek("INLETS")}`);
+    await w.load({ landcover: far }); const f = w.build(bopt);
+    ok("W4 land cover that misses the grid is reported", f.info.landcoverCells === 0 && f.warnings.some((x) => /Land cover does not cover any cell/.test(x)), f.warnings.join(" | "));
+  }
+  // W9 a two-way run that ends before SWMM does: SWMM's report holds only the water the inlets took
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp"), inlets: text(US, "inlets.geojson") });
+    w.build(Object.assign({}, bopt, { lcTable: null }));
+    const r = await w.run({ coupling: "two", t0: 1, t1: 1.25, engine: "cpu", rainSource: "none", outputSec: 900, couplingSec: 30 });
+    const sent = r.swmm2.tally.sentToSwmm, m = /Flow Routing Continuity[\s\S]*?External Inflow \.+\s+([\d.]+)/.exec(r.swmm2.rpt), ext = m ? Number(m[1]) * 43560 : NaN;
+    ok("W9 after a two-way run ends, SWMM's external inflow equals what the inlets took", sent > 1000 && Math.abs(ext - sent) / sent < 0.01, `inlets took ${sent.toFixed(0)} cf; SWMM report external inflow ${ext.toFixed(0)} cf`);
+  }
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+})().catch((e) => { console.error("CRASH", e); process.exit(2); });

@@ -25,11 +25,12 @@ async function catalog() { if (!S.catalog) S.catalog = JSON.parse(new TextDecode
 function msg(html, cls = "note") { $("#msg").className = cls; $("#msg").innerHTML = html; }
 function setSt(id, html, cls = "") { $(id).innerHTML = cls ? `<span class="${cls}">${html}</span>` : html; }
 async function loadInputs(args, label) {
+  if (S.running) { msg("Stop the run first, then load files.", "err"); return false; }
   args.catalog = await catalog();
   msg(`Reading ${esc(label)}…`);
   try {
     const r = await call("load", args);
-    if (r.dem) { S.dem = r.dem; S.grid = null; clearResults(); }
+    if (r.dem) { S.dem = r.dem; S.grid = null; S.resultsOnly = false; S.loadedFrom = null; clearResults(); }
     if (r.buildings) S.bld = r.buildings.count ? r.buildings : null;
     if (r.boundaries) S.bnd = r.boundaries.count ? r.boundaries : null;
     if ("inlets" in r) S.inl = r.inlets;
@@ -37,7 +38,7 @@ async function loadInputs(args, label) {
     if ("swmm" in r) S.swmm = r.swmm;
     refreshInputs(); msg(`Loaded ${esc(label)}.`);
     return true;
-  } catch (e) { msg(`Could not read ${esc(label)}: ${esc(e.message)}`, "err"); return false; }
+  } catch (e) { msg(`Could not read ${esc(label)}: ${esc(String(e.message).replace(/\.+$/, ""))}. Nothing was changed; the layers loaded before are still in use.`, "err"); return false; }
 }
 function vUnitFt() { const v = $("#vunit").value; if (v !== "auto") return UNIT_FT[v]; return S.dem && S.dem.vUnitHint ? UNIT_FT[S.dem.vUnitHint] : S.dem ? S.dem.hUnitFt : NaN; }
 function unitName(ft) { return Math.abs(ft - 1) < 1e-5 ? "ft" : Math.abs(ft - 1 / 0.3048) < 1e-6 ? "m" : Math.abs(ft - UNIT_FT["us-ft"]) < 1e-9 ? "US survey ft" : `${ft} ft`; }
@@ -66,10 +67,10 @@ function refreshInputs() {
   $("#swmm-note").textContent = !sw ? "Load a SWMM .inp to use it" : sw.hasOut ? "One way reads the .out; two way runs SWMM 5.2.4 in the page" : "Two way runs SWMM 5.2.4 in the page; one way needs the .out";
   boundaryTable(); surfaceTables(); waterNotes();
   if (S.inl) { const known = S.swmm ? S.inl.nodes.filter((n) => S.swmm.nodes.some((x) => x.name === n && x.type === "JUNCTION")) : []; const unknown = S.inl.nodes.filter((n) => known.indexOf(n) < 0);
-    setSt("#st-inl", `${S.inl.count} inlets on ${S.inl.nodes.length} junctions${S.inl.reprojected ? ", reprojected" : ""}` + (S.swmm && unknown.length ? `<br><span class="warn">Not junctions in the .inp: ${unknown.slice(0, 6).map(esc).join(", ")}</span>` : "")); }
+    setSt("#st-inl", `${S.inl.count} inlets on ${S.inl.nodes.length} junctions${S.inl.reprojected ? `, ${esc(S.inl.note)}` : ""}${S.inl.skipped ? `; ${S.inl.skipped} features that are not points were skipped` : ""}` + (S.swmm && unknown.length ? `<br><span class="warn">Not junctions in the .inp: ${unknown.slice(0, 6).map(esc).join(", ")}</span>` : "")); }
   else setSt("#st-inl", "none");
   $("#st-data").textContent = d ? "DEM loaded" + (S.bld ? ", buildings" : "") + (S.bnd ? ", boundaries" : "") + (sw ? ", SWMM" : "") : "nothing loaded";
-  $("#b-run").disabled = !d || S.running || (!d.proj4 && !Number.isFinite(d.hUnitFt));
+  $("#b-run").disabled = !d || S.running || S.resultsOnly || (!d.proj4 && !Number.isFinite(d.hUnitFt));
   if (d) mapInputs();
 }
 function fillCellSizes() {
@@ -87,8 +88,8 @@ function cellNote() { const d = S.dem; if (!d) return; const cs = +$("#cell").va
 // land cover classes present and soil groups: editable tables (defaults from the NLCD and HSG tables in model.js)
 function surfaceTables() {
   const lc = S.lc, so = S.soil;
-  setSt("#st-lc", lc ? `${lc.nx} × ${lc.ny} cells of ${fmt(lc.res, 1)}; ${lc.epsg ? "EPSG " + lc.epsg : "CRS unknown (taken as the DEM's)"}; classes ${lc.classes.join(", ")}` : "none");
-  setSt("#st-soil", so ? (so.kind === "polygons" ? `${so.count} polygons (${Object.entries(so.groups).map(([g, n]) => `${g}: ${n}`).join(", ")}), ${esc(so.note)}` : `${so.nx} × ${so.ny} raster of groups, EPSG ${so.epsg || "unknown"}`) : "none");
+  setSt("#st-lc", lc ? `${lc.nx} × ${lc.ny} cells of ${fmt(lc.res, 1)}; ${lc.epsg ? "EPSG " + lc.epsg : "CRS unknown (taken as the DEM's)"}; classes ${lc.classes.join(", ")}${lc.crsNote ? `<br><span class="warn">${esc(lc.crsNote)}</span>` : ""}` : "none");
+  setSt("#st-soil", so ? (so.kind === "polygons" ? `${so.count} polygons (${Object.entries(so.groups).map(([g, n]) => `${g}: ${n}`).join(", ")}), ${esc(so.note)}` : `${so.nx} × ${so.ny} raster of groups (${Object.entries(so.groups || {}).map(([g, n]) => `${g}: ${n.toLocaleString()}`).join(", ")}), ${esc(so.note)}`) : "none");
   $("#lc-box").hidden = !lc; $("#soil-box").hidden = !so;
   if (lc) {
     const prev = S.lcTable || {};
@@ -101,16 +102,16 @@ function surfaceTables() {
     const prev = S.soilTable || FloodModel.HSG;
     $("#soil-table").innerHTML = `<table class="t"><thead><tr><th>Group</th><th class="n">Ks (in/hr)</th><th class="n">Suction (in)</th><th class="n">IMD</th></tr></thead><tbody>` + [1, 2, 3, 4].map((g) => {
       const e = prev[g], d = FloodModel.HSG[g];
-      return `<tr><td>${d.name} <span class="note">${esc(d.texture)}</span></td><td class="n"><input type="number" class="so-k" data-g="${g}" min="0" max="50" step="0.01" value="${e.ks}" aria-label="Ks for group ${d.name}"></td><td class="n"><input type="number" class="so-s" data-g="${g}" min="0" max="50" step="0.01" value="${e.suction}" aria-label="Suction for group ${d.name}"></td><td class="n"><input type="number" class="so-m" data-g="${g}" min="0" max="0.6" step="0.01" value="${e.imd}" aria-label="IMD for group ${d.name}"></td></tr>`;
+      return `<tr><td>${d.name} <span class="note">${esc(d.texture)}</span></td><td class="n"><input type="number" class="so-k" data-g="${g}" min="0" max="50" step="0.01" value="${e.ks}" aria-label="Ks for group ${d.name}"></td><td class="n"><input type="number" class="so-s" data-g="${g}" min="0" max="50" step="0.01" value="${e.suction}" aria-label="Suction for group ${d.name}"></td><td class="n"><input type="number" class="so-m" data-g="${g}" min="0" max="0.6" step="0.001" value="${e.imd}" aria-label="IMD for group ${d.name}" title="Default: porosity − field capacity of ${esc(d.texture)}; at most ${d.imdMax} (porosity − wilting point)"></td></tr>`;
     }).join("") + "</tbody></table>";
   }
 }
 function readSurfaceTables() {
   let lcTable = null, soilTable = null;
-  if (S.lc) { lcTable = {}; for (const c of S.lc.classes) { const nEl = document.querySelector(`.lc-n[data-c="${c}"]`), iEl = document.querySelector(`.lc-i[data-c="${c}"]`); if (nEl.value === "" && iEl.value === "") continue;
+  if (S.lc) { lcTable = {}; for (const c of S.lc.classes) { const nEl = document.querySelector(`.lc-n[data-c="${c}"]`), iEl = document.querySelector(`.lc-i[data-c="${c}"]`); if (nEl.value === "" && iEl.value === "") continue;   // both blank: the class uses the global values (the build reports it)
     const n = parseFloat(nEl.value), imp = parseFloat(iEl.value); if (!(n >= 0.005 && n <= 1) || !(imp >= 0 && imp <= 100)) throw new Error(`Land cover class ${c}: Manning n must be 0.005–1 and impervious 0–100%`); lcTable[c] = { n, imp }; } }
   if (S.soil) { soilTable = {}; for (const g of [1, 2, 3, 4]) { const ks = parseFloat(document.querySelector(`.so-k[data-g="${g}"]`).value), suction = parseFloat(document.querySelector(`.so-s[data-g="${g}"]`).value), imd = parseFloat(document.querySelector(`.so-m[data-g="${g}"]`).value);
-    if (!(ks >= 0) || !(suction >= 0) || !(imd >= 0 && imd <= 0.6)) throw new Error(`Soil group ${"ABCD"[g - 1]}: Ks, suction and IMD must be numbers (IMD 0–0.6)`); soilTable[g] = { name: "ABCD"[g - 1], ks, suction, imd }; } }
+    if (!(ks >= 0 && ks <= 50) || !(suction >= 0 && suction <= 50) || !(imd >= 0 && imd <= 0.6)) throw new Error(`Soil group ${"ABCD"[g - 1]}: Ks (0–50 in/hr), suction (0–50 in) and IMD (0–0.6) must be numbers in range`); soilTable[g] = { name: "ABCD"[g - 1], ks, suction, imd }; } }
   S.lcTable = lcTable; S.soilTable = soilTable; return { lcTable, soilTable };
 }
 function boundaryTable() {
@@ -143,20 +144,27 @@ async function readFile(inp, kind) {
 }
 function wireInputs() {
   // a new DEM starts a new site: every other layer is cleared, so nothing from an earlier site or example is used by mistake
+  // (the old site's settings are cleared only once the new DEM has been read; a DEM that fails to load changes nothing)
   $("#f-dem").onchange = async (e) => { try { const b = await readFile(e.target, "bin"); if (!b) return;
-    const had = !!(S.bld || S.bnd || S.lc || S.soil || S.inl || S.swmm); S.exName = null; S.bspec = null; S.bspecTouched = false; S.lcTable = null; S.soilTable = null; S._tSet = false;
+    const had = !!(S.bld || S.bnd || S.lc || S.soil || S.inl || S.swmm), name = e.target.files[0].name;
+    const ok2 = await loadInputs({ dem: b, buildings: null, boundaries: null, landcover: null, soils: null, inlets: null, inp: null, out: null }, name);
+    if (!ok2) { e.target.value = ""; return; }
+    S.exName = null; S.bspec = null; S.bspecTouched = false; S.lcTable = null; S.soilTable = null; S._tSet = false;
     ["#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"].forEach((s2) => ($(s2).value = ""));
-    const ok2 = await loadInputs({ dem: b, buildings: null, boundaries: null, landcover: null, soils: null, inlets: null, inp: null, out: null }, e.target.files[0].name);
-    if (ok2 && had) msg(`Loaded ${esc(e.target.files[0].name)}. The layers loaded for the previous ground were cleared; add the ones for this site.`);
+    refreshInputs();
+    if (had) msg(`Loaded ${esc(name)}. The layers loaded for the previous ground were cleared; add the ones for this site.`);
   } catch (x) { msg(esc(x.message), "err"); } };
-  $("#f-bld").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } await loadInputs({ buildings: await readFile(e.target, "text") }, e.target.files[0].name); };
-  $("#f-bnd").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } S.bspecTouched = false; await loadInputs({ boundaries: await readFile(e.target, "text") }, e.target.files[0].name); };
-  $("#f-lc").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } S.lcTable = null; await loadInputs({ landcover: await readFile(e.target, "bin") }, e.target.files[0].name); };
-  $("#f-soil").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } const f = e.target.files[0]; S.soilTable = null;
-    await loadInputs({ soils: /\.tiff?$/i.test(f.name) ? await f.arrayBuffer() : await f.text() }, f.name); };
-  $("#f-inl").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } await loadInputs({ inlets: await readFile(e.target, "text") }, e.target.files[0].name); drawSwmm(); };
-  $("#f-inp").onchange = async (e) => { if (!S.dem) { msg("Load the DEM first.", "err"); e.target.value = ""; return; } await loadInputs({ inp: await readFile(e.target, "text"), out: null }, e.target.files[0].name); $("#f-out").value = ""; };
-  $("#f-out").onchange = async (e) => { if (!S.swmm) { msg("Load the SWMM .inp first.", "err"); e.target.value = ""; return; } const ok2 = await loadInputs({ out: await readFile(e.target, "bin") }, e.target.files[0].name); if (ok2 && S.swmm.hasOut && $("#coupling").value === "off") $("#coupling").value = "one"; refreshInputs(); waterNotes(); };
+  const needDem = (e) => { if (S.dem && !S.resultsOnly) return true; msg(S.resultsOnly ? "Saved results are open; load a DEM to start a new run." : "Load the DEM first.", "err"); e.target.value = ""; return false; };
+  // a refused file clears its own file box; the layer loaded before stays in use (the worker keeps it, and so do the tables)
+  const keep = (e, ok2) => { if (!ok2) e.target.value = ""; return ok2; };
+  $("#f-bld").onchange = async (e) => { if (!needDem(e)) return; keep(e, await loadInputs({ buildings: await readFile(e.target, "text") }, e.target.files[0].name)); };
+  $("#f-bnd").onchange = async (e) => { if (!needDem(e)) return; const prev = S.bspecTouched; S.bspecTouched = false; if (!keep(e, await loadInputs({ boundaries: await readFile(e.target, "text") }, e.target.files[0].name))) S.bspecTouched = prev; };
+  $("#f-lc").onchange = async (e) => { if (!needDem(e)) return; const prev = S.lcTable; if (keep(e, await loadInputs({ landcover: await readFile(e.target, "bin") }, e.target.files[0].name))) { S.lcTable = null; surfaceTables(); } else S.lcTable = prev; };
+  $("#f-soil").onchange = async (e) => { if (!needDem(e)) return; const f = e.target.files[0];
+    if (keep(e, await loadInputs({ soils: /\.tiff?$/i.test(f.name) ? await f.arrayBuffer() : await f.text() }, f.name))) { S.soilTable = null; surfaceTables(); } };
+  $("#f-inl").onchange = async (e) => { if (!needDem(e)) return; keep(e, await loadInputs({ inlets: await readFile(e.target, "text") }, e.target.files[0].name)); drawSwmm(); };
+  $("#f-inp").onchange = async (e) => { if (!needDem(e)) return; if (keep(e, await loadInputs({ inp: await readFile(e.target, "text"), out: null }, e.target.files[0].name))) $("#f-out").value = ""; };
+  $("#f-out").onchange = async (e) => { if (!S.swmm) { msg("Load the SWMM .inp first.", "err"); e.target.value = ""; return; } const ok2 = keep(e, await loadInputs({ out: await readFile(e.target, "bin") }, e.target.files[0].name)); if (ok2 && S.swmm.hasOut && $("#coupling").value === "off") $("#coupling").value = "one"; refreshInputs(); waterNotes(); };
   $("#crs-epsg").onchange = async (e) => { const v = parseInt(e.target.value, 10); if (!(v > 0)) return; await loadInputs({ epsg: v }, `EPSG ${v}`); };
   $("#vunit").onchange = refreshInputs;
   $("#cell").onchange = cellNote;
@@ -167,6 +175,7 @@ function wireInputs() {
 const EX = () => JSON.parse($("#examples").textContent || "[]");
 async function loadExample(i) {
   const ex = EX()[i]; if (!ex) return;
+  if (S.running) { msg("Stop the run first, then load an example.", "err"); return; }
   msg(`Loading example “${esc(ex.name)}”…`);
   const get = async (k, kind) => { if (!ex.files[k]) return null; const u8 = await gunzipB64(ex.files[k]); return kind === "text" ? new TextDecoder().decode(u8) : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength); };
   S._tSet = false; S.bspec = null; S.bspecTouched = false; S.exName = ex.name;
@@ -175,7 +184,7 @@ async function loadExample(i) {
   if (!ok1) return;
   if (S.swmm && S.swmm.hasOut) $("#coupling").value = "one";
   $("#rain").value = "none"; $("#basemap").value = ex.basemap || "none"; waterNotes(); refreshInputs();
-  ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
+  ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
   msg(`Loaded example “${esc(ex.name)}”. ${esc(ex.note || "")} Press Run.`);
 }
 
@@ -212,7 +221,7 @@ async function run() {
     S.grid = gr; S.grid.opts = o;
     if (gr.warnings.length) $("#warns").innerHTML = gr.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join("");
     mapGrid();
-    msg(`Grid ${gr.G.nx} × ${gr.G.ny} (${(gr.info.open / 1e6).toFixed(2)} M open cells). Starting…`);
+    msg(`Grid ${gr.G.nx} × ${gr.G.ny} (${(gr.info.open / 1e6).toFixed(2)} M open cells)${S.lc ? `; land cover on ${gr.info.landcoverCells.toLocaleString()} cells` : ""}${S.soil ? `; soils on ${gr.info.soilCells.toLocaleString()} cells` : ""}. Starting…`);
     const t0 = performance.now();
     const res = await call("run", o, [], (m) => {
       if (m.frame) { S.frames.push({ q: new Uint8Array(m.frame.q), sum: m.frame.sum }); onFrame(); return; }
@@ -281,9 +290,10 @@ function mapInputs() {
 }
 function drawSwmm() {
   const m = MAP; if (!m) return; if (m._layers2.swmm) { m.removeLayer(m._layers2.swmm); delete m._layers2.swmm; }
-  const sw = S.swmm; if (!sw) return;
+  const sw = S.swmm, g = L.layerGroup();
+  if (S.inl) for (const [x, y, node] of S.inl.pts) g.addLayer(L.circleMarker(toLL(x, y), { radius: 3, color: css("--accent"), weight: 2, fill: true, fillColor: css("--surface"), fillOpacity: 1 }).bindTooltip(`Inlet to ${esc(node)}`));
+  if (!sw) { if (S.inl) m._layers2.swmm = g.addTo(m); return; }
   const idx = {}; sw.nodes.forEach((n) => (idx[n.name] = n));
-  const g = L.layerGroup();
   for (const l of sw.links) { const a = idx[l.from], b = idx[l.to]; if (!a || !b || !Number.isFinite(a.x) || !Number.isFinite(b.x)) continue; g.addLayer(L.polyline([[a.x, a.y], ...l.verts, [b.x, b.y]].map((p) => toLL(p[0], p[1])), { color: css("--link"), weight: 2, opacity: 0.8, interactive: false })); }
   const t = curT();
   for (const n of sw.nodes) {
@@ -293,7 +303,6 @@ function drawSwmm() {
     mk.bindTooltip(() => `<b>${esc(n.name)}</b> (${esc(n.type.toLowerCase())})<br>Rim ${fmt(n.rimFt, 2)} ft, invert ${fmt(n.invertFt, 2)} ft` + (S.frames.length || sw.hasOut ? `<br>Exchange now ${fmt(rateNow(n), 2)} cfs (+ out of SWMM)` : "") + (sw.hasOut ? `<br>.out flooding: peak ${fmt(n.peakCfs, 2)} cfs; volume ${fmt(n.floodCf, 0)} cf` : "") + (nodeStatus(n.name) ? `<br><i>${esc(nodeStatus(n.name))}</i>` : ""));
     g.addLayer(mk);
   }
-  if (S.inl) for (const [x, y, node] of S.inl.pts) g.addLayer(L.circleMarker(toLL(x, y), { radius: 3, color: css("--accent"), weight: 2, fill: true, fillColor: css("--surface"), fillOpacity: 1 }).bindTooltip(`Inlet to ${esc(node)}`));
   m._layers2.swmm = g.addTo(m);
 }
 // exchange at a node in the selected map (cfs, + out of SWMM onto the ground); before a run, the .out flooding (one way)
@@ -367,12 +376,14 @@ function paint() {
   const m = ensureMap(), rp = ramp(), t = S.grid.type, lake = css("--water"), lc = [parseInt(lake.slice(1, 3), 16), parseInt(lake.slice(3, 5), 16), parseInt(lake.slice(5, 7), 16)];
   const wet = S.grid.opts.wetFt;
   if ((S.view === "vmax" || S.view === "dv") && !S.final) { S.view = "now"; $("#view").value = "now"; }
-  const V = VIEWS[S.view], vr = (dark() ? V.D : V.L).map(hex3), depthView = S.view === "now" || S.view === "max";
+  const V = VIEWS[S.view], vr = (dark() ? V.D : V.L).map(hex3), depthView = S.view === "now" || S.view === "max", hatch = hex3(css("--ink") || "#1b1f24");
   const url = imageFrom((k, px, o) => {
     if (t[k] === 1) return;
     if (t[k] === 2) { px[o] = lc[0]; px[o + 1] = lc[1]; px[o + 2] = lc[2]; px[o + 3] = 200; return; }   // a level boundary is always water
     if (depthView) { const d = depthAt(k); if (!(d >= wet)) return; const c = rp[dclass(d)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 220; return; }
     if (!(S.final.hmax[k] >= wet)) return; const ci = vclass(valueAt(k), V.cl); if (ci < 0) return; const c = vr[ci]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 225;
+    // hatch where the flow reached critical speed and the solver capped it (the speed shown there is a lower bound)
+    if (S.final.froude && S.final.froude[k]) { const p = o >> 2, W0 = overlayLUT().W; if (((p % W0) + ((p / W0) | 0)) % 5 === 0) { px[o] = hatch[0]; px[o + 1] = hatch[1]; px[o + 2] = hatch[2]; px[o + 3] = 255; } }
   });
   if (m._layers2.depth) m._layers2.depth.setUrl(url); else m._layers2.depth = L.imageOverlay(url, overlayLUT().bounds, { interactive: false }).addTo(m);
   const f = S.frames[S.frame];
@@ -385,7 +396,8 @@ function clock(h) { const sw = S.swmm; if (sw && sw.start) { const d = new Date(
 function legend() {
   const V = VIEWS[S.view] || VIEWS.now, cl = V.cl, rpl = dark() ? V.D : V.L;
   $("#legend").innerHTML = `${esc(V.title)}: ` + cl.map((d, i) => `<span><span class="sw" style="background:${rpl[i]}"></span>${i < cl.length - 1 ? `${d}–${cl[i + 1]}` : `over ${d}`}</span>`).join("") +
-    (S.view === "vmax" || S.view === "dv" ? `<span>Velocities are recorded where the water is deeper than ${Flood2D.VEL_H} ft; classes are for display, not a hazard standard.</span>` : "") +
+    (S.view === "vmax" || S.view === "dv" ? `<span>Velocities are recorded where the water is deeper than ${Flood2D.VEL_H} ft; classes are for display, not a hazard standard.</span>` +
+      (S.final && S.final.froudeCells ? `<span><span class="sw hatch"></span>flow reached critical speed, where the solver caps it: the speed there is a lower bound (depth × velocity is not affected)</span>` : "") : "") +
     `<span><span class="sw" style="background:var(--water)"></span>level boundary</span><span><span class="sw" style="background:var(--node);border-radius:50%"></span>SWMM node flooding now</span><span>Map shows water deeper than ${fmt(S.grid.opts.wetFt, 2)} ft.</span>`;
 }
 function kpis() {
@@ -395,7 +407,7 @@ function kpis() {
   const L0 = (fin || {}).ledger || f.sum.ledger;
   const mx = S.view !== "now", vmx = fin && fin.vmax ? fin.vmax.reduce((a, v) => (v > a ? v : a), 0) : NaN, dvx = fin && fin.dvmax ? fin.dvmax.reduce((a, v) => (v > a ? v : a), 0) : NaN;
   const k = [[mx ? "Peak flooded area" : "Flooded area now", fmt(mx ? peakArea : f.sum.wetAc, 2) + " ac", `deeper than ${fmt(S.grid.opts.wetFt, 2)} ft`],
-    S.view === "vmax" ? ["Fastest flow", fmt(vmx, 2) + " ft/s", "over the run"] : S.view === "dv" ? ["Highest depth × velocity", fmt(dvx, 2) + " ft²/s", "over the run"] :
+    S.view === "vmax" ? ["Fastest flow", fmt(vmx, 2) + " ft/s", fin && fin.froudeCells ? `${fin.froudeCells.toLocaleString()} cells capped at critical speed (hatched)` : "over the run"] : S.view === "dv" ? ["Highest depth × velocity", fmt(dvx, 2) + " ft²/s", "over the run"] :
     ["Deepest water on land", fmt(mx ? dmax : f.sum.depthMax, 2) + " ft", mx ? "over the run" : "now"],
     ["Buildings reached", mx ? (fin ? peakB.toLocaleString() : "–") : f.sum.buildings.toLocaleString(), `water over ${fmt(S.grid.opts.buildingFt, 2)} ft beside them`],
     ["Water on the surface", fmt(f.sum.volCf / 43560, 2) + " ac-ft", "now"],
@@ -464,7 +476,7 @@ function onMapClick(e) {
   const f = S.frames[S.frame];
   const html = t === 1 ? (S.grid.z[k] === 0 ? "No ground data here (acts as a wall)" : "Building (wall)") : t === 2 ? "Level boundary" :
     `Ground ${fmt(S.grid.z[k], 2)} ft<br>` + (f ? `Water at ${esc(clock(f.sum.tHours))}: ${fmt(dec(f.q[k]), 2)} ft<br>` : "") + (S.final ? `Deepest ${fmt(S.final.hmax[k], 2)} ft${S.final.hmax[k] > 0 ? ` at ${esc(clock(S.final.tmax[k]))}` : ""}` : "") +
-    (S.final && S.final.vmax ? `<br>Fastest ${fmt(S.final.vmax[k], 2)} ft/s; depth × velocity up to ${fmt(S.final.dvmax[k], 2)} ft²/s` : "");
+    (S.final && S.final.vmax ? `<br>Fastest ${fmt(S.final.vmax[k], 2)} ft/s${S.final.froude && S.final.froude[k] ? " or more (capped at critical speed here)" : ""}; depth × velocity up to ${fmt(S.final.dvmax[k], 2)} ft²/s` : "");
   L.popup().setLatLng(e.latlng).setContent(html).openOn(MAP); pointChart();
 }
 
@@ -475,10 +487,10 @@ function exportTif() {
   const gr = S.grid, G = gr.G, N = G.nx * G.ny, d = new Float32Array(N), wse = new Float32Array(N), tm = new Float32Array(N), vf = S.grid.opts.vUnitFt;
   for (let k = 0; k < N; k++) { const open = gr.type[k] === 0, h = S.final.hmax[k]; d[k] = open ? h : NaN; wse[k] = open && h > 0 ? (gr.z[k] + h) / vf : NaN; tm[k] = open && h > 0 ? S.final.tmax[k] - S.grid.opts.t0 : NaN; }
   const lin = S.dem.hUnitFt ? (Math.abs(S.dem.hUnitFt - 1 / 0.3048) < 1e-6 ? "m" : Math.abs(S.dem.hUnitFt - UNIT_FT["us-ft"]) < 1e-9 ? "us-ft" : "ft") : "ft";
-  const vm = new Float32Array(N), dv = new Float32Array(N);
-  for (let k = 0; k < N; k++) { const ok2 = gr.type[k] === 0 && S.final.hmax[k] > 0; vm[k] = ok2 && S.final.vmax ? S.final.vmax[k] : NaN; dv[k] = ok2 && S.final.dvmax ? S.final.dvmax[k] : NaN; }
+  const vm = new Float32Array(N), dv = new Float32Array(N), fl = new Float32Array(N);
+  for (let k = 0; k < N; k++) { const ok2 = gr.type[k] === 0 && S.final.hmax[k] > 0; vm[k] = ok2 && S.final.vmax ? S.final.vmax[k] : NaN; dv[k] = ok2 && S.final.dvmax ? S.final.dvmax[k] : NaN; fl[k] = ok2 && S.final.froude ? S.final.froude[k] : NaN; }
   const buf = FloodModel.geoTiff(G, S.dem.epsg, [{ name: "max_depth_ft", data: d }, { name: `max_water_level_${vf === 1 ? "ft" : "dem_units"}`, data: wse }, { name: `hours_to_max_from_start_${S.grid.opts.t0}h`, data: tm },
-    { name: "max_velocity_ft_per_s", data: vm }, { name: "max_depth_x_velocity_ft2_per_s", data: dv }], lin);
+    { name: "max_velocity_ft_per_s", data: vm }, { name: "max_depth_x_velocity_ft2_per_s", data: dv }, { name: "critical_flow_cap_1_where_velocity_is_a_lower_bound", data: fl }], lin);
   download(`${stem()}_max_depth_EPSG${S.dem.epsg || "none"}.tif`, buf, "image/tiff");
 }
 function exportCsv() {
@@ -501,17 +513,31 @@ async function saveResults() {
     download(name, gz, "application/gzip"); msg(`Saved ${esc(name)} (${(gz.length / 1e6).toFixed(2)} MB).`); }
   catch (e) { msg(`Could not save: ${esc(e.message)}`, "err"); }
 }
+/* put the saved run's settings back in the panel, so what is shown is what produced the maps */
+function applyOptions(o) {
+  if (!o) return;
+  const set = (id, v) => { const el = $(id); if (el && v !== undefined && v !== null && !(typeof v === "number" && !Number.isFinite(v))) el.value = String(v); };
+  set("#imp", o.imperv !== undefined ? +(o.imperv * 100).toFixed(4) : undefined); set("#n-imp", o.nImp); set("#n-perv", o.nPerv); set("#ks", o.ksInHr); set("#psi", o.suctionIn); set("#imd", o.imd);
+  set("#edges", o.closedEdges ? "closed" : "open"); set("#roof", o.roofToGround ? "1" : "0"); set("#use-bld", o.useBuildings ? "1" : "0");
+  set("#coupling", o.coupling); set("#rain", o.rainSource); set("#rain-ih", o.rainInHr); set("#rain-h", o.rainHours); set("#gauge", o.gauge);
+  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
+  set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? o.outputSec / 60 : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
+  S.lcTable = o.lcTable || null; S.soilTable = o.soilTable || null; S.bspec = o.boundaries || []; S.bspecTouched = true; S._tSet = true;
+}
 async function openResults(file) {
+  if (S.running) { msg("Stop the run first, then open saved results.", "err"); return; }
   try {
     const r = await RIO.unpack(await file.arrayBuffer());
     S.dem = r.h.dem; S.bld = r.h.bld; S.bnd = r.h.bnd; S.inl = r.h.inl; S.lc = r.h.lc; S.soil = r.h.soil; S.swmm = r.h.swmm; S.exName = r.h.exName;
     S.sources = r.h.sources; S.nodeMap = r.h.nodeMap; S.grid = r.grid; S.frames = r.frames; S.final = r.final; S.frame = r.frames.length - 1; S.sel = -1;
     S.loadedFrom = { name: file.name, saved: r.h.saved, app: r.h.app };
     $("#slider").max = S.frames.length - 1; $("#slider").value = S.frame; $("#slider").disabled = false; $("#b-play").disabled = false;
-    refreshInputs(); mapInputs(); mapGrid(); S.view = "max"; $("#view").value = "max"; renderAll();
+    S.resultsOnly = true; applyOptions(r.grid.opts);
+    refreshInputs(); if (r.grid.opts && r.grid.opts.cellSize) { $("#cell").value = r.grid.opts.cellSize; cellNote(); } waterNotes(); boundaryTable(); surfaceTables();
+    mapInputs(); mapGrid(); S.view = "max"; $("#view").value = "max"; renderAll();
     ["#x-tif", "#x-csv", "#x-nodes", "#x-save"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
-    $("#b-run").disabled = true;
-    msg(`Opened ${esc(file.name)} (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}). To run again, load the input files.`);
+    ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
+    msg(`Opened ${esc(file.name)} (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}). The panel shows the settings of that run. To run again, load a DEM or an example.`);
   } catch (e) { msg(`Could not open the file: ${esc(e.message)}`, "err"); }
 }
 
@@ -522,6 +548,7 @@ function init() {
   const ex = EX(); $("#ex-pick").innerHTML = ex.map((e, i) => `<option value="${i}">${esc(e.name)}</option>`).join("");
   $("#ex-load").onclick = () => loadExample(+$("#ex-pick").value);
   wireInputs();
+  // (Run stays off while saved results are open: the worker does not hold their inputs)
   $("#b-run").onclick = run; $("#b-stop").onclick = () => { if (W) W.postMessage({ cmd: "stop" }); msg("Stopping…"); };
   $("#slider").oninput = (e) => { S.frame = +e.target.value; if (S.view !== "now") { S.view = "now"; $("#view").value = "now"; } paint(); pointChart(); };
   $("#view").onchange = (e) => { S.view = e.target.value; paint(); };

@@ -73,6 +73,10 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
     const { dem } = B.synthetic_us, b = M.buildGrid(dem, { cellSize: 12, hUnitFt: dem.hUnitFt, vUnitFt: 1, closedEdges: true, imperv: 1 });
     const r = await F.simulate(b.g, new F.CpuSolver(b.g), { t0: 0, t1: 0.5, rainAt: () => 3, stageAt: () => [], readSec: 1800 });
     ok("closed edges with rain: water balance closes and nothing leaves at the edges", Math.abs(r.ledger.err) / r.ledger.rain < 1e-5 && r.ledger.edge === 0, `closure ${r.ledger.err.toFixed(2)} cf of ${r.ledger.rain.toFixed(0)} cf rain; edge ${r.ledger.edge}`);
+    // and no rain falls on the walled ring: the rain total is 3 in/hr x 0.5 h over the cells that still have ground (not the ring, not NoData)
+    let wet = 0; for (let k = 0; k < b.g.N; k++) if (!b.noData[k]) wet++;
+    const expect = 3 / 12 * 0.5 * wet * b.G.dxFt * b.G.dxFt;
+    ok("closed edges: no rain is put on the walled ring", Math.abs(r.ledger.rain - expect) / expect < 1e-6, `rain ${r.ledger.rain.toFixed(0)} cf; 1.5 in on ${wet} ground cells = ${expect.toFixed(0)} cf`);
   }
   // GeoTIFF out: read back with geotiff.js
   {

@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-10-17. Version 0.3.0: per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, save and reopen results.
+Updated 2026-11-10. Version 0.3.1: fixes for the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -32,6 +32,18 @@ Updated 2026-10-17. Version 0.3.0: per-inlet sizes, roughness and soils from lan
   - **Save and reopen:** `.fsim.gz` holds the grid, maps, maxima, SWMM summary and the layers on the map. A reopened run shows the map, 3D, charts and exports; Run is off until the inputs are loaded again.
   - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
   - Loading a new DEM clears the other layers and says so.
+
+- **Fixed in 0.3.1** (review IDs in brackets):
+  - SWMM no longer keeps receiving the last inlet capture after the 2D run ends: the coupler zeroes the inlet inflow and then runs SWMM to its end [W9]. Test case: SWMM's external inflow 4,530 cf against 4,536 cf taken by the inlets (before: 104,326 cf extra in the reviewer's case).
+  - A refused land cover, soils, inlets, buildings or boundary file leaves the layer loaded before in use, in the worker and on the page; its file box is cleared and the message says nothing was changed [W1, W2]. A DEM that fails to load changes nothing [AU-3]. A new DEM clears the worker's layers too [W5].
+  - A listed inlet without `rim_ft` uses its node's SWMM rim as its crest, like a default inlet; a crest more than 0.5 ft from the cell ground is reported [C-F1]. The weir and orifice regimes meet at the crest, so the exchange no longer jumps when a flooding node sits at its rim: the US and SI models of the same site now send the same water to SWMM (37,267 cf each; before, SI sent 2.2 times as much) [C-S2].
+  - Inlet checks: an inlet more than 300 ft from its node is reported; a junction whose listed inlets were all rejected gets no default inlet; zero, text and NaN sizes and a non-numeric `rim_ft` are refused at load, numbered as in the file; numeric node names and MultiPoint inlets are read; GeoJSON points without a `crs` member are read as longitude/latitude when they fit in degrees [C-F2, C-F3, C-F5, W3, W8].
+  - Soils: the default IMD is now the Rawls drained deficit, porosity − field capacity: A 0.332, B 0.217, C 0.154, D 0.154 (was 0.3 for all). An IMD drier than porosity − wilting point is flagged [M-F1, AU-4].
+  - Land cover: open water n 0.035 (Chow 1959) and cultivated crops n 0.06 (SWMM manual overland table, residue under 20%), each cited; the other 13 classes stay at Kalyanapu et al. (2009) Table 2 [M-F2].
+  - Coverage: a land cover or soils layer that covers none or only part of the grid is reported, as are soil raster codes other than 1–4; misaligned arrays, infinite or blank table values and Ks over 50 in/hr are refused; `hsgCode` reads "1"–"4" and rejects fractions; rasters treat values beyond ±1e20 as NoData [W4, W6, M-F3, M-F4, M-F6, M-F7]. A cell size below the DEM resolution gives the cell-size message [W7].
+  - Velocity: the time step now allows for the depth a point inflow or rain can add before the next reading, so a sudden inflow no longer stamps a start-up spike into the maxima (peak depth × velocity 1.000 ft²/s with 60 s and 5 s chunks; before 10.7 and 1.24) [E1]. Cells where the solver capped the flow at critical speed are recorded on the CPU and the GPU, hatched in the velocity views, counted in the KPI, explained in the legend and popup, and written as GeoTIFF band 6 [E2]. A hot start (`init` with `initVel`) carries the depth and velocity maxima together; `init` alone restarts both [E5]. The GPU ratio buffer can be reset without a WebGPU validation error [E6].
+  - Saved results: they cannot be opened during a run; opening one puts the run's settings back in the panel; Run stays off until a DEM or example is loaded [AU-1, AU-2, AU-5]. The file now keeps NaN and Infinity, the critical-flow flags, and is refused when its header lists a negative, fractional or repeated array, a wrong type, a grid size that disagrees with itself, or fewer bytes than the file holds [R-F3, R-U1].
+  - Smaller: loading an example clears the inlets file box; inlets show on the map before a .inp is loaded; the build message gives the land cover and soil cell counts [AU-6, AU-Q4, AU-Q5].
 
 ## Tested (all pass)
 - `tests/node/test_solver_core.js`, `test_solver_guards.js`: carried-over solver tests.
@@ -77,7 +89,18 @@ Updated 2026-10-17. Version 0.3.0: per-inlet sizes, roughness and soils from lan
   - unknown classes reported, invalid table values refused.
 - `tests/node/test_couple2way.js` C4 (inlets): per-node sums equal the exchange; at the same location a smaller inlet takes 15,356 cf against 28,551 cf; unknown node reported; invalid size refused.
 - `tests/node/test_model.js` closed edges: edge outflow 0 and closure −1.86 cf of 466,886 cf of rain. Fails on the earlier code (edge outflow 218,522 cf): proven fail-first.
-- `tests/browser/test_app.py` (Chromium, built page, offline). B1 to B16 and Z all pass. New in 0.3.0:
+- New and strengthened in 0.3.1:
+  - `tests/node/test_couple2way.js` C5–C8: SWMM report after the exchange stops; listed inlet crest; US = SI exchange with the cap lifted; rejected inlet gets no default; far inlet reported; zero, text and NaN values refused; three inlets in one cell share the cap.
+  - `tests/node/test_worker.js` (new): the worker in node with W1–W9 above, including a two-way run whose SWMM report equals the inlet tally (13,678 vs 13,692 cf).
+  - `tests/node/test_results_io.js` (new): round trip with flags and NaN; six malformed headers and extra bytes refused.
+  - `tests/node/test_landcover.js`: expected values written out from the published tables (not read from the code); Green-Ampt infiltration against EPA SWMM 5.2.4 for groups A and D (1.919 vs 1.920 in; 0.358 vs 0.358 in); default IMD = porosity − field capacity; refusals, coverage, codes, NoData and out-of-raster sampling.
+  - `tests/node/test_velocity.js`: Manning within 1% to the east and to the south; inflow-cell speed is the face mean; maxima survive the falling limb; reset; step inflow (V5); supercritical channel flagged, subcritical not (V6); hot start (V7); the 0.05 ft threshold checked on a sheet that crosses it (V3).
+  - `tests/node/test_model.js`: no rain on the closed-edge ring (466,886 cf = 1.5 in on 25,938 ground cells).
+  - Browser: B4 checks bands 5 and 6 cell by cell; B16 compares KPIs, area chart, last map and water balance at the same view, and the restored panel; B17 failed DEM, refused land cover, inlets before .inp, example clears all file boxes; B9 refuses opening results during a run; B12 SWMM report = inlet tally (88,557 vs 88,563 cf); B6 GPU critical-cap flags equal the CPU (19 = 19).
+- Fail-first (scripted gate, then each block run alone at 0.3.0 so one crash does not hide the rest): every check written for a fix fails at 0.3.0 by assertion (C4–C8 except the shared-cap check, W1–W9, all six results-file checks, the land cover table, IMD, refusal, coverage, code and NoData checks, V1 inflow-cell, V5, V7). The shared-cap, V1 Manning, V3, V4 maxima and closed-edge rain checks pass at 0.3.0: they guard behavior that was already right and were added to catch the mutations the review listed. V4 reset and V6 crash at 0.3.0 because the flag output did not exist (symbol only).
+- No regression: the eight node suites as they were at 0.3.0 run at 0.3.1: 138 checks hold and 4 differ, all by design and in test files changed on purpose (inlet size message wording; land cover counts now leave out NoData cells; the infiltration check used a 1 cf absolute closure, now 0.001%).
+- On the US example (one way, 0 to 1.5 h) the new time-step sizing takes the same 6,981 steps and gives the same maxima as 0.3.0.
+- `tests/browser/test_app.py` (Chromium, built page, offline). B1 to B17 and Z all pass. Added in 0.3.0:
   - B14 land cover and soils loaded and used;
   - B3 velocity views; B4 5-band GeoTIFF;
   - B6 GPU velocity equal to CPU (4.4e-5 ft/s);
@@ -113,6 +136,8 @@ Updated 2026-10-17. Version 0.3.0: per-inlet sizes, roughness and soils from lan
 - A soils GeoTIFF in the browser (the code path exists; only soils GeoJSON was run in the app).
 - Land cover classes other than NLCD codes (other schemes need an edited table).
 - Results files from very large grids (file size and memory when reopening).
+- The 0.3.1 fixes were checked by the tests above, not by a second independent review round.
+- The browser checks were not run against 0.3.0 (its page lacks the new inputs), so their fail-first status is not established.
 
 ## Open items
 - Inlet clogging factors and inlet types (curb, grate, combination) with HEC-22 curves.

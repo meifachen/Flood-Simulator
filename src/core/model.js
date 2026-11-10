@@ -44,7 +44,7 @@
     const [rx, ry] = img.getResolution(), [ox, oy] = img.getOrigin();
     if (img.getFileDirectory().ModelTransformation) throw new Error(`${what}: rotated GeoTIFFs are not supported`);
     const ras = await img.readRasters({ interleave: true, samples: [0] }), nd = img.getGDALNoData(), data = new Float32Array(nx * ny);
-    for (let i = 0; i < data.length; i++) { const v = ras[i]; data[i] = !Number.isFinite(v) || (nd !== null && v === nd) ? NaN : v; }
+    for (let i = 0; i < data.length; i++) { const v = ras[i]; data[i] = !Number.isFinite(v) || (nd !== null && v === nd) || v < -1e20 || v > 1e20 ? NaN : v; }   // the +-1e20 guard catches NoData tags written as rounded text (e.g. -3.4e38)
     const gk = img.getGeoKeys() || {}; let epsg = gk.ProjectedCSTypeGeoKey && gk.ProjectedCSTypeGeoKey !== 32767 ? gk.ProjectedCSTypeGeoKey : null;
     if (!epsg && gk.GeographicTypeGeoKey === 4326) epsg = 4326;
     const c = epsg === 4326 ? { proj4: "+proj=longlat +datum=WGS84 +no_defs", name: "WGS 84" } : epsg ? lookupCrs(catalog, epsg) : null;
@@ -61,25 +61,31 @@
     }
     return out;
   }
-  /* hydrologic soil group code: "A".."D" or 1..4; a dual group ("B/D") takes the undrained group (D) */
+  /* hydrologic soil group code: "A".."D" or the whole numbers 1..4 (as numbers or text); a dual group ("B/D") takes the undrained group (D).
+   * Anything else (fractions, 0, 5, "AB") is 0 = not recognized, and is counted by the callers. */
   function hsgCode(v) {
-    if (v === null || v === undefined) return 0; if (typeof v === "number") return v >= 1 && v <= 4 ? Math.round(v) : 0;
-    const s = String(v).trim().toUpperCase(); const last = s.split("/").pop(); const i = "ABCD".indexOf(last); return i >= 0 && last.length === 1 ? i + 1 : 0;
+    if (v === null || v === undefined || typeof v === "boolean") return 0; if (typeof v === "number") return Number.isInteger(v) && v >= 1 && v <= 4 ? v : 0;
+    const s = String(v).trim().toUpperCase(); if (/^[1-4]$/.test(s)) return Number(s); const last = s.split("/").pop(); const i = "ABCD".indexOf(last); return i >= 0 && last.length === 1 ? i + 1 : 0;
   }
   function rasterizeHsg(features, G) {
     const out = new Uint8Array(G.nx * G.ny); let unknown = 0;
     for (const f of features) { const p = f.properties || {}, code = hsgCode(p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd); if (!code) { unknown++; continue; } fillRings(featureRings(f), G, (k) => { out[k] = code; }); }
     return { hsg: out, unknown };
   }
-  /* Manning n for NLCD classes (Kalyanapu et al. 2009); impervious % from the NLCD developed-class ranges (midpoints) */
+  /* Manning n for NLCD classes: Kalyanapu, Burian & McPherson (2009), Table 2, for every class it lists (21-24, 31, 41-43, 52, 71, 81, 90, 95).
+   * The paper has no value for 11 or 82: open water 0.035 is Chow (1959), natural stream, clean and straight, normal value;
+   * cultivated crops 0.06 is the SWMM manual's overland-flow table (McCuen et al. 1996), cultivated soil with residue cover under 20%.
+   * Impervious %: the midpoints of the NLCD developed-class ranges (21 <20%, 22 20-49%, 23 50-79%, 24 80-100%); open water counts as 100% (no infiltration). */
+  const NLCD_SOURCE = { 11: "Chow (1959)", 82: "SWMM manual, McCuen et al. (1996)" };
   const NLCD = {
-    11: ["Open water", 0.040, 100], 21: ["Developed, open space", 0.0404, 10], 22: ["Developed, low intensity", 0.0678, 35], 23: ["Developed, medium intensity", 0.0678, 65],
+    11: ["Open water", 0.035, 100], 21: ["Developed, open space", 0.0404, 10], 22: ["Developed, low intensity", 0.0678, 35], 23: ["Developed, medium intensity", 0.0678, 65],
     24: ["Developed, high intensity", 0.0404, 90], 31: ["Barren land", 0.0113, 0], 41: ["Deciduous forest", 0.36, 0], 42: ["Evergreen forest", 0.32, 0], 43: ["Mixed forest", 0.40, 0],
-    52: ["Shrub/scrub", 0.40, 0], 71: ["Grassland/herbaceous", 0.368, 0], 81: ["Pasture/hay", 0.325, 0], 82: ["Cultivated crops", 0.037, 0], 90: ["Woody wetlands", 0.086, 0], 95: ["Emergent herbaceous wetlands", 0.1825, 0] };
-  /* Green-Ampt by hydrologic soil group, from the Rawls et al. (1983) texture values in the SWMM Reference Manual:
-   * A loamy sand, B silt loam, C sandy clay loam, D clay loam; IMD 0.3 (editable) */
-  const HSG = { 1: { name: "A", texture: "loamy sand", ks: 1.18, suction: 2.40, imd: 0.3 }, 2: { name: "B", texture: "silt loam", ks: 0.26, suction: 6.69, imd: 0.3 },
-    3: { name: "C", texture: "sandy clay loam", ks: 0.06, suction: 8.66, imd: 0.3 }, 4: { name: "D", texture: "clay loam", ks: 0.04, suction: 8.27, imd: 0.3 } };
+    52: ["Shrub/scrub", 0.40, 0], 71: ["Grassland/herbaceous", 0.368, 0], 81: ["Pasture/hay", 0.325, 0], 82: ["Cultivated crops", 0.06, 0], 90: ["Woody wetlands", 0.086, 0], 95: ["Emergent herbaceous wetlands", 0.1825, 0] };
+  /* Green-Ampt by hydrologic soil group from the Rawls et al. (1983) texture table in the SWMM manual (Appendix A):
+   * A loamy sand, B silt loam, C sandy clay loam, D clay loam. Ks (in/hr) and suction (in) as tabulated.
+   * IMD (initial moisture deficit) = porosity - field capacity, the deficit of a drained soil; imdMax = porosity - wilting point, the driest the table supports. */
+  const HSG = { 1: { name: "A", texture: "loamy sand", ks: 1.18, suction: 2.40, imd: 0.332, imdMax: 0.404 }, 2: { name: "B", texture: "silt loam", ks: 0.26, suction: 6.69, imd: 0.217, imdMax: 0.366 },
+    3: { name: "C", texture: "sandy clay loam", ks: 0.06, suction: 8.66, imd: 0.154, imdMax: 0.262 }, 4: { name: "D", texture: "clay loam", ks: 0.04, suction: 8.27, imd: 0.154, imdMax: 0.277 } };
 
   // ------------------------------------------------------------------ polygons
   /* rings of a GeoJSON Polygon/MultiPolygon feature */
@@ -147,24 +153,36 @@
     const n = new Float32Array(N).fill(imp * (o.nImp ?? 0.015) + (1 - imp) * (o.nPerv ?? 0.1)), perv = new Float32Array(N).fill(1 - imp),
       ksA = new Float32Array(N).fill(ks), psimd = new Float32Array(N).fill(psi * imd), imdA = new Float32Array(N).fill(imd), mult = new Float32Array(N).fill(1);
     // land cover: per-cell Manning n and impervious fraction from the class table; classes not in the table keep the global values
-    const lcInfo = { cells: 0, missing: {} };
+    const lcInfo = { cells: 0, missing: {}, covered: 0 }, isNum = (v) => typeof v === "number" && Number.isFinite(v);
+    let ground = 0; for (let k = 0; k < N; k++) if (!noData[k]) ground++;
+    const coverNote = (what, covered, rest) => { if (!covered) warnings.push(`${what} does not cover any cell of the grid; ${rest} are used everywhere`); else if (covered < ground) warnings.push(`${what} covers ${covered} of ${ground} ground cells; the others use ${rest}`); };
     if (o.lcClass) {
+      if (o.lcClass.length !== N) throw new Error(`Land cover was sampled on ${o.lcClass.length} cells but the grid has ${N}`);
+      for (const [c, e] of Object.entries(o.lcTable || {})) if (!(isNum(e.n) && e.n > 0 && e.n <= 1) || !(isNum(e.imp) && e.imp >= 0 && e.imp <= 100)) throw new Error(`Land cover class ${c}: Manning n ${e.n} or impervious ${e.imp}% is not valid (n 0-1, impervious 0-100%)`);
       for (let k = 0; k < N; k++) {
-        const c = o.lcClass[k]; if (!(c === c)) continue; const e = o.lcTable && o.lcTable[c];
+        const c = o.lcClass[k]; if (!(c === c) || noData[k]) continue; lcInfo.covered++; const e = o.lcTable && o.lcTable[c];
         if (!e) { lcInfo.missing[c] = (lcInfo.missing[c] || 0) + 1; continue; }
-        if (!(e.n > 0) || !(e.imp >= 0 && e.imp <= 100)) throw new Error(`Land cover class ${c}: Manning n ${e.n} or impervious ${e.imp}% is not valid`);
         n[k] = e.n; perv[k] = 1 - e.imp / 100; lcInfo.cells++;
       }
+      coverNote("Land cover", lcInfo.covered, "the global roughness and imperviousness");
       const miss = Object.keys(lcInfo.missing); if (miss.length) warnings.push(`Land cover classes ${miss.join(", ")} are not in the table; those cells use the global roughness and imperviousness`);
     }
     // soils: per-cell Green-Ampt parameters from the hydrologic soil group (1-4 = A-D)
     const soilInfo = { cells: 0 };
     if (o.hsg) {
+      if (o.hsg.length !== N) throw new Error(`Soil groups were sampled on ${o.hsg.length} cells but the grid has ${N}`);
+      const table = o.soilTable || HSG;
+      for (const [gI, e] of Object.entries(table)) {
+        const nm = "ABCD"[gI - 1] || gI;
+        if (!(isNum(e.ks) && e.ks >= 0 && e.ks <= 50) || !(isNum(e.suction) && e.suction >= 0 && e.suction <= 100) || !(isNum(e.imd) && e.imd >= 0 && e.imd <= 1))
+          throw new Error(`Soil group ${nm}: Ks ${e.ks} in/hr, suction ${e.suction} in or IMD ${e.imd} is not valid (Ks 0-50, suction 0-100, IMD 0-1)`);
+        const ref = HSG[gI]; if (ref && e.imd > ref.imdMax + 1e-9) warnings.push(`Soil group ${nm}: IMD ${e.imd} is drier than the wilting point of ${ref.texture} (porosity - wilting point = ${ref.imdMax}); check it`);
+      }
       for (let k = 0; k < N; k++) {
-        const gI = o.hsg[k]; if (!gI) continue; const e = o.soilTable && o.soilTable[gI]; if (!e) continue;
-        if (!(e.ks >= 0) || !(e.suction >= 0) || !(e.imd >= 0 && e.imd <= 1)) throw new Error(`Soil group ${"ABCD"[gI - 1]}: Green-Ampt values are not valid`);
+        const gI = o.hsg[k]; if (!gI || noData[k]) continue; const e = table[gI]; if (!e) continue;
         ksA[k] = e.ks / 12 / 3600; psimd[k] = e.suction / 12 * e.imd; imdA[k] = e.imd; soilInfo.cells++;
       }
+      coverNote("The soils layer", soilInfo.cells, "the global Green-Ampt values");
     }
     // rain on roofs: to the nearest open cell (multi-source BFS from open cells), or lost
     if (o.roofToGround !== false) {
@@ -287,6 +305,6 @@
     return buf;
   }
 
-  const api = { readRaster, sampleRaster, hsgCode, rasterizeHsg, NLCD, HSG, proj4UnitFt, lookupCrs, readDEM, featureRings, fillRings, buildGrid, cellOf, nearestOpen, coupleSwmm, geoTiff };
+  const api = { readRaster, sampleRaster, hsgCode, rasterizeHsg, NLCD, NLCD_SOURCE, HSG, proj4UnitFt, lookupCrs, readDEM, featureRings, fillRings, buildGrid, cellOf, nearestOpen, coupleSwmm, geoTiff };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FloodModel = api;
 })(typeof self !== "undefined" ? self : this);

@@ -26,8 +26,8 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
   async function coupled(opts) {
     const B = build(), c = await C2.makeCoupler(B, createSWMM, inp, model, opts), pond = M.coupleSwmm(B, model, out, { boundaries: [{ key: "POND", node: "POND" }] });
     const r = await F.simulate(B.g, new F.CpuSolver(B.g), { t0: 0, t1: T1, rainAt: () => 0, stageAt: pond.stageAt, sources: c.sources, sourceAt: c.sourceAt, chunkSec: 30, readSec: 1800 });
-    // finish the SWMM run to its end so its report covers the whole period
-    c.engine.advance(1e9, []); const fin = c.finish();
+    // finish(): stop the exchange and run SWMM to its end so its report covers the whole period
+    const fin = c.finish();
     return { B, c, r, fin, st: r.frames[r.frames.length - 1].st };
   }
   // C1 with the inlets closed, the coupled run passes SWMM's own flooding to the 2D (no water goes back)
@@ -70,7 +70,56 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
   }
   {
     let m = ""; try { await coupled({ inlets: [{ x: model.nodes[0].x, y: model.nodes[0].y, node: "J1", lw: -2 }] }); } catch (e) { m = e.message; }
-    ok("C4 an invalid inlet size is refused", /Inlet 1 \(J1\): lw -2/.test(m), m);
+    ok("C4 an invalid inlet size is refused", /Inlet 1 \(J1\): weir length -2/.test(m), m);
+  }
+  // ---- exchange-only probes: a stand-in surface with a fixed depth everywhere (no 2D run), so each check isolates the coupler
+  const flat = (depth) => ({ readCells: async (cells) => cells.map(() => depth) });
+  const sweep = async (c, h0, h1, depth, stepSec = 30) => { for (let t = h0; t < h1 - 1e-9; t += stepSec / 3600) await c.sourceAt(t, Math.min(h1, t + stepSec / 3600), flat(depth)); };
+  const rptExternal = (txt) => { const m = /Flow Routing Continuity[\s\S]*?External Inflow \.+\s+([\d.]+)/.exec(txt); return m ? Number(m[1]) * 43560 : NaN; };
+  // C5 when the exchange stops, SWMM must not keep receiving the last inlet capture for the rest of its run
+  {
+    const c = await C2.makeCoupler(build(), createSWMM, inp, model, {});
+    await sweep(c, 0, 0.25, 0.3);
+    const sent = c.tally.sentToSwmm, fin = c.finish(), ext = rptExternal(fin.rpt), o = S.readOut(fin.out);
+    ok("C5 after the exchange stops, SWMM receives only what the inlets took (report external inflow = tally)", sent > 1000 && Math.abs(ext - sent) / sent < 0.01 && o.nPeriods === out.nPeriods,
+      `tally ${sent.toFixed(0)} cf; SWMM external inflow ${ext.toFixed(0)} cf; report periods ${o.nPeriods} of ${out.nPeriods}`);
+  }
+  // C6 a listed inlet with no crest elevation uses its node's SWMM rim, the same crest as a default inlet (rim raised 1 ft above the ground here)
+  {
+    const inpHi = inp.replace(/^(J4\s+48\.842\s+)7\.000/m, "$18.000"), modelHi = S.parseInp(inpHi), j4 = modelHi.nodes[modelHi.nodeIndex.J4];
+    const one = async (opts) => { const c = await C2.makeCoupler(build(), createSWMM, inpHi, modelHi, opts); await sweep(c, 1, 1 + 30 / 3600, 1.5); return c; };
+    const dflt = await one({}), listed = await one({ inlets: [{ x: j4.x, y: j4.y, node: "J4" }] });
+    const qD = dflt.tally.perNode[dflt.nodes.findIndex((n) => n.name === "J4")].in, qL = listed.tally.perNode[listed.nodes.findIndex((n) => n.name === "J4")].in;
+    ok("C6 a listed inlet without rim_ft takes the same water as the default inlet at the same place", qD > 0 && Math.abs(qL - qD) / qD < 1e-9, `listed ${qL.toFixed(2)} cf, default ${qD.toFixed(2)} cf (crest ${Number(listed.inlets.find((i) => i.node === "J4").rimFt).toFixed(3)} ft)`);
+    ok("C6 a crest far from the cell ground is reported", listed.warnings.some((w) => /Inlet 1 \(J4\): crest 56\.8\d ft is 0\.9\d ft above the ground/.test(w)), listed.warnings.filter((w) => /crest/.test(w)).join(" | "));
+  }
+  // C7 the same site in US and SI units exchanges the same water (no jump between the weir and orifice regimes when a flooding node sits at its rim)
+  {
+    const dS = "synthetic_si", demS = await M.readDEM(ab(ex(dS, "dem.tif")), GeoTIFF, catalog), geoS = (f) => JSON.parse(fs.readFileSync(ex(dS, f)));
+    const inpS = fs.readFileSync(ex(dS, "model.inp"), "utf8"), modelS = S.parseInp(inpS);
+    const BS = M.buildGrid(demS, { cellSize: 3.6576, hUnitFt: demS.hUnitFt, vUnitFt: 1 / 0.3048, buildings: geoS("buildings.geojson").features, boundaries: [{ key: "POND", feature: geoS("pond.geojson").features[0] }] });
+    const r = {};
+    // capFrac lifted so that the inlet equations, not the half-the-water cap, set the exchange
+    for (const [k, B, text, mdl] of [["US", build(), inp, model], ["SI", BS, inpS, modelS]]) { const c = await C2.makeCoupler(B, createSWMM, text, mdl, { capFrac: 1e9 }); await sweep(c, 1, 2, 0.3); r[k] = c.tally; }
+    const ratio = r.SI.sentToSwmm / r.US.sentToSwmm, worst = Math.max(...r.US.perNode.map((p, i) => Math.abs(r.SI.perNode[i].in - p.in) / Math.max(p.in, 1)));
+    ok("C7 US and SI models of the same site send the same water to SWMM", Math.abs(ratio - 1) < 0.02 && worst < 0.05, `sent to SWMM US ${r.US.sentToSwmm.toFixed(0)} cf, SI ${r.SI.sentToSwmm.toFixed(0)} cf (ratio ${ratio.toFixed(3)}); worst node ${(100 * worst).toFixed(1)}%`);
+  }
+  // C8 inlet list checks
+  {
+    const j4 = model.nodes[model.nodeIndex.J4];
+    const off = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x + 1e6, y: j4.y, node: "J4" }] });
+    ok("C8 a junction whose listed inlet was rejected gets no default inlet", !off.inlets.some((i) => i.node === "J4") && off.nodeMap.find((n) => n.name === "J4").inlets === 0 && off.warnings.some((w) => /Inlet 1 \(J4\).*no default inlet/.test(w)),
+      off.warnings.filter((w) => /J4/.test(w)).join(" | "));
+    const far = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x - 800, y: j4.y - 400, node: "J4" }] });
+    ok("C8 an inlet far from its node is reported", far.warnings.some((w) => /Inlet 1 \(J4\) is 89\d ft from its node/.test(w)), far.warnings.filter((w) => /ft from/.test(w)).join(" | "));
+    const refused = [];
+    for (const [k, v] of [["co", 0], ["cw", 0], ["lw", "4"], ["area", NaN], ["rimFt", "abc"]]) { try { await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x, y: j4.y, node: "J4", [k]: v }] }); refused.push(`${k}=${v} accepted`); } catch (e) { refused.push(e.message); } }
+    ok("C8 zero, text and NaN inlet values are refused, naming the inlet and value", refused.every((m) => /^Inlet 1 \(J4\): .* is not a/.test(m)) && /"4"/.test(refused[2]) && /NaN/.test(refused[3]), refused.join(" | "));
+    // three identical large inlets in one cell share the cell's water: together they take no more than one inlet alone
+    const big = { node: "J4", lw: 50, area: 50 }, pts = (n) => Array.from({ length: n }, () => Object.assign({ x: j4.x, y: j4.y }, big));
+    const take = async (n) => { const c = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: pts(n), defaultInlets: false }); await sweep(c, 1, 1 + 30 / 3600, 0.05); return c.tally.perInlet; };
+    const t1 = await take(1), t3 = await take(3), dx = build().G.dxFt, cap = 0.5 * 0.05 * dx * dx;   // capFrac x depth x cell area: the most one interval may take from the cell
+    ok("C8 inlets in one cell share the half-the-water cap", Math.abs(t1[0] - cap) < 1e-9 * cap && Math.abs(t3.reduce((a, v) => a + v, 0) - cap) < 1e-9 * cap, `one inlet ${t1[0].toFixed(3)} cf; three inlets ${t3.map((v) => v.toFixed(3)).join(" + ")} cf; cap ${cap.toFixed(3)} cf`);
   }
   // C3 prepareInp forces ALLOW_PONDING NO
   {
