@@ -234,8 +234,9 @@ def main(a):
 
     ex = {"name": "Winter Haven, FL – Lake Martha (real public data)", "epsg": EPSG, "units": "US", "dem": "dem.tif", "buildings": "buildings.geojson", "boundaries": "lakes.geojson",
           "inp": "model.inp", "inlets": "inlets.geojson", "landcover": "landcover.tif", "soils": "soils.geojson",
-          "note": f"Real storm sewer (City of Winter Haven inventory) on 2018 lidar. Use two-way coupling, rain from the SWMM gauge ({a.ari}-year 24-hour Atlas 14 storm, {tot:.2f} in) and “Take no water” for junctions with no listed inlet. Lakes are held at their 2018 lidar levels.",
-          "sources": rep["sources"]}
+          "note": f"Real storm sewer (City of Winter Haven inventory) on 2018 lidar; lakes held at their 2018 lidar levels. Loading fills in a two-way run at 12 ft cells, 8 to 16 h, with rain from the SWMM gauge ({a.ari}-year 24-hour Atlas 14 storm, {tot:.2f} in) and no water taken at manholes.",
+          "sources": rep["sources"],
+          "settings": {"coupling": "two", "rain": "gauge", "gauge": f"ATLAS14_{a.ari}Y", "defaultInlets": False, "cellFt": 12, "t0": 8, "t1": 16, "outputMin": 15}}
     json.dump(ex, open(os.path.join(a.out, "example.json"), "w"), indent=1)
     json.dump(rep, open(os.path.join(a.out, "build_report.json"), "w"), indent=1)
     print("wrote", a.out)

@@ -39,7 +39,7 @@ def main(a):
             for k in ("dem", "buildings", "boundaries", "landcover", "soils", "inp", "out", "inlets"):
                 if meta.get(k):
                     p = EXA / d / meta[k]; used.append(p); files[k] = b64gz(p.read_bytes())
-            exs.append({"name": meta["name"], "note": meta.get("note", ""), "basemap": bm, "files": files})
+            exs.append({"name": meta["name"], "note": meta.get("note", ""), "basemap": bm, "settings": meta.get("settings") or {}, "files": files})
     html = r(SRC / "app/index.html")
     build = {"version": VERSION, "built": datetime.date.today().isoformat()}
     subs = {"/*__LEAFLET_CSS__*/": r(VEN / "leaflet/leaflet.css"), "/*__HELP__*/": r(SRC / "app/help.html"), "/*__LIBS__*/": libs, "/*__WORKER__*/": worker,

@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
  "version": "0.3.2",
- "bytes": 5623466,
- "sha256": "0949871f87e930d39dac6f1cb74fcba059029acea144c9edb7710ec97737aae9",
+ "bytes": 5625157,
+ "sha256": "f0933eee94ef43d08dce284266c14bcc8ea69bd0d7785e2b07d8abe132a50278",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -70,7 +70,7 @@
   },
   {
    "file": "examples/synthetic_us/example.json",
-   "sha256": "895bf2761c580fda688e86afae53aa2ee8fb344d3908ae828b285ca7eb644cfd"
+   "sha256": "7a0e1b5f83a1770137d3c83da32c6b420d82473e4aeaed79e14b22713300ab23"
   },
   {
    "file": "examples/synthetic_us/inlets.geojson",
@@ -98,7 +98,7 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "bc5348a083e1a1b0466c97ceb1fd622bc60b3b45b8824ad91d1c497d3cad2877"
+   "sha256": "a5dd97fd3a15d3864289f01a9c013926c5a9133ba321bc31eb2b1d0864ef3537"
   },
   {
    "file": "src/app/help.html",
@@ -118,7 +118,7 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "8ae5c7c0ac5425d740e67592ac9fd2af002533fc74c510ae79bccc707f33567f"
+   "sha256": "c0aaf43cec96f153c74f11763f84422c6afc6cf536fd53c89ffbc4864eb07061"
   },
   {
    "file": "src/core/couple2way.js",
@@ -134,7 +134,7 @@
   },
   {
    "file": "src/io/swmm.js",
-   "sha256": "19749b4fde715759d3c898eaf6666659a8f7649bf2f2665d09d133e7748b3823"
+   "sha256": "0f7ea54bdeef7461575339548d89881f0fb4d7bf8df17ca01f58b4c369f22886"
   },
   {
    "file": "vendor/crs_catalog.json",

@@ -10,5 +10,13 @@
  "note": "Invented place and model for testing. Georeferenced in a real CRS so the files are valid; turn the basemap off.",
  "landcover": "landcover.tif",
  "soils": "soils.geojson",
- "inlets": "inlets.geojson"
+ "inlets": "inlets.geojson",
+ "settings": {
+  "coupling": "one",
+  "rain": "none",
+  "cellFt": 12,
+  "t0": 0.5,
+  "t1": 1.5,
+  "outputMin": 10
+ }
 }

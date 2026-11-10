@@ -37,6 +37,8 @@ Updated 2026-11-10. Version 0.3.2: first real-site test (Winter Haven, FL; docs/
   - `python/make_winter_haven_demo.py` builds a real-site example from public data: the City of Winter Haven storm sewer inventory, 3DEP lidar, NHD lakes, FEMA structures, NLCD, SSURGO and an Atlas 14 design storm (the data are downloaded, not stored in the repository).
   - Roof rain no longer goes into pockets of open ground closed in by buildings (a one-cell courtyard had collected 66 ft of water at 6 ft cells); the build reports such pockets.
   - The double-counting warning for rain on the grid shows only when the SWMM model has subcatchments that use that gauge.
+  - An example can carry its run settings (coupling, rain and gauge, inlets, cell size, time window), filled in on Load.
+  - A two-way run with no rain on the grid is refused when the SWMM model has no subcatchments or inflows of its own (it would have no water).
 - **Measured on a real GPU (Intel Core 7 150U laptop graphics, headless Chrome):** 12 to 32 times faster than the CPU on the synthetic example (6 ft: 3.4 s vs 110.1 s), same maps within 1.4e-5 ft. Winter Haven, 8 h two-way: 19.3 s at 12 ft, 84.6 s at 6 ft, 831 s at 3 ft (1.33 M cells).
 - **Fixed in 0.3.1** (review IDs in brackets):
   - SWMM no longer keeps receiving the last inlet capture after the 2D run ends: the coupler zeroes the inlet inflow and then runs SWMM to its end [W9]. Test case: SWMM's external inflow 4,530 cf against 4,536 cf taken by the inlets (before: 104,326 cf extra in the reviewer's case).

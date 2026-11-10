@@ -62,4 +62,10 @@ expectError("refuses a node defined twice", () => S.parseInp("[JUNCTIONS]\nJ1 10
   const m = S.parseInp("[OPTIONS]\nFLOW_UNITS CFS\nSTART_DATE 01/01/2024\nSTART_TIME 23:00\n[RAINGAGES]\nRG INTENSITY 1:00 1 TIMESERIES T\n[TIMESERIES]\nT 01/01/2024 23:00 1\nT 01/02/2024 00:00 2\nT 01:00 3\n");
   const r = S.gaugeRain(m, "RG"); ok("dated series across midnight", JSON.stringify(r.values) === "[1,2,3]", JSON.stringify(r.values));
 }
+// water SWMM can make on its own besides subcatchments: [INFLOWS], [DWF], [RDII], [GROUNDWATER] lines are counted
+{
+  const base = "[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ1 10 5 0 0 0\n[OUTFALLS]\nO1 5 FREE NO\n[CONDUITS]\nC1 J1 O1 100 0.013 0 0 0 0\n";
+  const none = S.parseInp(base), some = S.parseInp(base + "[INFLOWS]\nJ1 FLOW TS1\n[DWF]\nJ1 FLOW 0.5\n");
+  ok("other inflows SWMM makes on its own are counted", none.otherInflows === 0 && some.otherInflows === 2, `${none.otherInflows} and ${some.otherInflows}`);
+}
 const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);

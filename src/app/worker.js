@@ -113,7 +113,7 @@ async function load(a) {
     const links = MODEL.links.map((l) => ({ name: l.name, type: l.type, from: l.from, to: l.to, verts: MODEL.vertices[l.name] || [] }));
     res.swmm = { title: MODEL.title, flowUnits: MODEL.flowUnits, unitSystem: MODEL.unitSystem, start: MODEL.start && MODEL.start.toISOString(), end: MODEL.end && MODEL.end.toISOString(),
       hours: MODEL.end && MODEL.start ? (MODEL.end - MODEL.start) / 3600000 : null, gauges: MODEL.gauges.map((g) => ({ name: g.name, source: g.source, interval: g.interval })),
-      nodes, links, warnings: MODEL.warnings, hasOut: !!OUT, subcatchments: MODEL.subcatchments.length,
+      nodes, links, warnings: MODEL.warnings, hasOut: !!OUT, subcatchments: MODEL.subcatchments.length, otherInflows: MODEL.otherInflows || 0,
       subcatchmentGauges: [...new Set(MODEL.subcatchments.map((c) => c.gauge))],
       out: OUT ? { nPeriods: OUT.nPeriods, stepSec: OUT.reportStepSec, t0Hours: (OUT.start.getTime() - t0) / 3600000, flowUnits: OUT.flowUnits } : null };
     res.swmm.rain = MODEL.gauges.map((g) => { try { const r = SWMM.gaugeRain(MODEL, g.name); return { name: g.name, stepSec: r.stepSec, values: r.values, totalIn: r.totalIn }; } catch (e) { return { name: g.name, error: e.message }; } });

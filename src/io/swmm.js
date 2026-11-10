@@ -63,6 +63,8 @@
     for (const r of sec.VERTICES || []) (model.vertices[r.t[0]] = model.vertices[r.t[0]] || []).push([num(r.t[1], "Vertex X"), num(r.t[2], "Vertex Y")]);
     for (const r of sec.POLYGONS || []) (model.polygons[r.t[0]] = model.polygons[r.t[0]] || []).push([num(r.t[1], "Polygon X"), num(r.t[2], "Polygon Y")]);
     for (const r of sec.SUBCATCHMENTS || []) { const t = r.t; model.subcatchments.push({ name: t[0], gauge: t[1], outlet: t[2], area: Number(t[3]) || 0, imperv: Number(t[4]) || 0 }); }
+    // other water SWMM can make on its own: external and dry-weather inflows, RDII, groundwater
+    model.otherInflows = ["INFLOWS", "DWF", "RDII", "GROUNDWATER"].reduce((n, k) => n + (sec[k] || []).length, 0);
     for (const r of sec.RAINGAGES || []) {
       const t = r.t; // Name Format Interval SCF TIMESERIES ts | FILE fname sta units
       model.gauges.push({ name: t[0], format: (t[1] || "INTENSITY").toUpperCase(), interval: t[2], intervalSec: clockSec(t[2]), scf: Number(t[3] ?? 1) || 1, source: (t[4] || "").toUpperCase(), series: t[5], fileUnits: t[8] });

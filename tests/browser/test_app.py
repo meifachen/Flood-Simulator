@@ -29,11 +29,14 @@ with sync_playwright() as p:
     pg.on("console", lambda m: errs.append("CONSOLE " + m.text) if m.type == "error" and "ERR_FAILED" not in m.text and "Failed to load resource" not in m.text else None)
     pg.goto("file://" + APP); pg.wait_for_selector("#ex-load")
 
-    # ---- B1 example loads with SWMM results and the pond tied to the SWMM storage node
+    # ---- B1 example loads with SWMM results and the pond tied to the SWMM storage node; its run settings are filled in
+    pg.fill("#t0", "3"); pg.fill("#t1", "4"); pg.fill("#outmin", "30")
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load")
     pg.wait_for_function("/Loaded example|Could not/.test(document.querySelector('#msg').textContent)", timeout=120000)
     ok("B1 example loads (DEM, buildings, pond, SWMM)", "EPSG 2236" in pg.inner_text("#st-dem") and "30 footprints" in pg.inner_text("#st-bld") and "7 nodes flood" in pg.inner_text("#st-out")
        and pg.eval_on_selector(".b-src", "e => e.value") == "POND", pg.inner_text("#st-out"))
+    filled = pg.evaluate("({c: document.querySelector('#coupling').value, t0: document.querySelector('#t0').value, t1: document.querySelector('#t1').value, m: document.querySelector('#outmin').value, cell: document.querySelector('#cell').selectedOptions[0].textContent})")
+    ok("B1 the example's run settings are filled in on Load", filled["c"] == "one" and filled["t0"] == "0.5" and filled["t1"] == "1.5" and filled["m"] == "10" and filled["cell"].startswith("12") and "run settings are filled in" in pg.inner_text("#msg"), filled)
 
     # ---- B2 CPU run: closes, and the SWMM inflow volume equals the trapezoid integral of the node series over the window
     settings(pg); pg.click("#b-run"); msg = wait_done(pg)
@@ -205,8 +208,10 @@ with sync_playwright() as p:
     pg.select_option("#rain", "gauge"); pg.evaluate("waterNotes()"); warn_sub = pg.is_visible("#double-warn")
     pg.evaluate("S.swmm.subcatchments = 0; waterNotes()"); warn_none = pg.is_visible("#double-warn")
     ok("B17 the double-counting warning shows only when the SWMM model makes its own runoff (subcatchments)", warn_sub and not warn_none, f"with {pg.evaluate('S.swmm.subcatchmentGauges.length')} gauges used by subcatchments: {warn_sub}; with none: {warn_none}")
-    pg.select_option("#rain", "none"); pg.evaluate("waterNotes()")
-    pg.select_option("#coupling", "two"); settings(pg, t0="0", t1="1.5")
+    pg.select_option("#rain", "none"); pg.select_option("#coupling", "two"); pg.evaluate("waterNotes()"); settings(pg, t0="0", t1="1.5")
+    pg.click("#b-run"); pg.wait_for_timeout(300)
+    ok("B17 a two-way run with no rain and a SWMM model that makes no water of its own is refused, saying what to set", "No water would enter this run" in pg.inner_text("#msg") and "Rain on the grid" in pg.inner_text("#msg") and not pg.evaluate("S.running"), pg.inner_text("#msg")[:120])
+    pg.evaluate("S.swmm.subcatchments = 1; waterNotes()")
     pg.click("#b-run"); msg = wait_done(pg)
     r2 = pg.evaluate("S.final.swmm2 && {t: S.final.swmm2.tally, mb: S.final.swmm2.massBalance, L: S.final.ledger}")
     if r2:

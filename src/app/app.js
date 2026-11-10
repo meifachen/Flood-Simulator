@@ -185,9 +185,17 @@ async function loadExample(i) {
   const ok1 = await loadInputs({ inlets: await get("inlets", "text"), dem: await get("dem"), buildings: await get("buildings", "text"), boundaries: await get("boundaries", "text"), landcover: await get("landcover"), soils: await get("soils", "text"), inp: await get("inp", "text"), out: await get("out") }, `example “${ex.name}”`);
   if (!ok1) return;
   if (S.swmm && S.swmm.hasOut) $("#coupling").value = "one";
-  $("#rain").value = "none"; $("#basemap").value = ex.basemap || "none"; waterNotes(); refreshInputs();
+  $("#rain").value = "none"; $("#basemap").value = ex.basemap || "none";
+  // the example's own run settings (coupling, rain, inlets, cell size, window), so it runs as intended with one click
+  const st = ex.settings || {}, setv = (id, v) => { if (v !== undefined && v !== null && $(id)) $(id).value = String(v); };
+  setv("#coupling", st.coupling); setv("#rain", st.rain); setv("#def-inl", st.defaultInlets === undefined ? undefined : st.defaultInlets ? "1" : "0"); setv("#t0", st.t0); setv("#t1", st.t1); setv("#outmin", st.outputMin);
+  if (st.t1 !== undefined) S._tSet = true;
+  waterNotes(); refreshInputs();
+  if (st.gauge) setv("#gauge", st.gauge);
+  if (st.cellFt && S.dem) { const want = [...$("#cell").options].find((op) => Math.abs(+op.value * S.dem.hUnitFt - st.cellFt) < 0.01 * st.cellFt); if (want) { $("#cell").value = want.value; cellNote(); } }
+  waterNotes();
   ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
-  msg(`Loaded example “${esc(ex.name)}”. ${esc(ex.note || "")} Press Run.`);
+  msg(`Loaded example “${esc(ex.name)}”. ${esc(ex.note || "")}${ex.settings && Object.keys(ex.settings).length ? " Its run settings are filled in." : ""} Press Run.`);
 }
 
 // ------------------------------------------------------------------ run
@@ -209,6 +217,9 @@ function runOptions() {
   o.wetFt = numIn("#wet", "Wet depth"); o.buildingFt = numIn("#bthr", "Building depth");
   o.boundaries = (S.bspec || []).map((b) => { if (!b.node && !Number.isFinite(b.level)) throw new Error(`Give a level or a SWMM node for boundary “${b.key}”`); return b; });
   if (o.coupling === "off" && o.rainSource === "none" && !o.boundaries.length) throw new Error("Choose at least one water source (SWMM coupling, rain or a level boundary)");
+  // two-way with no rain on the grid: water can only come from SWMM itself (its subcatchments or its own inflows)
+  if (o.coupling === "two" && o.rainSource === "none" && S.swmm && !S.swmm.subcatchments && !S.swmm.otherInflows)
+    throw new Error("No water would enter this run: the SWMM model has no subcatchments or inflows of its own, and there is no rain on the grid. Set “Rain on the grid” (for example to the SWMM rain gauge)");
   if (o.coupling !== "two" && o.boundaries.some((b) => b.node) && !(S.swmm && S.swmm.hasOut)) throw new Error("A boundary level from a SWMM node needs the .out file (or two-way coupling)");
   const nFrames = Math.ceil((o.t1 - o.t0) * 3600 / o.outputSec) + 1, f = Math.round(o.cellSize / d.res), cells = Math.floor(d.nx / f) * Math.floor(d.ny / f);
   if (nFrames * cells > 400e6) throw new Error(`Storing ${nFrames} maps of ${(cells / 1e6).toFixed(1)} M cells needs too much memory; map less often or use larger cells`);
