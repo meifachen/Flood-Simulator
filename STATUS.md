@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-11-10. Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
+Updated 2026-11-11. Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -33,10 +33,28 @@ Updated 2026-11-10. Version 0.4.0: inlet types and clogging, routed lakes, compa
   - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
   - Loading a new DEM clears the other layers and says so.
 
+- **Fixed in 0.4.1:**
+  - **Routed lakes:**
+    - Water flowing back from a lake into SWMM is now taken from the lake (before, it was added).
+    - Chunks are limited so the level update stays stable.
+    - Refused: an area smaller than the lake's own cells, a lake listed twice, bad outside inflow, a level falling below the bed.
+  - **SWMM receives exactly what the inlets took,** whatever its routing step. Before, a 20 s or 60 s routing step gave +33% or +100%.
+  - **Inlets:**
+    - An inventory `type` field is reported, not silently ignored, and `INLET_TYPE` is read in any letter case.
+    - Both size names at once are refused.
+    - Curb openings over 12 ft ignore the depression.
+    - The water that goes straight back out of a flooding node is shown.
+  - **Worker:** boundaries that differ from the grid's are refused, and so is routed with a SWMM node. One-way routed lakes warn that outfalls are not passed.
+  - **Page:** clogging is restored exactly, change classes are symmetric, the comparison refuses other units, and failed tour steps say so.
+  - **Builder and comparison:**
+    - `--routed`.
+    - City lakes matched by name and overlap.
+    - Structures on lakes flagged.
+    - Each run compared over its own grid, with a tolerance in feet.
 - **New in 0.4.0:**
   - **Inlet types (HEC-22 sag equations):** generic, grate, curb (with or without a gutter depression) and combination, read from the inlets file (`inlet_type`; an inventory `type` field such as CURB_INLET is ignored, `perimeter_ft`, `open_area_sqft`, `curb_length_ft`, `curb_height_ft`, `depression_width_ft`). A clogging fraction can be set per inlet (`clog`) or for all inlets in the panel.
   - **Routed lakes:** a level boundary can rise and fall with what it gains: the water the 2D sends into it, rain on its whole area (`area_ac`, else the part in the grid) and, in two-way runs, SWMM outfalls that discharge into it. Those outfalls take the lake level as their stage. The results show each lake's start, peak and end level and its water budget. A routed lake is a level pool with a constant area and no outlet.
-  - **Winter Haven, routed lakes, whole 25-year storm:** the lakes rose 0.70–0.77 ft, mostly from rain on the lakes. The extra flooding (0.8 ac) falls inside the City's lake polygons, so the ICPR comparison did not change (site doc, section 7).
+  - **Winter Haven, routed lakes, whole 25-year storm:** the lakes rose 0.72–0.77 ft at 12 ft, mostly from rain on the lakes. The extra flooding (0.8 ac) falls inside the City's lake polygons, so the ICPR comparison did not change (site doc, section 7).
   - **Compare two saved runs** on the same grid: the change in maximum depth, the area newly flooded, no longer flooded, deeper and shallower, and buildings reached. Runs on different grids are refused.
   - **Help in the page:**
     - a workflow map of the five steps, which shows what is done and jumps to any setting;

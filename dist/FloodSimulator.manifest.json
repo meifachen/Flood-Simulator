@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.4.0",
+ "version": "0.4.1",
  "bytes": 5706107,
- "sha256": "7c56259475ecd0c0f92e157856ec143352188327b296f82191f4c2c8605ac3fd",
+ "sha256": "7e8d6cec2994d040bbaf4efba84acbb2fd92af863e26f6832bfcefdcb45f0c6f",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
