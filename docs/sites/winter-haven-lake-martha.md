@@ -164,6 +164,7 @@ In 0.4.0, a lake can rise with the water it gains instead of holding a fixed lev
   - Inlets: 1,195,216 cf at 12 ft, the same as with fixed lakes to within 0.01%.
   - 0.4.0 against 0.4.1: the peaks changed by less than 0.001 ft, and the net outfall volumes by under 1%. These lakes are large enough that the 0.4.0 update was already stable, and little water flowed back.
   - 0.4.1 against 0.4.2 (the adaptive lake chunk cap, rerun on the same GPU): the lake peaks agree to 0.001 ft; peak depth on open ground moved by at most 0.009 ft (no cell by more than 0.01 ft); inlets 1,195,143 vs 1,195,216 cf at 12 ft; SWMM continuity −0.014% and −0.104%.
+  - 0.4.2 against 0.4.3 (the time-step smoothing fix and the lake stability limit, same GPU): the lake peaks agree to 0.001 ft; peak depth on open ground moved by at most 0.006 ft at 12 ft, and at 6 ft by more than 0.01 ft on 6 of 213,307 open cells (at most 0.10 ft); inlets 1,195,162 cf at 12 ft and 1,469,591 cf at 6 ft; SWMM continuity −0.014% and −0.105%.
 
 ### 8. Inlet file fields
 
