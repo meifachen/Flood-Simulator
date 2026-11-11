@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Real-site example: downtown Winter Haven, Florida, around Lake Martha, built only from public data.
 
-    python python/make_winter_haven_demo.py examples/winter_haven [--cell 3] [--margin 400] [--ari 25] [--lake-levels lidar|city]
+    python python/make_winter_haven_demo.py examples/winter_haven [--cell 3] [--margin 400] [--ari 25] [--lake-levels lidar|city] [--routed]
 
 Downloads, in NAD83 / Florida West (ftUS), EPSG 2237:
   - storm sewer: City of Winter Haven stormwater inventory (ArcGIS Online, public view): pipes with inverts, sizes and from/to structures,
     structures (inlets, manholes, ends) and the Lake Martha outfall basin;
   - ground: USGS 3DEP 1 m lidar DEM (FL Peninsular FDEM 2018), resampled to --cell ft, NAVD88 converted to feet;
   - lakes: USGS NHD waterbodies (level boundaries). --lake-levels lidar (default) holds each lake at its lidar water surface;
-    --lake-levels city holds it at the WaterLevel of the City's SAIP ICPR v4 lake polygons. Both are written to lakes.geojson and the report;
+    --lake-levels city holds it at the WaterLevel of the City's SAIP ICPR v4 lake polygons. Both are written to lakes.geojson and the report; --routed marks the lakes routed (they rise with what they gain);
   - vertical datum: the lidar is NAVD 88. The City's layers do not state a datum; they are taken as NAVD 88 with no shift, and the
     NGVD 29 to NAVD 88 shift at the site (NGS NCAT, VERTCON 3.0) is recorded so the effect of the other choice can be judged;
   - buildings: FEMA USA Structures footprints;
@@ -138,13 +138,14 @@ def main(a):
         msk = ~geometry_mask([mapping(g.buffer(-30))], (ny, nx), tf); vals = dem[msk & valid]
         lvl = float(np.median(vals)); spread = float(np.percentile(vals, 95) - np.percentile(vals, 5))
         # the City's lake: same name, else the SAIP polygon that overlaps most
-        cand = [c for c in saip if c["geometry"] and (c["properties"].get("Waterbody") or "").strip().lower() == name.strip().lower()]
+        # same name AND overlapping (a name alone could match a lake elsewhere); else the SAIP polygon that overlaps most
+        cand = [c for c in saip if c["geometry"] and (c["properties"].get("Waterbody") or "").strip().lower() == name.strip().lower() and shape(c["geometry"]).intersects(g)]
         if not cand: cand = sorted([c for c in saip if c["geometry"] and shape(c["geometry"]).intersects(g)], key=lambda c: -shape(c["geometry"]).intersection(g).area)[:1]
         city = float(cand[0]["properties"]["WaterLevel"]) if cand and cand[0]["properties"].get("WaterLevel") is not None else None
         use = city if (a.lake_levels == "city" and city is not None) else lvl
         if a.lake_levels == "city" and city is None: note(f"{name}: no City SAIP water level; held at the lidar level {lvl:.2f} ft")
         full_ac = round(shape(f["geometry"]).area / 43560, 1)   # the whole lake, for a routed lake's area (the grid holds only part of it)
-        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city, "area_ac": full_ac}, "geometry": mapping(g)})
+        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city, "area_ac": full_ac, **({"routed": True} if a.routed else {})}, "geometry": mapping(g)})
         rep["checks"].setdefault("lakes", []).append({"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city,
             "city_minus_lidar_ft": None if city is None else round(city - lvl, 2),
             "city_minus_lidar_if_city_is_ngvd29_ft": None if city is None else round(city + ngvd_to_navd_ft - lvl, 2),
@@ -191,7 +192,15 @@ def main(a):
         n["lake"] = lake
         if gz is None: gz = n["invert"] + 4; n["off_dem"] = True; issues.append(f"{nid}: outside the DEM; rim set 4 ft above the invert")
         n["rim"] = gz; n["lidar"] = None if n.get("off_dem") else gz
-        if n["rim"] - n["invert"] < 0.5 and not n["outfall"]: issues.append(f"{nid}: lidar ground {gz:.2f} ft is within 0.5 ft of the invert {n['invert']:.2f} ft; depth set to 0.5 ft"); n["rim"] = n["invert"] + 0.5
+        if n["rim"] - n["invert"] < 0.5 and not n["outfall"]:
+            rel = "below" if gz < n["invert"] else "within 0.5 ft of"
+            issues.append(f"{nid}: lidar ground {gz:.2f} ft is {rel} the invert {n['invert']:.2f} ft; depth set to 0.5 ft"); n["rim"] = n["invert"] + 0.5
+        # a structure that is not an outfall but sits on a lake: the lidar there is the flattened water surface, not ground
+        # (within 10 ft of an NHD lake, or inside one of the City's SAIP lake polygons, which reach further than the NHD shorelines)
+        pt = Point(n["x"], n["y"])
+        near = next((pr["name"] for g, pr in lake_geoms if g.distance(pt) < 10), None) or next((c["properties"].get("Waterbody") for c in saip if c["geometry"] and shape(c["geometry"]).contains(pt)), None)
+        if not n["outfall"] and near:
+            issues.append(f"{nid}: a {n['type'].lower().replace('_', ' ')} on {near} (within 10 ft of the NHD lake or inside the City's lake polygon); its lidar 'ground' is the lake's flattened water surface, and the 2D does not couple a node in a lake cell")
         (out_lake if n["outfall"] and lake else out_free if n["outfall"] else []).append(nid)
     # inverts at or above the lidar ground: a sign of a datum difference, a rim-less record or a wrong invert in the inventory
     above = sorted([(round(n["invert"] - n["lidar"], 2), nid, n["type"]) for nid, n in nodes.items() if n.get("lidar") is not None and n["invert"] > n["lidar"]], reverse=True)
@@ -286,7 +295,7 @@ def main(a):
 
     ex = {"name": "Winter Haven, FL – Lake Martha (real public data)", "epsg": EPSG, "units": "US", "dem": "dem.tif", "buildings": "buildings.geojson", "boundaries": "lakes.geojson",
           "inp": "model.inp", "inlets": "inlets.geojson", "landcover": "landcover.tif", "soils": "soils.geojson",
-          "note": f"Real storm sewer (City of Winter Haven inventory) on 2018 lidar; lakes held at {'the City SAIP (ICPR v4) levels' if a.lake_levels == 'city' else 'their 2018 lidar levels'}. Loading fills in a two-way run at 12 ft cells, 8 to 16 h, with rain from the SWMM gauge ({a.ari}-year 24-hour Atlas 14 storm, {tot:.2f} in) and no water taken at manholes.",
+          "note": f"Real storm sewer (City of Winter Haven inventory) on 2018 lidar; lakes {'routed (they rise with what they gain), starting from' if a.routed else 'held at'} {'the City SAIP (ICPR v4) levels' if a.lake_levels == 'city' else 'their 2018 lidar levels'}. Loading fills in a two-way run at 12 ft cells, 8 to 16 h, with rain from the SWMM gauge ({a.ari}-year 24-hour Atlas 14 storm, {tot:.2f} in) and no water taken at manholes.",
           "sources": rep["sources"],
           "settings": {"coupling": "two", "rain": "gauge", "gauge": f"ATLAS14_{a.ari}Y", "defaultInlets": False, "cellFt": 12, "t0": 8, "t1": 16, "outputMin": 15}}
     json.dump(ex, open(os.path.join(a.out, "example.json"), "w"), indent=1)
@@ -297,5 +306,6 @@ def main(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("out"); ap.add_argument("--cell", type=float, default=3); ap.add_argument("--margin", type=float, default=400)
     ap.add_argument("--ari", type=int, default=25); ap.add_argument("--lake-levels", choices=["lidar", "city"], default="lidar")
+    ap.add_argument("--routed", action="store_true", help="mark the lakes as routed (their level rises with what they gain; area_ac is the whole NHD lake)")
     ap.add_argument("--cache", default=os.path.join(os.path.expanduser("~"), ".cache", "fsim"))
     main(ap.parse_args())

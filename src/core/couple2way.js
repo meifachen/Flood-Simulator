@@ -17,7 +17,7 @@
   "use strict";
   const isNode = typeof module !== "undefined" && module.exports;
   const Model = isNode ? require("./model.js") : root.FloodModel;
-  const P = { NODE_TYPE: 300, NODE_ELEV: 301, NODE_MAXDEPTH: 302, NODE_DEPTH: 303, NODE_HEAD: 304, NODE_VOLUME: 305, NODE_INFLOW: 307, NODE_LATFLOW: 306, NODE_OVERFLOW: 308, FLOWUNITS: 8 };
+  const P = { NODE_TYPE: 300, NODE_ELEV: 301, NODE_MAXDEPTH: 302, NODE_DEPTH: 303, NODE_HEAD: 304, NODE_VOLUME: 305, NODE_INFLOW: 307, NODE_LATFLOW: 306, NODE_OVERFLOW: 308, LINK_NODE1: 401, LINK_NODE2: 402, LINK_FLOW: 410, FLOWUNITS: 8 };
   const QF = [1, 1 / 448.831, 1.547229, 35.3146667, 0.0353146667, 0.408734569];   // cfs per CFS, GPM, MGD, CMS, LPS, MLD
   const G = 32.174;
 
@@ -60,15 +60,21 @@
         const err = this.M._swmm_step(this.pTime); if (err) throw new Error("SWMM stopped: " + this.error(err));
         const el = this.M.getValue(this.pTime, "double");
         if (el === 0) { this.done = true; break; }   // end of the SWMM simulation
-        this.tSec = el * 86400; const dt = this.tSec - last; last = this.tSec;
+        this.tSec = el * 86400; const dt = this.tSec - last; last = this.tSec; this.lastStep = dt;
         for (let i = 0; i < n; i++) acc[i] += this.get(P.NODE_OVERFLOW, nodes[i]) * this.qf * dt;
-        if (this.watchIn) for (let m = 0; m < this.watchIn.length; m++) this.inVol[m] += this.get(P.NODE_INFLOW, this.watchIn[m]) * this.qf * dt;   // outfalls on routed lakes
+        // lateral inflow SWMM actually received over this step (the rate in force times SWMM's own step, which need not match the coupling interval)
+        if (this.latQ) for (const [i, q] of this.latQ) this.latV.set(i, (this.latV.get(i) || 0) + q * dt);
+        // outfalls on routed lakes: the signed flow of the links that reach each one (into the outfall +, back out of it into the network -).
+        // NODE_INFLOW cannot be used: SWMM gives an outfall's backflow as a positive inflow (node.c, node_getSystemOutflow)
+        if (this.watchIn) for (let m = 0; m < this.watchIn.length; m++) { let q = 0; for (const [li, sg] of this.watchIn[m]) q += sg * this.get(P.LINK_FLOW, li); this.inVol[m] += q * this.qf * dt; }
       }
       const span = Math.max(last - t0, 1e-9); for (let i = 0; i < n; i++) acc[i] /= span;
       return acc;
     }
+    /* set a node's lateral inflow (cfs); the rate stays in force for later steps, and what SWMM receives is tallied per step in latV */
+    setLat(i, qCfs) { if (!this.latQ) { this.latQ = new Map(); this.latV = new Map(); } this.latQ.set(i, qCfs); this.set(P.NODE_LATFLOW, i, qCfs / this.qf); }
     /* zero the lateral inflow set on the given nodes (a value set through the API stays in force for later steps) */
-    clearInflow(nodes) { for (const i of nodes) this.set(P.NODE_LATFLOW, i, 0); }
+    clearInflow(nodes) { for (const i of nodes) { this.set(P.NODE_LATFLOW, i, 0); if (this.latQ) this.latQ.set(i, 0); } }
     finish() {
       const M = this.M; let rpt = "", out = null;
       try { this.call("swmm_end", "number", [], []); this.call("swmm_report", "number", [], []); } catch (e) {}
@@ -155,7 +161,10 @@
       if (hasCurb) {
         const dw = it.depressionWidth ?? 0;
         if (!(typeof dw === "number" && Number.isFinite(dw) && dw >= 0)) throw new Error(`${label}: gutter depression width ${show(dw)} is not zero or a positive number`);
-        Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw, ccw: it.ccw ?? (dw > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });
+        // TxDOT HDM ch. 10 sec. 6: for an opening longer than 12 ft the depression is not counted (W = 0, Cw 3.0)
+        const dwUse = it.curbLength > 12 ? 0 : dw;
+        if (dw > 0 && !dwUse) W.push(`${label}: curb opening ${it.curbLength} ft is longer than 12 ft, so its gutter depression is not counted (TxDOT HDM ch. 10)`);
+        Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw: dwUse, ccw: it.ccw ?? (dwUse > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });
       }
       for (const [key, v] of Object.entries(p)) if (key !== "kind" && key !== "dw" && !(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: ${NAMES[key]} ${show(v)} is not a positive number`);
       p.clog = it.clog ?? def.clog;
@@ -179,14 +188,15 @@
     const sources = links.map((l) => ({ cell: l.k, name: l.name })).concat(inlets.map((it) => ({ cell: it.k, name: it.name, sink: true })));
     // several inlets in one cell share the cell's water
     const perCell = {}; for (const it of inlets) perCell[it.k] = (perCell[it.k] || 0) + 1;
-    const tally = { sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, demanded: 0, shortfall: 0, pendingOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
+    const tally = { recirculated: 0, deliveredToSwmm: 0, owedToSwmm: 0, sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, demanded: 0, shortfall: 0, pendingOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
-    let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null;
+    let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null; const owed = links.map(() => 0);
     const inletCells = inlets.map((it) => it.k), cells = [...new Set(inletCells)];
     const clampAt = async (solver) => (solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length));
     /* before an interval: inlet demands from the depths now, and last interval's overflow volume as this interval's source */
     async function sourceAt(h0, h1, solver) {
       const dt = (h1 - h0) * 3600; if (!(dt > 0)) return sources.map(() => 0);
+      if (cur) throw new Error(`afterChunk was not called for the interval from hour ${cur.h0.toFixed(4)}: the water the inlets took there would never reach SWMM`);
       if (sw.tSec < h0 * 3600 - 1e-6) { sw.advance(h0 * 3600, []); if (sw.inVol) sw.inVol.fill(0); }   // a run that starts later than SWMM: SWMM catches up without exchange
       const h = await solver.readCells(inletCells);
       const qin = inlets.map((it, m) => {
@@ -204,6 +214,7 @@
     async function afterChunk(h0, h1, solver) {
       if (!cur) return; const c = cur; cur = null; const dt = (h1 - h0) * 3600; if (!(dt > 0)) return;
       const c1 = await clampAt(solver), demCell = {};
+      if (!Array.from(c1).every(Number.isFinite)) throw new Error(`The 2D clamp at an inlet cell is not a number at hour ${h1.toFixed(2)}; the exchange cannot be booked`);
       inlets.forEach((it, m) => (demCell[it.k] = (demCell[it.k] || 0) + c.qin[m] * dt));
       // the clamp that built up at an inlet cell over this interval is demand the cell could not supply; inlets in a cell share it by demand.
       // (the tallies are reset when the 2D writes a map, which happens after this call, so c1 - c0 is this interval's clamp)
@@ -212,11 +223,16 @@
         const dem = c.qin[m] * dt, v = dem - (demCell[it.k] > 0 ? shortCell[it.k] * dem / demCell[it.k] : 0);
         tally.demanded += dem; tally.shortfall += dem - v; lat[it.j] += v / dt; return v;
       });
-      links.forEach((l, j) => { if (l.junction && !sw.done) sw.set(P.NODE_LATFLOW, l.i, lat[j] / sw.qf); });
+      // SWMM steps on its own routing step, which can end past h1, so a rate set for this interval is not always used for exactly dt.
+      // What SWMM has received is tallied per step (latV); each interval's rate delivers this interval's capture plus what is still owed.
+      links.forEach((l, j) => { if (!l.junction || sw.done) return; const due = owed[j] + lat[j] * dt; sw.setLat(l.i, Math.max(due, 0) / dt); });
+      const v0 = links.map((l) => (sw.latV ? sw.latV.get(l.i) || 0 : 0));
       const t0 = sw.tSec, ov = sw.advance(h1 * 3600, allIdx), dts = Math.max(sw.tSec - t0, 0);
+      links.forEach((l, j) => { if (!l.junction) return; const got = (sw.latV ? sw.latV.get(l.i) || 0 : 0) - v0[j]; owed[j] += lat[j] * dt - got; tally.deliveredToSwmm += got; });
+      tally.owedToSwmm = owed.reduce((a, v) => a + v, 0);
       for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += ov[i] * dts;
       lastRates = links.map((l, j) => {
-        const v = ov[l.i] * dts; pendV[j] += v; tally.fromSwmm += v; tally.perNode[j].out += v; tally.perNode[j].in += lat[j] * dt; tally.sentToSwmm += lat[j] * dt;
+        const v = ov[l.i] * dts; pendV[j] += v; tally.fromSwmm += v; tally.recirculated += Math.min(v, lat[j] * dt); tally.perNode[j].out += v; tally.perNode[j].in += lat[j] * dt; tally.sentToSwmm += lat[j] * dt;
         return c.over[j] - lat[j];   // net exchange during this interval (+ out of SWMM onto the 2D)
       });
       took.forEach((v, m) => (tally.perInlet[m] += v));
@@ -229,13 +245,30 @@
     /* end the exchange: zero the inlet inflow at every coupled junction (otherwise SWMM keeps adding the last capture for the rest of its run) */
     const stop = () => { if (!sw.done) sw.clearInflow(junctionIdx); };
     /* stop the exchange, run SWMM to the end of its simulation and close it */
-    const finish = () => { stop(); sw.advance(1e12, []); return sw.finish(); };
+    const finish = () => {
+      // hand SWMM what the inlets took but its steps have not yet received (at most about one routing step), then stop and run to the end
+      for (let k = 0; k < 50 && !sw.done && owed.some((v) => v > 1e-6); k++) {
+        const step = sw.lastStep > 0 ? sw.lastStep : 1, v0 = links.map((l) => sw.latV.get(l.i) || 0);
+        links.forEach((l, j) => { if (l.junction) sw.setLat(l.i, Math.max(owed[j], 0) / step); });
+        sw.advance(sw.tSec + step * 0.999, []);
+        links.forEach((l, j) => { if (!l.junction) return; const got = (sw.latV.get(l.i) || 0) - v0[j]; owed[j] -= got; tally.deliveredToSwmm += got; });
+      }
+      tally.owedToSwmm = owed.reduce((a, v) => a + v, 0);
+      stop(); sw.advance(1e12, []); return sw.finish();
+    };
     /* routed lakes [{lake}]: the outfalls on each lake hand it their inflow (volume since the last call), and take the lake's level as their stage */
     function lakeInflowFor(routedLakes) {
       const ri = new Map(routedLakes.map((r, m) => [r.lake, m])), outs = lakeOutfalls.filter((x) => ri.has(x.lake));
-      sw.watchIn = outs.map((x) => x.i); sw.inVol = new Float64Array(outs.length);
+      // link ends as written in the .inp: SWMM reports a link's flow in that direction (+ from its first to its second node) even when it
+      // swaps the ends of an adverse-slope conduit internally, so its own LINK_NODE1/2 cannot give the sign
+      const nLinks = sw.M._swmm_getCount(3), buf = sw.M._malloc(64), idx = {};
+      for (let li = 0; li < nLinks; li++) { sw.M._swmm_getName(3, li, buf, 63); idx[sw.M.UTF8ToString(buf)] = li; }
+      sw.M._free(buf);
+      sw.watchIn = outs.map((x) => (model.links || []).flatMap((lk) => (idx[lk.name] === undefined ? [] : lk.to === x.name ? [[idx[lk.name], 1]] : lk.from === x.name ? [[idx[lk.name], -1]] : [])));
+      sw.inVol = new Float64Array(outs.length);
       tally.toLakes = routedLakes.map(() => 0);
       return (h0, h1, levels) => {
+        if (!(levels && levels.length === routedLakes.length && Array.from(levels).every(Number.isFinite))) throw new Error(`Routed lake levels missing or not a number at hour ${h1.toFixed(2)} (${JSON.stringify(levels && Array.from(levels))}); outfall stages cannot be set`);
         const v = routedLakes.map(() => 0);
         outs.forEach((x, m) => { const j = ri.get(x.lake); v[j] += sw.inVol[m]; tally.toLakes[j] += sw.inVol[m]; if (!sw.done) sw.set(P.NODE_HEAD, x.i, levels[j] / sw.lf); });
         sw.inVol.fill(0); return v;

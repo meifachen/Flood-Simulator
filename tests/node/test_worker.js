@@ -86,5 +86,30 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
     const sent = r.swmm2.tally.sentToSwmm, m = /Flow Routing Continuity[\s\S]*?External Inflow \.+\s+([\d.]+)/.exec(r.swmm2.rpt), ext = m ? Number(m[1]) * 43560 : NaN;
     ok("W9 after a two-way run ends, SWMM's external inflow equals what the inlets took", sent > 1000 && Math.abs(ext - sent) / sent < 0.01, `inlets took ${sent.toFixed(0)} cf; SWMM report external inflow ${ext.toFixed(0)} cf`);
   }
+  // W11 inlets with only an inventory type field are reported; INLET_TYPE in capitals is read; both size names at once are refused
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    const fc = (feats) => JSON.stringify({ type: "FeatureCollection", features: feats }), pt = (props) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: [500750, 1599200] } });
+    const r1 = await w.load({ inlets: fc([pt({ node: "J3", type: "CURB_INLET" }), pt({ node: "J4", type: "GRATE_INLET" }), pt({ node: "J4", type: "GRATE_INLET" })]) });
+    const t1 = w.peek("INLETS.map((i) => i.type || 'generic').join()");
+    await w.load({ inlets: fc([pt({ node: "J3", INLET_TYPE: "Grate", perimeter_ft: 6, open_area_sqft: 2 })]) }); const t2 = w.peek("INLETS[0].type");
+    const m3 = await refused(w.load({ inlets: fc([pt({ node: "J3", perimeter_ft: 6, weir_length_ft: 20 })]) })), m4 = await refused(w.load({ inlets: fc([pt({ node: "J3", clog: "50%" })]) }));
+    ok("W11 inlets typed only by an inventory field are loaded, counted and reported as generic", /3 inlets have a type field \(CURB_INLET 1, GRATE_INLET 2\) but no inlet_type/.test(r1.inlets.typeNote || "") && t1 === "generic,generic,generic", `${r1.inlets.typeNote}; types ${t1}`);
+    ok("W11 INLET_TYPE in capitals is read; both size names at once and a clog of \"50%\" are refused with one message each", t2 === "grate" && /give perimeter_ft or weir_length_ft, not both/.test(m3) && (m4.match(/clog/g) || []).length === 1, `${t2} | ${m3} | ${m4}`);
+  }
+  // W12 routed lakes: boundaries that differ from the grid's are refused; routed with a SWMM node is refused; a one-way run warns that outfalls are not passed
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), boundaries: text(US, "pond.geojson"), inp: text(US, "model.inp"), out: ab(ex(US, "model.out")) });
+    const bnd = [{ index: 0, key: "POND", level: 58, routed: true }];
+    w.build(Object.assign({}, bopt, { lcTable: null, boundaries: bnd }));
+    const base = { coupling: "one", useSwmmFlooding: true, t0: 1, t1: 1.05, engine: "cpu", rainSource: "none", outputSec: 900 };
+    const mA = await refused(w.run(Object.assign({}, base, { boundaries: [{ index: 0, key: "OTHER", level: 58, routed: true }] })));
+    const mB = await refused(w.run(Object.assign({}, base, { boundaries: [{ index: 0, key: "POND", level: 58, routed: true, node: "POND" }] })));
+    const mC = await refused(w.run(Object.assign({}, base, { boundaries: [{ index: 0, key: "POND", level: 58, routed: true, areaAc: "5 ac" }] })));
+    w.posted.length = 0; const r = await w.run(Object.assign({}, base, { boundaries: bnd }));
+    const warn = JSON.stringify(w.posted.filter((m) => m.progress && m.progress.warnings).map((m) => m.progress.warnings));
+    ok("W12 boundaries other than the grid's, routed with a SWMM node and a text area are refused; a one-way routed run warns about outfalls", /not the ones the grid was built with/.test(mA) && /cannot also take its level from SWMM node POND/.test(mB) && /area "5 ac" \(acres\) is not a positive number/.test(mC) && /get no water from SWMM outfalls in a one-way run/.test(warn) && r.lakes,
+      [mA, mB, mC, warn.slice(0, 160)].join(" | "));
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

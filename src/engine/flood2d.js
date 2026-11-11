@@ -489,18 +489,30 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (!(Number.isInteger(r.lake) && r.lake >= 0 && r.lake < K)) throw new Error(`Routed lake ${i + 1}: lake ${r.lake} is not one of the ${K} level boundaries`);
       if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${i + 1}: area ${r.areaFt2} is not a positive number`);
       if (!Number.isFinite(r.level0)) throw new Error(`Routed lake ${i + 1}: starting level ${r.level0} is not a number`);
-      return { lake: r.lake, area: r.areaFt2, level: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0 };
+      return { lake: r.lake, area: r.areaFt2, level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0 };
     });
     if (routed.length) {
-      const byLake = new Map(routed.map((r) => [r.lake, r]));
+      const byLake = new Map();
+      for (const r of routed) { if (byLake.has(r.lake)) throw new Error(`Routed lake ${r.name}: lake ${r.lake + 1} is listed more than once`); byLake.set(r.lake, r); }
+      for (const pp of pipes) if (byLake.has(pp.lake)) throw new Error(`A pipe connects to routed lake ${byLake.get(pp.lake).name}; pipes to routed lakes are not supported`);
       for (let k = 0; k < N; k++) {
         if ((g.aux[4 * k + 2] & 3) !== 2) continue; const r = byLake.get((g.aux[4 * k + 2] >> 4) & 255); if (!r) continue;
+        r.nCells++; r.bed = Math.min(r.bed, g.aux[4 * k]);
         const rr = (k / g.nx) | 0, cc = k % g.nx;
-        const nb = [cc > 0 ? k - 1 : -1, cc < g.nx - 1 ? k + 1 : -1, rr > 0 ? k - g.nx : -1, rr < g.ny - 1 ? k + g.nx : -1];
-        if (nb.some((m) => m >= 0 && (g.aux[4 * m + 2] & 3) === 0)) r.cells.push(k);
+        const nb = [cc > 0 ? k - 1 : -1, cc < g.nx - 1 ? k + 1 : -1, rr > 0 ? k - g.nx : -1, rr < g.ny - 1 ? k + g.nx : -1].filter((m) => m >= 0 && (g.aux[4 * m + 2] & 3) === 0);
+        if (nb.length) { r.cells.push(k); r.faces += nb.length; for (const m of nb) r.lip = Math.min(r.lip, g.aux[4 * m]); }
       }
-      for (const r of routed) r.prev = new Float64Array(r.cells.length);
+      for (const r of routed) {
+        // the lake's surface is at least its own cells: a smaller area would move the level too far for every cubic foot
+        if (r.area < r.nCells * A * (1 - 1e-9)) throw new Error(`Routed lake ${r.name}: area ${(r.area / 43560).toFixed(3)} ac is smaller than its ${r.nCells} cells in the grid (${(r.nCells * A / 43560).toFixed(3)} ac)`);
+        r.prev = new Float64Array(r.cells.length);
+      }
     }
+    /* Longest chunk a routed lake allows. The level is held over a chunk and updated after it (explicit in time), which is stable only for
+     * dt < 2 A / (dQ/dh), Q being the lake's outflow over its edge. Over a broad crest at critical depth, Q = Lf sqrt(g) (2H/3)^1.5 with
+     * H = level - lip (lowest open ground next to the lake) and Lf the edge length, so dQ/dh = sqrt(g) Lf (2/3)^1.5 1.5 H^0.5. An eighth of the limit is used: the chunk-held level still lags the edge flux, and a lake that starts well above dry land loses its first water faster than this crest formula says. */
+    const lakeDt = () => { let m = Infinity; for (const r of routed) { const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
+      const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.5, 0.25 * r.area / dqdh)); } return m; };
     const lakeStages = (s) => { if (!routed.length) return s; const out = Array.from(s); for (const r of routed) out[r.lake] = r.level; return out; };
     const lakeSeries = [];
     const s0 = lakeStages(checkStages(o.stageAt(o.t0), o.t0));
@@ -543,7 +555,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     while (t < tEnd - 1e-6) {
       if (o.shouldStop && o.shouldStop()) { stopped = true; break; }
       const hourEnd = (Math.floor(t / rainStep + 1e-9) + 1) * rainStep;   // end of this rain interval
-      let span = Math.min(chunkSec, hourEnd - t, tEnd - t, nextRead - t);
+      let span = Math.min(chunkSec, hourEnd - t, tEnd - t, nextRead - t, routed.length ? lakeDt() : Infinity);
       const th = (t + span / 2) / 3600, hr = Math.floor(t / rainStep + 1e-9);
       const rainInHr = o.rainAt(hr);
       if (!(Number.isFinite(rainInHr) && rainInHr >= 0)) throw new Error(`Rainfall missing or invalid at hour ${hr} (${rainInHr})`);
@@ -581,12 +593,14 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (routed.length) {
         // the depth each edge cell had to be given (+) or lost (-) to hold the lake level over this chunk, since the last reading reset the tallies
         const ext = o.lakeInflow ? await o.lakeInflow(t / 3600, (t + dt * done) / 3600, routed.map((r) => r.level)) : null;
+        if (o.lakeInflow && !(ext && ext.length === routed.length && Array.from(ext).every((v) => typeof v === "number" && Number.isFinite(v))))
+          throw new Error(`Inflow to the routed lakes is missing or not a number at hour ${(t / 3600).toFixed(2)} (${JSON.stringify(ext && Array.from(ext))})`);
         for (const [i, r] of routed.entries()) {
           const cur = r.cells.length ? (solver.kind === "cpu" ? Float64Array.from(r.cells, (k) => solver.acc[4 * k + 3]) : Float64Array.from(await solver.cellsOf(solver.bAcc, r.cells, 3))) : new Float64Array(0);
           let dv = 0; for (let m = 0; m < cur.length; m++) dv += cur[m] - r.prev[m]; r.prev = cur;
-          const v2d = dv * A, vr = rain * dt * done * r.area, ve = ext ? +ext[i] || 0 : 0;
-          if (!Number.isFinite(ve)) throw new Error(`Inflow to ${r.name} is not a number at hour ${(t / 3600).toFixed(2)}`);
+          const v2d = dv * A, vr = rain * dt * done * r.area, ve = ext ? ext[i] : 0;
           r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.level += (v2d + vr + ve) / r.area;
+          if (r.level < Math.min(r.bed, r.start) - 0.01) throw new Error(`Routed lake ${r.name} fell to ${r.level.toFixed(2)} ft, below its bed (${r.bed.toFixed(2)} ft) and its starting level, at hour ${(t / 3600).toFixed(2)}: it lost more water than it holds`);
         }
         lakeSeries.push({ tHours: (t + dt * done) / 3600, levels: routed.map((r) => r.level) });
       }

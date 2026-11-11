@@ -77,10 +77,10 @@ async function load(a) {
     if (a.inlets) {
       const gj = parseJson(a.inlets, "Inlets"), c = geojsonCrs(gj); let fwd = null;
       if (c !== "same" && c !== DEM.epsg) { if (!DEM.proj4) throw new Error("Inlets need reprojecting but the DEM's CRS is unknown"); const from = c === "lonlat" ? "EPSG:4326" : (Model.lookupCrs(CAT, c) || {}).proj4; if (!from) throw new Error(`Inlets: EPSG ${c} is not in the projection list`); fwd = proj4(from, DEM.proj4); }
-      const errs = [], skipped = []; list = [];
+      const errs = [], skipped = [], invType = new Map(); list = []; let invTyped = 0;
       const num = (fi, key, v, positive) => {   // a size or level: absent, or a finite number (text such as "3 ft" is refused here, at load)
         if (v === undefined || v === null || v === "") return undefined; const x = typeof v === "number" ? v : Number(String(v).trim());
-        if (!Number.isFinite(x) || (positive && !(x > 0))) errs.push(`inlet ${fi}: ${key} ${JSON.stringify(v)} is not ${positive ? "a positive number" : "a number"}`);
+        if (!Number.isFinite(x) || (positive && !(x > 0))) { errs.push(`inlet ${fi}: ${key} ${JSON.stringify(v)} is not ${positive ? "a positive number" : "a number"}`); return null; }
         return x;
       };
       (gj.features || []).forEach((f, i) => {
@@ -89,20 +89,29 @@ async function load(a) {
         if (!pts) { skipped.push(fi); return; }
         const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
         if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
-        // inlet_type, not type: GIS inventories often carry their own "type" field (CURB_INLET, MANHOLE ...), which is left alone
-        const it0 = p.inlet_type, type = it0 === undefined || it0 === null || it0 === "" ? undefined : String(it0).trim().toLowerCase();
+        // inlet_type (any letter case, as shapefile fields often are), not type: GIS inventories often carry their own "type" field
+        // (CURB_INLET, MANHOLE ...). Such a field is not read, but the load reports how many inlets have one and no inlet_type.
+        const key = Object.keys(p).find((k) => k.toLowerCase() === "inlet_type"), it0 = key ? p[key] : undefined;
+        const type = it0 === undefined || it0 === null || it0 === "" ? undefined : String(it0).trim().toLowerCase();
+        const invKey = Object.keys(p).find((k) => k.toLowerCase() === "type");
+        if (type === undefined && invKey && p[invKey] !== null && p[invKey] !== "") { invTyped++; const v = String(p[invKey]); invType.set(v, (invType.get(v) || 0) + 1); }
         if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: inlet_type ${JSON.stringify(it0)} is not generic, grate, curb or combination`);
-        const both = (k1, k2) => { const a1 = num(fi, k1, p[k1], true), a2 = num(fi, k2, p[k2], true); return a1 !== undefined ? a1 : a2; };   // grate names, or the generic ones
-        const clog = num(fi, "clog", p.clog, false); if (clog !== undefined && !(clog >= 0 && clog < 1)) errs.push(`inlet ${fi}: clog ${JSON.stringify(p.clog)} is not a fraction from 0 to below 1`);
-        const dw = num(fi, "depression_width_ft", p.depression_width_ft, false); if (dw !== undefined && !(dw >= 0)) errs.push(`inlet ${fi}: depression_width_ft ${JSON.stringify(p.depression_width_ft)} is negative`);
+        const both = (k1, k2) => {   // the grate name or the generic one, not both
+          const a1 = num(fi, k1, p[k1], true), a2 = num(fi, k2, p[k2], true);
+          if (a1 !== undefined && a2 !== undefined) { errs.push(`inlet ${fi}: give ${k1} or ${k2}, not both`); return undefined; }
+          return a1 !== undefined ? a1 : a2;
+        };
+        const clog = num(fi, "clog", p.clog, false); if (typeof clog === "number" && !(clog >= 0 && clog < 1)) errs.push(`inlet ${fi}: clog ${JSON.stringify(p.clog)} is not a fraction from 0 to below 1`);
+        const dw = num(fi, "depression_width_ft", p.depression_width_ft, false); if (typeof dw === "number" && !(dw >= 0)) errs.push(`inlet ${fi}: depression_width_ft ${JSON.stringify(p.depression_width_ft)} is negative`);
         const props = { node, type, lw: both("perimeter_ft", "weir_length_ft"), area: both("open_area_sqft", "orifice_area_sqft"), cw: num(fi, "cw", p.cw, true), co: num(fi, "co", p.co, true),
           curbLength: num(fi, "curb_length_ft", p.curb_length_ft, true), curbHeight: num(fi, "curb_height_ft", p.curb_height_ft, true), depressionWidth: dw, clog, rimFt: num(fi, "rim_ft", p.rim_ft, false) };
-        for (const k of Object.keys(props)) if (props[k] === undefined) delete props[k];
+        for (const k of Object.keys(props)) if (props[k] === undefined || props[k] === null) delete props[k];
         for (const c0 of pts) { const xy = fwd ? fwd.forward([c0[0], c0[1]]) : c0; list.push(Object.assign({ x: xy[0], y: xy[1], feature: fi }, props)); }
       });
       if (errs.length) throw new Error(`Inlets: ${errs.slice(0, 5).join("; ")}${errs.length > 5 ? `; and ${errs.length - 5} more` : ""}`);
       if (!list.length) throw new Error("Inlets: the file has no point features");
-      res.inlets = { count: list.length, nodes: [...new Set(list.map((i) => i.node))], pts: list.map((i) => [i.x, i.y, i.node]), reprojected: !!fwd, note: fwd ? `reprojected from ${c === "lonlat" ? "longitude/latitude" : "EPSG " + c}` : "in the DEM's CRS", skipped: skipped.length };
+      const typeNote = invTyped ? `${invTyped} inlet${invTyped > 1 ? "s have" : " has"} a type field (${[...invType].map(([k, n]) => `${k} ${n}`).join(", ")}) but no inlet_type, so ${invTyped > 1 ? "they are" : "it is"} modeled as generic inlets with the panel sizes unless sizes are given` : "";
+      res.inlets = { typeNote, count: list.length, nodes: [...new Set(list.map((i) => i.node))], pts: list.map((i) => [i.x, i.y, i.node]), reprojected: !!fwd, note: fwd ? `reprojected from ${c === "lonlat" ? "longitude/latitude" : "EPSG " + c}` : "in the DEM's CRS", skipped: skipped.length };
     }
     INLETS = list;
   }
@@ -157,6 +166,7 @@ function build(o) {
   }
   B = Model.buildGrid(DEM, { lcClass, lcTable: o.lcTable, hsg, soilTable: o.soilTable, cellSize: o.cellSize, hUnitFt: DEM.hUnitFt || o.hUnitFt, vUnitFt: o.vUnitFt, buildings: o.useBuildings ? BLD : [], boundaries: bspec,
     imperv: o.imperv, nImp: o.nImp, nPerv: o.nPerv, ksInHr: o.ksInHr, suctionIn: o.suctionIn, imd: o.imd, roofToGround: o.roofToGround, closedEdges: o.closedEdges });
+  B.bkeys = bspec.map((b) => b.key);
   // cells beside each building (open cells next to its wall cells) for the "buildings reached" count
   const nb = B.g.bldStart.length - 1, nx = B.G.nx, ny = B.G.ny, ring = [], start = new Int32Array(nb + 1);
   for (let i = 0; i < nb; i++) {
@@ -176,6 +186,10 @@ async function run(o, id) {
   STOP = false;
   const g = B.g, N = g.N, A = g.dx * g.dx, thr = o.wetFt ?? 0.1, bthr = o.buildingFt ?? 0.5;
   let cpl = { sources: [], sourceAt: null, stageAt: () => [], rain: null, t1: o.t1 }, two = null;
+  // the boundaries must be the ones the grid was built with, in the same order: lake cells are numbered by position
+  const keys = (o.boundaries || []).map((b) => b.key);
+  if (B.bkeys && (keys.length !== B.bkeys.length || keys.some((k, i) => k !== B.bkeys[i]))) throw new Error(`The level boundaries (${keys.join(", ") || "none"}) are not the ones the grid was built with (${B.bkeys.join(", ") || "none"}); build the grid again`);
+  for (const b of o.boundaries || []) if (b.routed && b.node) throw new Error(`Level boundary ${b.key}: a routed lake cannot also take its level from SWMM node ${b.node}`);
   const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.routed ? null : b.node || null, level: b.level, routed: !!b.routed, areaAc: b.areaAc }));
   // routed lakes: a level pool that starts at the level given and rises with what it gains; its area is the one given, else the part inside the grid
   const routedLakes = [];
@@ -183,7 +197,7 @@ async function run(o, id) {
     if (!b.routed) return;
     if (!Number.isFinite(b.level)) throw new Error(`Routed lake ${b.key} needs a starting level`);
     let cells = 0; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 2 && ((g.aux[4 * k + 2] >> 4) & 255) === i) cells++;
-    if (b.areaAc !== undefined && b.areaAc !== null && b.areaAc !== "" && !(b.areaAc > 0)) throw new Error(`Routed lake ${b.key}: area ${b.areaAc} ac is not a positive number`);
+    if (b.areaAc !== undefined && b.areaAc !== null && b.areaAc !== "" && !(typeof b.areaAc === "number" && b.areaAc > 0 && Number.isFinite(b.areaAc))) throw new Error(`Routed lake ${b.key}: area ${JSON.stringify(b.areaAc)} (acres) is not a positive number`);
     const areaFt2 = b.areaAc > 0 ? b.areaAc * 43560 : cells * A;
     if (!(areaFt2 > 0)) throw new Error(`Routed lake ${b.key} has no cells in the grid; give its area`);
     routedLakes.push({ lake: i, areaFt2, level0: b.level, name: b.key, areaFrom: b.areaAc > 0 ? "given" : "inside the grid", gridAc: cells * A / 43560 });
@@ -209,7 +223,9 @@ async function run(o, id) {
   if (o.rainSource === "gauge") { const r = cpl.rain; rainStep = r.stepSec; rainAt = (i) => (i >= 0 && i < r.values.length ? r.values[i] : 0); }
   else if (o.rainSource === "uniform") { const ih = o.rainInHr, dur = o.rainHours; if (!(ih >= 0) || !(dur > 0)) throw new Error("Uniform rain needs an intensity and a duration"); rainStep = 300; rainAt = (i) => (i * 300 < dur * 3600 ? ih : 0); }
   const sources = cpl.sources;
-  const fr0 = { sources: (two ? two.nodes : sources).map((s) => ({ name: s.name, cell: s.cell })), warnings: cpl.warnings || [], nodeMap: cpl.nodeMap || [] };
+  const runWarn = [];
+  if (routedLakes.length && !two && MODEL) runWarn.push(`Routed lakes (${routedLakes.map((r) => r.name).join(", ")}) get no water from SWMM outfalls in a one-way run; only two-way coupling passes outfall flow to them`);
+  const fr0 = { sources: (two ? two.nodes : sources).map((s) => ({ name: s.name, cell: s.cell })), warnings: (cpl.warnings || []).concat(runWarn), nodeMap: cpl.nodeMap || [] };
   post({ id, progress: { phase: "start", ...fr0 } });
   let solver;
   const want = o.engine || "auto";

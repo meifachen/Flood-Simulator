@@ -47,8 +47,12 @@ def main(a):
     runs = [r for r in runs if os.path.exists(r[:-5] + ".hmax.f32")]
     if not runs: sys.exit(f"no runs (*.json with .hmax.f32) in {a.run_dir}")
     out = a.out or os.path.join(a.run_dir, "icpr_compare"); os.makedirs(out, exist_ok=True)
-    m0 = json.load(open(runs[0])); bbox = [m0["x0"], m0["y1"] - m0["ny"] * m0["cs"], m0["x0"] + m0["nx"] * m0["cs"], m0["y1"]]
+    # each run is compared over its own grid; the City layers are fetched once for the area all runs cover
+    metas = [json.load(open(r)) for r in runs]
+    ext = [(m["x0"], m["y1"] - m["ny"] * m["cs"], m["x0"] + m["nx"] * m["cs"], m["y1"]) for m in metas]
+    bbox = [min(e[0] for e in ext), min(e[1] for e in ext), max(e[2] for e in ext), max(e[3] for e in ext)]
     dom = box(*bbox)
+    extents_differ = len({tuple(round(v, 3) for v in e) for e in ext}) > 1
     inun = [f for f in query(LAYER[a.ari], bbox) if f["geometry"]]
     lakes = [f for f in query(LAKES, bbox) if f["geometry"]]
     bnd = [f for f in query(BOUNDARY, bbox) if f["geometry"]]
@@ -61,7 +65,9 @@ def main(a):
                       "flood_simulator_wet": f"peak depth >= {a.depth_in} in", "compared_cells": "open ground in both models, inside the SAIP model boundary, outside lakes of either model",
                       "not_like_for_like": ["rainfall: nested Atlas 14 storm here; SAIP distribution not stated in the City layer",
                                             "ground: 2018 3DEP lidar here; 2017 City SAIP DEM in ICPR; City vertical datum not stated",
-                                            "lakes: fixed levels here; routed in ICPR", "inlets: app default sizes here (sizes not in the inventory)"],
+                                            "lakes: level pools here, fixed or routed (see each run; routed lakes have no outlet); routed with outlets in ICPR", "inlets: app default sizes here (sizes not in the inventory)"]
+                                           + (["the runs cover different extents; each is compared over its own grid, so their areas are not directly comparable"] if extents_differ else []),
+                      "tolerance": f"within {a.tol_ft:g} ft: an ICPR cell is a hit if the Flood Simulator is wet within {a.tol_ft:g} ft of it, and a Flood Simulator cell is a false alarm only beyond {a.tol_ft:g} ft of ICPR inundation (the same distance at every cell size)",
                       "saip_inundation_ac_in_domain_total": round(ig.area / 43560, 2), "saip_model_boundary_ac_in_domain": round(bg.area / 43560, 2)}
     for r in runs:
         m = json.load(open(r)); tag = os.path.basename(r)[:-5]; nx, ny, cs = m["nx"], m["ny"], m["cs"]
@@ -74,16 +80,23 @@ def main(a):
         A = cs * cs / 43560
         both, miss, fa = int((mask & I & S).sum()), int((mask & I & ~S).sum()), int((mask & ~I & S).sum())
         nI, nS = both + miss, both + fa
-        row = {"run": m.get("label", tag), "cell_ft": cs, "icpr_ac": round(nI * A, 2), "flood_sim_ac": round(nS * A, 2), "both_ac": round(both * A, 2),
+        row = {"run": m.get("label", tag), "cell_ft": cs, "lakes": "routed" if m.get("lakes") else "fixed", "icpr_ac": round(nI * A, 2), "flood_sim_ac": round(nS * A, 2), "both_ac": round(both * A, 2),
                "icpr_only_ac": round(miss * A, 2), "flood_sim_only_ac": round(fa * A, 2),
                "hit_rate": round(both / nI, 3) if nI else None, "false_alarm_ratio": round(fa / nS, 3) if nS else None,
                "csi": round(both / (both + miss + fa), 3) if both + miss + fa else None, "area_ratio": round(nS / nI, 3) if nI else None,
                "compared_ac": round(int(mask.sum()) * A, 2)}
-        # with one cell of tolerance: an ICPR cell counts as hit if the Flood Simulator is wet in it or a neighbor, and the reverse for false alarms
+        # with a tolerance in feet (the same at every cell size): grow each side by tol_ft (cells within that distance, centre to centre)
+        rcell = int(a.tol_ft // cs)
         def grow(x):
-            y = x.copy(); y[1:] |= x[:-1]; y[:-1] |= x[1:]; y[:, 1:] |= x[:, :-1]; y[:, :-1] |= x[:, 1:]; return y
-        hit1 = int((mask & I & grow(S & mask)).sum()); fa1 = int((mask & S & ~grow(I)).sum())
-        row["hit_rate_within_1_cell"] = round(hit1 / nI, 3) if nI else None; row["false_alarm_ratio_beyond_1_cell"] = round(fa1 / nS, 3) if nS else None
+            if rcell < 1: return x.copy()
+            y = x.copy()
+            for dr in range(-rcell, rcell + 1):
+                for dc in range(-rcell, rcell + 1):
+                    if dr == 0 and dc == 0 or (dr * dr + dc * dc) * cs * cs > a.tol_ft * a.tol_ft + 1e-9: continue
+                    y[max(dr, 0):ny + min(dr, 0), max(dc, 0):nx + min(dc, 0)] |= x[max(-dr, 0):ny + min(-dr, 0), max(-dc, 0):nx + min(-dc, 0)]
+            return y
+        hit1 = int((mask & I & grow(S & mask)).sum()); fa1 = int((mask & S & ~grow(I & mask)).sum())
+        row["hit_rate_within_tol"] = round(hit1 / nI, 3) if nI else None; row["false_alarm_ratio_beyond_tol"] = round(fa1 / nS, 3) if nS else None
         rows.append(row); print(json.dumps(row))
         # map: agree / ICPR only / Flood Simulator only
         try:
@@ -106,12 +119,12 @@ def main(a):
     json.dump({"notes": note, "runs": rows}, open(os.path.join(out, "icpr_compare.json"), "w"), indent=1)
     with open(os.path.join(out, "icpr_compare.md"), "w") as f:
         f.write(f"# Flood Simulator vs City SAIP ICPR v4, {a.ari}-year 24-hour\n\nWet: ICPR at least 3 in; Flood Simulator peak depth at least {a.depth_in:g} in. "
-                f"Compared on {note['compared_cells']}.\n\n| Run | Cell | ICPR ac | Flood Sim ac | Both ac | ICPR only ac | Flood Sim only ac | Hit rate | False alarm ratio | CSI | Area ratio | Hit rate within 1 cell | False alarms beyond 1 cell |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
-        for r in rows: f.write(f"| {r['run']} | {r['cell_ft']:g} ft | {r['icpr_ac']} | {r['flood_sim_ac']} | {r['both_ac']} | {r['icpr_only_ac']} | {r['flood_sim_only_ac']} | {r['hit_rate']} | {r['false_alarm_ratio']} | {r['csi']} | {r['area_ratio']} | {r['hit_rate_within_1_cell']} | {r['false_alarm_ratio_beyond_1_cell']} |\n")
+                f"Compared on {note['compared_cells']}.\n\n| Run | Cell | ICPR ac | Flood Sim ac | Both ac | ICPR only ac | Flood Sim only ac | Hit rate | False alarm ratio | CSI | Area ratio | Hit rate within {a.tol_ft:g} ft | False alarms beyond {a.tol_ft:g} ft | Lakes |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        for r in rows: f.write(f"| {r['run']} | {r['cell_ft']:g} ft | {r['icpr_ac']} | {r['flood_sim_ac']} | {r['both_ac']} | {r['icpr_only_ac']} | {r['flood_sim_only_ac']} | {r['hit_rate']} | {r['false_alarm_ratio']} | {r['csi']} | {r['area_ratio']} | {r['hit_rate_within_tol']} | {r['false_alarm_ratio_beyond_tol']} | {r['lakes']} |\n")
         f.write("\nNot like-for-like:\n\n" + "".join(f"- {s}\n" for s in note["not_like_for_like"]))
     print("wrote", out)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("run_dir"); ap.add_argument("--ari", type=float, default=25); ap.add_argument("--depth-in", type=float, default=3); ap.add_argument("--out")
+    ap = argparse.ArgumentParser(); ap.add_argument("run_dir"); ap.add_argument("--ari", type=float, default=25); ap.add_argument("--depth-in", type=float, default=3); ap.add_argument("--tol-ft", type=float, default=12); ap.add_argument("--out")
     a = ap.parse_args(); a.ari = int(a.ari) if a.ari == int(a.ari) else a.ari; main(a)

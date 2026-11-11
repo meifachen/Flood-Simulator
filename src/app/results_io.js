@@ -70,7 +70,7 @@ const RIO = {
    * Returns the difference per cell (NaN where neither run is wet or the cell is not open ground in both) and areas in acres. */
   compare(ga, fa, gb, fb, wetFt, tolFt = 0.1) {
     const A = ga.G, B = gb.G, same = (x, y) => Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(x));
-    for (const [k, what] of [["nx", "columns"], ["ny", "rows"], ["cs", "cell size"], ["x0", "west edge"], ["y1", "north edge"]])
+    for (const [k, what] of [["nx", "columns"], ["ny", "rows"], ["cs", "cell size"], ["x0", "west edge"], ["y1", "north edge"], ["dxFt", "cell size in feet (units of the coordinate system)"]])
       if (!same(A[k], B[k])) throw new Error(`The runs are on different grids (${what}: ${A[k]} vs ${B[k]}); compare runs made with the same DEM and cell size`);
     if (!(wetFt > 0) || !(tolFt >= 0)) throw new Error(`Invalid thresholds (wet ${wetFt} ft, change ${tolFt} ft)`);
     const N = A.nx * A.ny, ac = A.dxFt * A.dxFt / 43560, diff = new Float32Array(N).fill(NaN);

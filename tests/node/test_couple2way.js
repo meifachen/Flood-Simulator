@@ -52,6 +52,7 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       `sent to SWMM ${c.tally.sentToSwmm.toFixed(0)} cf; net exchange 2D ${net2d.toFixed(1)} cf = SWMM ${netSw.toFixed(1)} cf`);
     ok("C2 two-way: 2D water balance closes, and the only clamp is inlet demand the cells could not supply", Math.abs(L.err) / (L.inflow + L.captured) < 1e-4 && Math.abs(L.clamp - c.tally.shortfall) / Math.max(L.clamp, 1) < 1e-3,
       `closure ${L.err.toFixed(2)} cf; clamp ${L.clamp.toFixed(1)} cf, of which inlet demand not supplied ${c.tally.shortfall.toFixed(1)} cf`);
+    ok("C2 two-way: water that goes straight back out of a flooding node is tallied (part of what the inlets took)", c.tally.recirculated > 0 && c.tally.recirculated <= c.tally.sentToSwmm, `${c.tally.recirculated.toFixed(0)} of ${c.tally.sentToSwmm.toFixed(0)} cf`);
     ok("C2 two-way: SWMM continuity stays within 1%", Math.abs(fin.massBalance.flow) < 1, `flow routing continuity ${fin.massBalance.flow.toFixed(3)}%`);
     ok("C2 two-way: less water left on the surface than with closed inlets", L.v1 < globalThis.ONEWAY.surf, `${(L.v1 / 43560).toFixed(3)} ac-ft vs ${(globalThis.ONEWAY.surf / 43560).toFixed(3)} ac-ft`);
     const net = c.tally.perNode.map((p, i) => `${c.sources[i].name} out ${(p.out / 43560).toFixed(2)} in ${(p.in / 43560).toFixed(2)}`);
@@ -158,7 +159,7 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       bad.length ? bad.map(([n, a, b]) => `${n}: ${a} vs ${b}`).join("; ") : cases.map(([n, a]) => `${n} ${a.toFixed(3)} cfs`).join("; "));
     // the regimes meet: no jump in a curb inlet's capacity at the opening height or as the node rises past the crest
     const below = cap(curb, 0.5 - 1e-9, I), above = cap(curb, 0.5 + 1e-9, I), sur = cap(curb, 0.3, 0.3 + 1e-12), free = cap(curb, 0.3, I);
-    ok("C10 curb capacity is continuous at the opening height and at the crest", Math.abs(above - below) < 1e-6 && Math.abs(sur - free) < 1e-6, `${below.toFixed(6)} / ${above.toFixed(6)} cfs; ${free.toFixed(6)} / ${sur.toFixed(6)} cfs`);
+    ok("C10 an undepressed curb's capacity is continuous at the opening height and at the crest (a depressed curb is not: the HEC-22/TxDOT weir and orifice do not meet)", Math.abs(above - below) < 1e-6 && Math.abs(sur - free) < 1e-6, `${below.toFixed(6)} / ${above.toFixed(6)} cfs; ${free.toFixed(6)} / ${sur.toFixed(6)} cfs`);
     const iJ4 = model.nodes.findIndex((n) => n.name === "J4"), j4 = model.nodes[iJ4], refused = [];
     for (const [k, extra] of [["slot type", { type: "slot" }], ["curb without height", { type: "curb", curbLength: 5 }], ["grate without area", { type: "grate", lw: 6 }], ["clog 1.2", { clog: 1.2 }], ["negative depression", { type: "curb", curbLength: 5, curbHeight: 0.5, depressionWidth: -1 }]]) {
       try { await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [Object.assign({ x: j4.x, y: j4.y, node: "J4" }, extra)] }); refused.push(`${k} accepted`); } catch (e) { refused.push(e.message); }
@@ -181,6 +182,58 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       Math.abs((lk.end[0] - 50) * 200000 - (lk.from2d[0] + lk.outside[0])) < 1e-3 * lk.outside[0], `outfall inflow ${lk.outside[0].toFixed(0)} cf, from the 2D ${lk.from2d[0].toFixed(0)} cf; lake 50 -> ${lk.end[0].toFixed(3)} ft`);
     ok("C11 the outfall's stage follows the routed lake level", Math.abs(head - lk.series[lk.series.length - 2].levels[0]) < 1e-3 || Math.abs(head - lk.end[0]) < 1e-3, `outfall head ${head.toFixed(3)} ft; lake ${lk.end[0].toFixed(3)} ft`);
     c.finish();
+  }
+  // C12 a routed lake above its outfall pipe: the water that flows back from the lake into SWMM is taken from the lake, not added to it
+  {
+    const pond = model.nodes.find((n) => n.name === "POND");
+    const inpL = inp.replace(/^(C7\s+J7\s+)POND/m, "$1LK").replace(/\[OUTFALLS\][^\n]*\n[^\n]*\n/, (m) => m + "LK               46.142 FIXED 58.0 NO\n").replace(/\[COORDINATES\][^\n]*\n[^\n]*\n/, (m) => m + `LK               ${pond.x} ${pond.y}\n`);
+    const modelL = S.parseInp(inpL), B = build(), c = await C2.makeCoupler(B, createSWMM, inpL, modelL, { cw: 0, area: 0 });
+    // the sign of the flow in C7 at each step, read on its own from SWMM: + toward the lake
+    const sw = c.engine, li = (() => { const b = sw.M._malloc(64); let k = -1; for (let i = 0; i < sw.M._swmm_getCount(3); i++) { sw.M._swmm_getName(3, i, b, 63); if (sw.M.UTF8ToString(b) === "C7") k = i; } sw.M._free(b); return k; })();
+    const toLake = 1;   // C7 is written J7 -> LK in the .inp, and SWMM reports link flow in the written direction
+    let back = 0; const step0 = sw.advance.bind(sw);
+    sw.advance = (tSec, nodes) => { const t0 = sw.tSec; const r = step0(tSec, nodes); back += Math.min(toLake * sw.get(C2.P.LINK_FLOW, li), 0) * (sw.tSec - t0); return r; };
+    const routed = [{ lake: 0, areaFt2: 200000, level0: 58 }], lakeInflow = c.lakeInflowFor(routed);
+    const r = await F.simulate(B.g, new F.CpuSolver(B.g), { t0: 0, t1: 0.5, rainAt: () => 0, stageAt: () => [58], sources: c.sources, sourceAt: c.sourceAt, afterChunk: c.afterChunk, routedLakes: routed, lakeInflow, chunkSec: 30, readSec: 1800 });
+    const lk = r.lakes, backRun = back; c.finish(); back = backRun;   // only while coupled (finish() runs SWMM on to its end)
+    ok("C12 water flowing back from a routed lake into SWMM lowers the lake by about that volume", back < -1000 && lk.outside[0] < 0 && Math.abs(lk.outside[0] / back - 1) < 0.1,
+      `back into SWMM about ${(-back).toFixed(0)} cf (C7 flow toward the network); lake booked ${lk.outside[0].toFixed(0)} cf from the outfall`);
+  }
+  // C13 a missing or NaN lake level, and a NaN clamp reading, are refused instead of changing SWMM silently
+  {
+    const pond = model.nodes.find((n) => n.name === "POND");
+    const inpL = inp.replace(/^(C7\s+J7\s+)POND/m, "$1LK").replace(/\[OUTFALLS\][^\n]*\n[^\n]*\n/, (m) => m + "LK               46.142 FIXED 50.0 NO\n").replace(/\[COORDINATES\][^\n]*\n[^\n]*\n/, (m) => m + `LK               ${pond.x} ${pond.y}\n`);
+    const msgs = [];
+    for (const lv of [[], [NaN], null]) { const c = await C2.makeCoupler(build(), createSWMM, inpL, S.parseInp(inpL), {}); const f = c.lakeInflowFor([{ lake: 0 }]); try { f(0, 1 / 120, lv); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } }
+    const c = await C2.makeCoupler(build(), createSWMM, inp, model, {}), s0 = { readCells: async (cells) => cells.map(() => 0.3), readClamp: async (cells) => cells.map(() => 0) }, s1 = { readCells: s0.readCells, readClamp: async (cells) => cells.map(() => NaN) };
+    await c.sourceAt(1, 1 + 30 / 3600, s0); try { await c.afterChunk(1, 1 + 30 / 3600, s1); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    ok("C13 missing or NaN lake levels and a NaN clamp are refused", msgs.slice(0, 3).every((m) => /levels missing or not a number/.test(m)) && /clamp at an inlet cell is not a number/.test(msgs[3]), msgs.join(" | "));
+  }
+  // C14 SWMM receives exactly what the inlets took, whatever its routing step (20 s and 60 s against 30 s exchanges, demand on and off)
+  {
+    const out14 = [];
+    for (const rs of [20, 60]) {
+      const inpR = inp.replace(/^ROUTING_STEP\s+\S+/m, `ROUTING_STEP         0:00:${String(rs % 60).padStart(2, "0")}`.replace("0:00:00", "0:01:00")).replace(/^VARIABLE_STEP\s+\S+/m, "VARIABLE_STEP        0");
+      const c = await C2.makeCoupler(build(), createSWMM, inpR, S.parseInp(inpR), {});
+      for (let i = 0; i < 20; i++) { const t = 1 + i * 30 / 3600, sv = flat(i % 2 ? 0 : 0.3); await c.sourceAt(t, t + 30 / 3600, sv); await c.afterChunk(t, t + 30 / 3600, sv); }
+      const fin = c.finish(), ext = rptExternal(fin.rpt), sent = c.tally.sentToSwmm;
+      out14.push({ rs, sent, ext, owed: c.tally.owedToSwmm ?? 0 });
+    }
+    // the report gives ac-ft to 3 decimals (43.6 cf); a SWMM step that ends past the last exchange can deliver up to one step ahead, which is booked as owed (< 0)
+    ok("C14 SWMM's external inflow equals what the inlets took, less what is booked as still owed, with 20 s and 60 s routing steps", out14.every((x) => x.sent > 1000 && Math.abs(x.ext - (x.sent - x.owed)) < 50 && Math.abs(x.owed) < 0.03 * x.sent),
+      out14.map((x) => `${x.rs} s: inlets ${x.sent.toFixed(0)} cf, SWMM report ${x.ext.toFixed(0)} cf, still owed ${x.owed.toFixed(1)} cf`).join("; "));
+  }
+  // C15 a curb opening longer than 12 ft does not count its gutter depression (TxDOT HDM ch. 10 sec. 6), and says so;
+  // a sourceAt with no afterChunk for the interval before is refused; the water that goes straight back out of a flooding node is tallied
+  {
+    const j4 = model.nodes.find((n) => n.name === "J4");
+    const c = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x, y: j4.y, node: "J4", type: "curb", curbLength: 15, curbHeight: 0.5, depressionWidth: 2, rimFt: 0 }], defaultInlets: false });
+    await sweep(c, 1, 1 + 30 / 3600, 0.3);
+    const expect = 3.0 * 15 * Math.pow(0.3, 1.5) * 30;   // Cw 3.0 on L, no depression term, for one 30 s interval
+    ok("C15 a 15 ft curb opening ignores its depression and warns", Math.abs(c.tally.perInlet[0] - expect) < 1e-6 * expect && c.warnings.some((m) => /longer than 12 ft/.test(m)), `took ${c.tally.perInlet[0].toFixed(2)} cf (3.0 x 15 x 0.3^1.5 x 30 s = ${expect.toFixed(2)} cf)`);
+    const c2 = await C2.makeCoupler(build(), createSWMM, inp, model, {}), s0 = flat(0.3); let m = "";
+    await c2.sourceAt(1, 1 + 30 / 3600, s0); try { await c2.sourceAt(1 + 30 / 3600, 1 + 60 / 3600, s0); } catch (e) { m = e.message; }
+    ok("C15 an interval whose afterChunk was never called is refused", /afterChunk was not called/.test(m), m);
   }
   // C3 prepareInp forces ALLOW_PONDING NO
   {

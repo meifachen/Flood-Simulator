@@ -65,5 +65,38 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     }
     ok("L5 an unknown lake, a zero area and a missing starting level are refused", /lake 1 is not one/.test(msgs[0]) && /area 0/.test(msgs[1]) && /starting level NaN/.test(msgs[2]), msgs.join(" | "));
   }
+  // L6 the routed level is the level the 2D holds: a lake routed from 101 ft spills even though stageAt says 95 ft (its bed)
+  {
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.5, rainAt: () => 0, stageAt: () => [95], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 101 }], readSec: 900 });
+    const stored = vol(g, r.frames[r.frames.length - 1].st);
+    ok("L6 the 2D holds the routed level, not stageAt's (a lake above the land spills)", stored > 1000 && r.lakes.end[0] < 101, `on the ground ${stored.toFixed(0)} cf; lake 101 -> ${r.lakes.end[0].toFixed(3)} ft`);
+  }
+  // L7 the routed level does not depend on the chunk length and does not swing from chunk to chunk (a lake started 3 ft above its lip)
+  {
+    const runL = async (chunkSec) => { const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [103], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 103 }], chunkSec, readSec: 3600 });
+      // swing: the largest drop-and-rise (or rise-and-drop) between consecutive chunks, a sawtooth that a stable level does not have
+      const L = r.lakes.series.map((x) => x.levels[0]); let swing = 0; for (let k = 2; k < L.length; k++) { const d1 = L[k - 1] - L[k - 2], d2 = L[k] - L[k - 1]; if (d1 * d2 < 0) swing = Math.max(swing, Math.min(Math.abs(d1), Math.abs(d2))); }
+      return { end: r.lakes.end[0], min: Math.min(...L), swing }; };
+    const fine = await runL(1), c60 = await runL(60), c900 = await runL(900);
+    ok("L7 the routed level is the same with 1 s, 60 s and 900 s chunks (end within 0.02 ft, lowest within 0.1 ft of a lake dumped 3 ft onto dry land), with no sawtooth", [c60, c900].every((c) => Math.abs(c.end - fine.end) < 0.02 && Math.abs(c.min - fine.min) < 0.1 && c.swing < 0.01),
+      `end ${fine.end.toFixed(3)} / ${c60.end.toFixed(3)} / ${c900.end.toFixed(3)} ft; lowest ${fine.min.toFixed(3)} / ${c60.min.toFixed(3)} / ${c900.min.toFixed(3)} ft; largest swing ${fine.swing.toFixed(4)} / ${c60.swing.toFixed(4)} / ${c900.swing.toFixed(4)} ft`);
+  }
+  // L8 refusals: an area smaller than the lake's own cells, a lake listed twice, outside inflow that is missing or not a number
+  {
+    const msgs = [], base = { t0: 0, t1: 0.1, rainAt: () => 0, stageAt: () => [lvl0] };
+    for (const extra of [{ routedLakes: [{ lake: 0, areaFt2: lakeArea / 2, level0: 99 }] }, { routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }, { lake: 0, areaFt2: lakeArea, level0: 99 }] },
+      { routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], lakeInflow: () => [NaN] }, { routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], lakeInflow: () => [] },
+      { routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], lakeInflow: () => null }]) {
+      try { await F.simulate(g, new F.CpuSolver(g), Object.assign({}, base, extra)); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    }
+    ok("L8 a too-small area, a lake listed twice and missing or NaN outside inflow are refused", /smaller than its \d+ cells/.test(msgs[0]) && /listed more than once/.test(msgs[1]) && msgs.slice(2).every((m) => /missing or not a number/.test(m)), msgs.join(" | "));
+  }
+  // L9 a lake that rises and then falls reports its peak, not its end or start (200 cfs from outside for 6 minutes, then spilling)
+  {
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 1, rainAt: () => 0, stageAt: () => [lvl0], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: lvl0 }],
+      lakeInflow: (a, b) => [Math.max(0, Math.min(b, 0.1) - a) * 3600 * 200], chunkSec: 30, readSec: 3600 });
+    const lk = r.lakes, top = Math.max(...lk.series.map((x) => x.levels[0]));
+    ok("L9 the peak of a lake that rises and falls is its highest level", Math.abs(lk.peak[0] - top) < 1e-9 && top > lk.end[0] + 0.01 && top > lvl0 + 1, `start ${lvl0}, peak ${lk.peak[0].toFixed(3)}, end ${lk.end[0].toFixed(3)} ft`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log("CRASH " + (e.stack || e)); process.exit(1); });

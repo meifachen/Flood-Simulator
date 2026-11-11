@@ -67,7 +67,7 @@ function refreshInputs() {
   $("#swmm-note").textContent = !sw ? "Load a SWMM .inp to use it" : sw.hasOut ? "One way reads the .out; two way runs SWMM 5.2.4 in the page" : "Two way runs SWMM 5.2.4 in the page; one way needs the .out";
   boundaryTable(); surfaceTables(); waterNotes();
   if (S.inl) { const known = S.swmm ? S.inl.nodes.filter((n) => S.swmm.nodes.some((x) => x.name === n && x.type === "JUNCTION")) : []; const unknown = S.inl.nodes.filter((n) => known.indexOf(n) < 0);
-    setSt("#st-inl", `${S.inl.count} inlets on ${S.inl.nodes.length} junctions${S.inl.reprojected ? `, ${esc(S.inl.note)}` : ""}${S.inl.skipped ? `; ${S.inl.skipped} features that are not points were skipped` : ""}` + (S.swmm && unknown.length ? `<br><span class="warn">Not junctions in the .inp: ${unknown.slice(0, 6).map(esc).join(", ")}</span>` : "")); }
+    setSt("#st-inl", `${S.inl.count} inlets on ${S.inl.nodes.length} junctions${S.inl.reprojected ? `, ${esc(S.inl.note)}` : ""}${S.inl.skipped ? `; ${S.inl.skipped} features that are not points were skipped` : ""}` + (S.swmm && unknown.length ? `<br><span class="warn">Not junctions in the .inp: ${unknown.slice(0, 6).map(esc).join(", ")}</span>` : "") + (S.inl.typeNote ? `<br><span class="warn">${esc(S.inl.typeNote)}.</span>` : "")); }
   else setSt("#st-inl", "none");
   $("#st-data").textContent = d ? "DEM loaded" + (S.bld ? ", buildings" : "") + (S.bnd ? ", boundaries" : "") + (sw ? ", SWMM" : "") : "nothing loaded";
   $("#b-run").disabled = !d || S.running || S.resultsOnly || (!d.proj4 && !Number.isFinite(d.hUnitFt));
@@ -403,6 +403,8 @@ const VIEWS = {
     L: ["#2c5f8a", "#4f86b5", "#86b0d6", "#bcd4ea", "#d6d5d0", "#f4cfa6", "#eba468", "#d6713a", "#a5471c"], D: ["#5b97cf", "#4d84b8", "#3d6d99", "#2f5677", "#4a4f55", "#7d5434", "#a8653a", "#cf7d43", "#ef9b5c"] },
   dv: { title: "Maximum depth × velocity (ft²/s)", cl: [0.5, 1, 2, 4, 8, 16], L: ["#fde3c8", "#f9c08d", "#f39a52", "#e0702a", "#b4501a", "#7a330f"], D: ["#f6c69b", "#f0a465", "#e5853a", "#cc6624", "#a24c1b", "#73330f"] },
 };
+// change classes symmetric about zero: |d| < 0.1 is "within 0.1"; a boundary value belongs to the larger change on either side
+function diffClass(d) { const e = [0.1, 0.25, 0.5, 1], m = Math.abs(d); let i = -1; for (let j = 0; j < e.length; j++) if (m >= e[j]) i = j; return i < 0 ? 4 : d > 0 ? 5 + i : 3 - i; }
 function valueAt(k) { const v = S.view; if ((v === "vmax" || v === "dv") && S.final) return (v === "vmax" ? S.final.vmax : S.final.dvmax)[k]; return depthAt(k); }
 function vclass(x, cl) { let c = -1; for (let i = 0; i < cl.length; i++) if (x >= cl[i]) c = i; return c; }
 const hex3 = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
@@ -416,7 +418,7 @@ function paint() {
   const url = imageFrom((k, px, o) => {
     if (t[k] === 1) return;
     if (t[k] === 2) { px[o] = lc[0]; px[o + 1] = lc[1]; px[o + 2] = lc[2]; px[o + 3] = 200; return; }   // a level boundary is always water
-    if (S.view === "diff") { const d = S.cmp ? S.cmp.c.diff[k] : NaN; if (Number.isNaN(d)) return; const c = vr[vclass(d, V.cl)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 230; return; }
+    if (S.view === "diff") { const d = S.cmp ? S.cmp.c.diff[k] : NaN; if (Number.isNaN(d)) return; const c = vr[diffClass(d)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 230; return; }
     if (depthView) { const d = depthAt(k); if (!(d >= wet)) return; const c = rp[dclass(d)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 220; return; }
     if (!(S.final.hmax[k] >= wet)) return; const ci = vclass(valueAt(k), V.cl); if (ci < 0) return; const c = vr[ci]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 225;
     // hatch where the flow reached critical speed and the solver capped it (the speed shown there is a lower bound)
@@ -517,6 +519,8 @@ function swmm2Html() {
     <tr><td>Overflow at nodes not coupled (lost)</td><td class="n">${ac(t.lostOverflow)} ac-ft</td></tr>
     <tr><td>Inlet demand the surface could not supply</td><td class="n">${ac(t.shortfall || 0)} ac-ft</td></tr>
     <tr><td>Overflow made in the last interval (after the 2D ended)</td><td class="n">${ac(t.pendingOverflow || 0)} ac-ft</td></tr>
+    <tr><td>Of the water into inlets: back out of the same flooding node in the same interval</td><td class="n">${ac(t.recirculated || 0)} ac-ft</td></tr>
+    <tr><td>Taken by inlets but not yet received by SWMM at the end (− means received ahead)</td><td class="n">${ac(t.owedToSwmm || 0)} ac-ft</td></tr>
     <tr><td>Inlets used</td><td class="n">${(r2.inlets || []).length}</td></tr>
     <tr><td>SWMM flow routing continuity error</td><td class="n">${fmt(r2.massBalance.flow, 3)} %</td></tr></tbody></table>
     ${r2.notes && r2.notes.length ? `<p class="warn">${r2.notes.map(esc).join("<br>")}</p>` : ""}
@@ -576,7 +580,7 @@ function applyOptions(o) {
   set("#imp", o.imperv !== undefined ? +(o.imperv * 100).toFixed(4) : undefined); set("#n-imp", o.nImp); set("#n-perv", o.nPerv); set("#ks", o.ksInHr); set("#psi", o.suctionIn); set("#imd", o.imd);
   set("#edges", o.closedEdges ? "closed" : "open"); set("#roof", o.roofToGround ? "1" : "0"); set("#use-bld", o.useBuildings ? "1" : "0");
   set("#coupling", o.coupling); set("#rain", o.rainSource); set("#rain-ih", o.rainInHr); set("#rain-h", o.rainHours); set("#gauge", o.gauge);
-  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#clog", o.clog === undefined ? undefined : Math.round(o.clog * 100)); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
+  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#clog", o.clog === undefined ? undefined : +(o.clog * 100).toPrecision(12)); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
   set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? o.outputSec / 60 : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
   S.lcTable = o.lcTable || null; S.soilTable = o.soilTable || null; S.bspec = o.boundaries || []; S.bspecTouched = true; S._tSet = true;
 }

@@ -47,6 +47,8 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
       Math.abs(c.acres.deeper - ac) < 1e-12 && Math.abs(c.acres.shallower - ac) < 1e-12 && Math.abs(c.maxRise - 0.3) < 1e-6 && Math.abs(c.maxDrop + 0.25) < 1e-6 && c.buildings.this === 3 && c.buildings.other === 1, JSON.stringify(c.acres));
     let m = ""; try { RIO.compare(ga, fa, { G: Object.assign({}, G, { cs: 5 }), type: gb.type }, fb, 0.1); } catch (e) { m = e.message; }
     ok("R-C1 runs on different grids are refused, naming the difference", /different grids \(cell size: 10 vs 5\)/.test(m), m);
+    let m2 = ""; try { RIO.compare(ga, fa, { G: Object.assign({}, G, { dxFt: 10 / 0.3048 }), type: gb.type }, fb, 0.1); } catch (e) { m2 = e.message; }
+    ok("R-C1 the same numbers in feet and in meters are refused", /cell size in feet/.test(m2), m2);
   }
   const bad2 = res.filter((x) => !x.pass).length; console.log(bad2 ? `${bad2} FAILED` : "ALL PASS"); process.exit(bad2 ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
  "version": "0.4.0",
- "bytes": 5694682,
- "sha256": "d62383b516b0f3df99a83fbaba722c4e2674eb7fc811b8274481e53c66ce4076",
+ "bytes": 5706107,
+ "sha256": "7c56259475ecd0c0f92e157856ec143352188327b296f82191f4c2c8605ac3fd",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -98,7 +98,7 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "875806a7bebca316073fe0d305385285a7ffd382bc2033ea41e4652ff1ce918e"
+   "sha256": "e3bf4eb48c201d4e58941f712e4d3c78d21b4397aefc5a77a4efcf64f8937aa8"
   },
   {
    "file": "src/app/help.html",
@@ -110,11 +110,11 @@
   },
   {
    "file": "src/app/results_io.js",
-   "sha256": "4c06cf52eddcd431ad21b4136660954cf953b8b7ac16beeabfdffd0df240d42d"
+   "sha256": "c9cc03b818b15ade4f2c27c3e89c44b07fd26966969c475a619fd388c5237bec"
   },
   {
    "file": "src/app/ui.js",
-   "sha256": "3f050ef95ac02229d43c9e373e29814d131035bf91058fcc641822d7ee4bbcfb"
+   "sha256": "d9af12a9e9b89cda75546f6564ca3774c3529335933b051c3653b49a7a31d244"
   },
   {
    "file": "src/app/view3d.js",
@@ -122,11 +122,11 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "db3f81ef2a7048cd1bf8b137c0f2d28274f3d97ba4c02ddca6a553037fdb8f90"
+   "sha256": "eddb62b1a1c10824313ce56ae45e8e81243cf64836ce3313d5294be51848e9c0"
   },
   {
    "file": "src/core/couple2way.js",
-   "sha256": "2fd55e1e960a37c89fb1ab6c6048e1590bf1e59024d5dc865339118941d3f821"
+   "sha256": "4dbaaaa95f961d912027f1125d9eb05cdea4b2853e2ba5099ae19f9fecc9908b"
   },
   {
    "file": "src/core/model.js",
@@ -134,7 +134,7 @@
   },
   {
    "file": "src/engine/flood2d.js",
-   "sha256": "d7ddb4a6a012b4d05649561326a6bdb54328e63235552fdd6fb05352ebd86fe6"
+   "sha256": "668993091ee8a42384a9aaf0c583d4f351cd3b6421dd12a0c3a9bf125a0a7d30"
   },
   {
    "file": "src/io/swmm.js",

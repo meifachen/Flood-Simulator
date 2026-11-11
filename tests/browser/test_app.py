@@ -60,6 +60,13 @@ with sync_playwright() as p:
     ok("B19 the guide search shows only the sections that mention the word", vis and all(pg.evaluate(f"document.getElementById('{v}').textContent.toLowerCase().includes('clogging')") for v in vis) and len(vis) < 15, f"{vis}; {pg.inner_text('#g-hits')}")
     pg.fill("#g-search", ""); pg.keyboard.press("Escape"); pg.wait_for_timeout(200)
     ok("B19 Esc closes the guide", not pg.is_visible("#help"), "")
+    # B23 a tour step that fails says so and stays put (a Courant number of 5 is refused at Run)
+    pg.fill("#cfl", "5"); pg.evaluate("UI.startTour()")
+    for i in range(5): pg.click(".tour-next"); pg.wait_for_function("!document.querySelector('.tour-next').disabled", timeout=120000)
+    pg.click(".tour-next"); pg.wait_for_function("!document.querySelector('.tour-next').disabled", timeout=120000)
+    t23 = pg.inner_text(".tour-text"); n23 = pg.inner_text(".tour-n")
+    ok("B23 a tour step whose action fails reports it and does not move on", "did not work" in t23 and "Courant" in t23 and n23 == "6 of 8", f"{n23}: {t23[:100]}")
+    pg.click(".tour-skip"); pg.fill("#cfl", "0.7")
 
     # ---- B1 example loads with SWMM results and the pond tied to the SWMM storage node; its run settings are filled in
     pg.fill("#t0", "3"); pg.fill("#t1", "4"); pg.fill("#outmin", "30")
@@ -288,15 +295,22 @@ with sync_playwright() as p:
         ok("B20 the routed pond on the GPU matches the CPU (peak level within 0.001 ft)", "on the GPU" in msg and glk and abs(glk["peak"][0] - cpu_lk["peak"][0]) < 1e-3, f"CPU {cpu_lk['peak'][0]:.4f}, GPU {glk and glk['peak'][0]:.4f} ft")
 
     # ---- B21 compare two saved runs: the fixed-level pond against the routed one
-    pg.select_option(".b-src", "POND"); settings(pg, t0="0", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)
+    pg.select_option(".b-src", "POND"); pg.select_option("#rain", "none"); pg.evaluate("waterNotes()"); settings(pg, t0="0", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)   # no rain: less flooding than the routed run
     pg.set_input_files("#f-cmp", routed_res); pg.wait_for_timeout(800)
     kp = pg.inner_text("#kpis")
     ok("B21 comparing with a saved run maps the change in maximum depth with areas gained and lost", pg.evaluate("S.view") == "diff" and pg.is_visible("#b-cmp-clear") and "Newly flooded" in kp and "Shallower" in kp and "deeper" in pg.inner_text("#legend"),
        kp.replace("\n", " | ")[:200])
     c = pg.evaluate("S.cmp.c.acres")
-    ok("B21 the comparison counts what changed (both runs are on the same grid)", c["compared"] > 0 and c["both"] > 0, json.dumps(c)[:200])
+    ok("B21 the comparison counts what changed (both runs are on the same grid; the compared run had rain, this one not)", c["compared"] > 0 and c["onlyOther"] > 0.5 and c["shallower"] > 0.5, json.dumps(c)[:200])
+    cls = pg.evaluate("[1, -1, 0.5, -0.5, 0.1, -0.1, 0.0999, -0.0999].map(diffClass)")
+    ok("B21 change classes are symmetric about zero (a boundary value goes to the larger change on both sides)", cls == [8, 0, 7, 1, 5, 3, 4, 4], cls)
     pg.click("#b-cmp-clear"); pg.wait_for_timeout(200)
     ok("B21 clearing the comparison removes the change view", pg.evaluate("S.cmp") is None and pg.evaluate("S.view") != "diff" and not pg.is_visible("#b-cmp-clear"), pg.evaluate("S.view"))
+
+    # ---- B22 a clogging value that is not a whole percent comes back unchanged when a run's settings are restored
+    pg.select_option("#coupling", "two"); pg.evaluate("waterNotes()"); pg.fill("#clog", "12.5"); o22 = pg.evaluate("(() => { const o = runOptions(); applyOptions(o); return [o.clog, document.querySelector('#clog').value]; })()")
+    ok("B22 clogging 12.5% survives saving the settings and restoring them", abs(o22[0] - 0.125) < 1e-12 and o22[1] == "12.5", o22)
+    pg.fill("#clog", "0"); pg.select_option("#coupling", "one"); pg.evaluate("waterNotes()")
 
     # ---- B9 Stop ends a long run and keeps the maps so far
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
