@@ -1,4 +1,4 @@
-# Real-site test: Winter Haven, Florida (Lake Martha), November 2026 (updated for 0.3.3)
+# Real-site test: Winter Haven, Florida (Lake Martha), November 2026 (updated for 0.4.0)
 
 ## Why this site
 
@@ -130,6 +130,30 @@ The builder now records both levels. `--lake-levels city` uses the City's levels
     - STRUCTURE-6227, a mitered end, 0.50 ft above.
   - **Next step:** both need checking against record drawings. The builder gave them a 0.5 ft depth.
 
+### 7. Routed lakes (0.4.0)
+
+In 0.4.0, a lake can rise with the water it gains instead of holding a fixed level (section 7 of the User Guide). The three lakes were run with the lidar levels as starting levels and their whole NHD areas: Maude 55.2 ac, Silver 54.4 ac and Martha 89.1 ac. They were run through the whole 25-year storm on the laptop GPU.
+
+| Lake | Start | Peak, 12 ft | Peak, 6 ft | Rain on the lake, cf | From the 2D, cf (12 ft) | SWMM outfalls, cf (12 ft) |
+|---|---|---|---|---|---|---|
+| Maude | 139.17 ft | 139.89 ft | 139.89 ft | 1,540,893 | 175,435 | 5,473 |
+| Silver | 142.73 ft | 143.48 ft | 143.38 ft | 1,518,561 | 165,103 | 81,881 |
+| Martha | 139.19 ft | 139.96 ft | 139.95 ft | 2,487,202 | 255,938 | 189,795 |
+
+- **What drives the rise:** most of it is rain on the lakes themselves (7.69 in, 0.64 ft). Runoff from the grid and the storm sewer adds 0.05 to 0.12 ft.
+- **Model limits:** the lakes have no outlet and a constant area, so the rise is an upper bound for the storm.
+- **Lake Silver at 6 ft:** it lost 133,949 cf to the land. It spilled onto low ground at its edge, where the 6 ft grid resolves ground that the 12 ft grid averages away.
+- **Where the land got wetter:** routing changed the peak depth on 0.83 ac of open ground at 12 ft (0.79 ac at 6 ft). All of that ground lies inside the City's SAIP lake polygons, which extend beyond the NHD shorelines, so the ICPR comparison in section 4 is unchanged.
+- **What that implies:** the ring that only ICPR floods lies on higher ground, 60 ft from the lakes. ICPR's lake stages must therefore peak above these routed levels. The City's model also starts the lakes 0.4 to 2.5 ft higher (section 5).
+- **Checks:**
+  - SWMM continuity: −0.014% at 12 ft and −0.105% at 6 ft.
+  - 2D balance: within 0.0011%.
+  - Inlets: 1,195,221 cf at 12 ft, the same as with fixed lakes to within 0.01%.
+
+### 8. Inlet file fields
+
+The Winter Haven inlets file carries the City inventory's `type` field (CURB_INLET, GRATE_INLET). The first 0.4.0 build read `type` as the new inlet type and refused the file. The app now reads the inlet type from `inlet_type` and leaves an inventory's `type` alone. W10 checks this.
+
 ## Speed on a real GPU
 
 The laptop has Intel Core 7 150U graphics (gen-12lp). Both engines ran in headless Chrome on that machine. The CPU and GPU maps agree within 1.4e-5 ft in depth and 0.0065 ft/s in speed.
@@ -148,7 +172,7 @@ The laptop has Intel Core 7 150U graphics (gen-12lp). Both engines ran in headle
 ## Not covered
 
 - **Calibration and observed flooding:** there is no comparison with observed flooding. The only comparison with the City's model is the inundation check in section 4, which is not like-for-like.
-- **Lakes:** they are held at fixed levels (lidar or City), not routed.
+- **Lakes:** fixed levels (lidar or City), or routed with no outlet (section 7). The City's outlet structures are not modeled.
 - **Inlets:** inlet sizes are not in the inventory, so the app defaults were used.
 - **Datum:**
   - Horizontal: NAD83(2011) was taken as NAD83, with no grid shift (under 1 m here).

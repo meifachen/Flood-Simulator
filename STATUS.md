@@ -36,6 +36,7 @@ Updated 2026-11-10. Version 0.4.0: inlet types and clogging, routed lakes, compa
 - **New in 0.4.0:**
   - **Inlet types (HEC-22 sag equations):** generic, grate, curb (with or without a gutter depression) and combination, read from the inlets file (`inlet_type`; an inventory `type` field such as CURB_INLET is ignored, `perimeter_ft`, `open_area_sqft`, `curb_length_ft`, `curb_height_ft`, `depression_width_ft`). A clogging fraction can be set per inlet (`clog`) or for all inlets in the panel.
   - **Routed lakes:** a level boundary can rise and fall with what it gains: the water the 2D sends into it, rain on its whole area (`area_ac`, else the part in the grid) and, in two-way runs, SWMM outfalls that discharge into it. Those outfalls take the lake level as their stage. The results show each lake's start, peak and end level and its water budget. A routed lake is a level pool with a constant area and no outlet.
+  - **Winter Haven, routed lakes, whole 25-year storm:** the lakes rose 0.70–0.77 ft, mostly from rain on the lakes. The extra flooding (0.8 ac) falls inside the City's lake polygons, so the ICPR comparison did not change (site doc, section 7).
   - **Compare two saved runs** on the same grid: the change in maximum depth, the area newly flooded, no longer flooded, deeper and shallower, and buildings reached. Runs on different grids are refused.
   - **Help in the page:**
     - a workflow map of the five steps, which shows what is done and jumps to any setting;
