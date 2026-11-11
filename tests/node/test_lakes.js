@@ -71,15 +71,17 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     const stored = vol(g, r.frames[r.frames.length - 1].st);
     ok("L6 the 2D holds the routed level, not stageAt's (a lake above the land spills)", stored > 1000 && r.lakes.end[0] < 101, `on the ground ${stored.toFixed(0)} cf; lake 101 -> ${r.lakes.end[0].toFixed(3)} ft`);
   }
-  // L7 the routed level does not depend on the chunk length and does not swing from chunk to chunk (a lake started 3 ft above its lip)
+  // L7 the routed level does not depend on the chunk length (a lake started 3 ft above its lip spills onto dry land, then sloshes back):
+  // at every chunk end of a 60 s and a 900 s run, the level is within 0.03 ft of the level of a run in 0.1 s chunks at that time
+  // (the chunks are cut so the level moves at most about 0.02 ft in one; at the start it falls 0.06 ft/s, so one chunk of lag is about that)
   {
     const runL = async (chunkSec) => { const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [103], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 103 }], chunkSec, readSec: 3600 });
-      // swing: the largest drop-and-rise (or rise-and-drop) between consecutive chunks, a sawtooth that a stable level does not have
-      const L = r.lakes.series.map((x) => x.levels[0]); let swing = 0, lo = Infinity; for (const v of L) lo = Math.min(lo, v); for (let k = 2; k < L.length; k++) { const d1 = L[k - 1] - L[k - 2], d2 = L[k] - L[k - 1]; if (d1 * d2 < 0) swing = Math.max(swing, Math.min(Math.abs(d1), Math.abs(d2))); }
-      return { end: r.lakes.end[0], min: lo, swing }; };
-    const fine = await runL(0.1), c60 = await runL(60), c900 = await runL(900);   // 0.1 s chunks: converged (0.05 s gives the same lowest level within 0.01 ft)
-    ok("L7 60 s and 900 s chunks match 0.1 s chunks: end within 0.02 ft, no sawtooth; the lowest level of a lake dumped 3 ft onto dry land is within 0.25 ft (a known transient error, in the guide's limits)", [c60, c900].every((c) => Math.abs(c.end - fine.end) < 0.02 && Math.abs(c.min - fine.min) < 0.25 && c.swing < 0.01),
-      `end ${fine.end.toFixed(3)} / ${c60.end.toFixed(3)} / ${c900.end.toFixed(3)} ft; lowest ${fine.min.toFixed(3)} / ${c60.min.toFixed(3)} / ${c900.min.toFixed(3)} ft; largest swing ${fine.swing.toFixed(4)} / ${c60.swing.toFixed(4)} / ${c900.swing.toFixed(4)} ft`);
+      return { end: r.lakes.end[0], T: r.lakes.series.map((x) => x.tHours), L: r.lakes.series.map((x) => x.levels[0]) }; };
+    const fine = await runL(0.1), c60 = await runL(60), c900 = await runL(900);
+    const at = (t) => { let k = fine.T.findIndex((x) => x >= t - 1e-9); if (k <= 0) return fine.L[Math.max(k, 0)]; const f = (t - fine.T[k - 1]) / (fine.T[k] - fine.T[k - 1]); return fine.L[k - 1] + f * (fine.L[k] - fine.L[k - 1]); };
+    const dev = (c) => c.T.reduce((m, t, k) => Math.max(m, Math.abs(c.L[k] - at(t))), 0), lo = (c) => Math.min(...c.L);
+    ok("L7 60 s and 900 s chunks follow the level of 0.1 s chunks within 0.03 ft at every chunk end, the lowest level included", [c60, c900].every((c) => dev(c) < 0.03 && Math.abs(c.end - fine.end) < 0.02),
+      `largest difference ${dev(c60).toFixed(4)} / ${dev(c900).toFixed(4)} ft; lowest ${lo(fine).toFixed(3)} / ${lo(c60).toFixed(3)} / ${lo(c900).toFixed(3)} ft; end ${fine.end.toFixed(3)} / ${c60.end.toFixed(3)} / ${c900.end.toFixed(3)} ft`);
   }
   // L8 refusals: an area smaller than the lake's own cells, a lake listed twice, outside inflow that is missing or not a number
   {
@@ -106,11 +108,26 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
       let lo = Infinity; for (const x of r.lakes.series) lo = Math.min(lo, x.levels[0]); return { lo, end: r.lakes.end[0] }; };
     const w1 = await runW(1), w60 = await runW(60);
     ok("L10 a level-dependent outlet drains the lake to its 97 ft crest and no lower, with 1 s and 60 s chunks", w1.lo > 96.99 && w60.lo > 96.99 && Math.abs(w60.end - w1.end) < 0.01, `lowest ${w1.lo.toFixed(3)} / ${w60.lo.toFixed(3)} ft; end ${w1.end.toFixed(3)} / ${w60.end.toFixed(3)} ft`);
+    // a lake that starts at the grid's lowest ground (a lidar lake's flattened surface) may be drawn below it by an outside withdrawal (5 cfs)
+    let zLow = Infinity; for (let k = 0; k < g.N; k++) if ((g.aux[4 * k + 2] & 3) !== 1) zLow = Math.min(zLow, g.aux[4 * k]);
+    let wd; try { const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.05, rainAt: () => 0, stageAt: () => [zLow], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: zLow }], lakeInflow: (a, b) => [-5 * (b - a) * 3600], readSec: 3600 }); wd = r.lakes.end[0]; } catch (e) { wd = e.message; }
+    ok("L10 a withdrawal may draw a lake that starts at the grid's lowest ground below it (5 cfs for 3 minutes: 900 cf)", typeof wd === "number" && Math.abs((zLow - wd) * lakeArea - 900) < 1, `${typeof wd === "number" ? `start ${zLow.toFixed(2)} ft, end ${wd.toFixed(4)} ft` : wd}`);
     const msgs = [];
-    for (const extra of [{ routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], lakeInflow: () => [-5e6] }, { lakeInflow: () => [0] }, { routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], pipes: [{ cell: 15 * nx + 20, cda: 1, lake: 0 }] }]) {
+    for (const extra of [{ lakeInflow: () => [0] }, { routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], pipes: [{ cell: 15 * nx + 20, cda: 1, lake: 0 }] }]) {
       try { await F.simulate(g, new F.CpuSolver(g), Object.assign({ t0: 0, t1: 0.05, rainAt: () => 0, stageAt: () => [lvl0] }, extra)); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
     }
-    ok("L10 a level below the grid's lowest ground, lakeInflow without a routed lake and a pipe to a routed lake are refused", /below the lowest ground of the grid/.test(msgs[0]) && /no lake is routed/.test(msgs[1]) && /pipes to routed lakes are not supported/.test(msgs[2]), msgs.join(" | "));
+    ok("L10 lakeInflow without a routed lake and a pipe to a routed lake are refused", /no lake is routed/.test(msgs[0]) && /pipes to routed lakes are not supported/.test(msgs[1]), msgs.join(" | "));
+  }
+  // L11 a two-way link to a fixed level (an outfall pipe to a node held at 98 ft, 2,500 cfs per foot of head) settles at 98 ft and stays there,
+  // with 60 s and 900 s chunks: the chunks are kept under the link's own stability limit, so the level does not burst away from it later
+  {
+    const link = (a, b, lv) => [-2500 * (lv[0] - 98) * (b - a) * 3600];
+    const dev = [];
+    for (const chunkSec of [60, 900]) {
+      const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 6, rainAt: () => 0, stageAt: () => [99], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99 }], lakeInflow: link, chunkSec, readSec: 900 });
+      dev.push(r.lakes.series.filter((x) => x.tHours >= 1).reduce((m, x) => Math.max(m, Math.abs(x.levels[0] - 98)), 0));
+    }
+    ok("L11 a lake linked both ways to a fixed 98 ft level stays within 0.005 ft of it from hour 1 to hour 6, with 60 s and 900 s chunks", dev.every((d) => d < 0.005), `largest departure ${dev.map((d) => d.toFixed(4)).join(" / ")} ft`);
   }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log("CRASH " + (e.stack || e)); process.exit(1); });

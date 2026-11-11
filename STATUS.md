@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-11-11. Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/reviews/review-0.4.0-round2.md; response in docs/reviews/response-0.4.0-round2.md). Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
+Updated 2026-11-11. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/reviews/review-0.4.0-round3.md; response in docs/reviews/response-0.4.0-round3.md). Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/reviews/review-0.4.0-round2.md; response in docs/reviews/response-0.4.0-round2.md). Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -33,6 +33,12 @@ Updated 2026-11-11. Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/re
   - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
   - Loading a new DEM clears the other layers and says so.
 
+- **Fixed in 0.4.3 (review round 3):**
+  - **2D scheme converges in the time step:** the de Almeida smoothing is scaled with the step, so short chunks and a low dtMax no longer slow the flow (a dam break moved 14,134 cf at dt 0.005 s against 54,801 cf at the Courant step; now 53,438 against 54,801). Ordinary runs, whose chunks hold ten or more Courant steps, are unchanged.
+  - **Routed lakes:** chunks are kept under the measured stability limit of a level-dependent outside inflow, and a reversing level halves the chunk; the low-level guard checks only the 2D share, so withdrawals may draw a lidar lake below its surface.
+  - **Coupler:** a bad weir coefficient on a long curb, short 2D readings and negative or missing panel inlet values are refused.
+  - **Worker:** a refused call undoes all its layers; the CRS cannot change under reprojected layers; only the inlet fields used are checked for duplicates; soils fields are read in any letter case.
+  - **Page:** a run cannot start while one is going (the tour's Run step says so); settings restore to 15 significant digits.
 - **Fixed in 0.4.2 (review round 2):**
   - **Routed lakes:**
     - Water that enters a lake's outfall node directly (runoff, `[INFLOWS]`, dry-weather flow) reaches the lake again; 0.4.1 had dropped it. Checked against SWMM's own outfall total.
@@ -178,6 +184,7 @@ Updated 2026-11-11. Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/re
     - `test_worker.js` W11–W12 (0.4.1) and W13–W14 (0.4.2).
     - `test_results_io.js` R-C2 (0.4.2): counts as mapped (Float32).
     - Browser B22–B23 (0.4.1) and B24, B22 impervious (0.4.2).
+    - 0.4.3: `test_solver_core.js` T9 (dam break independent of the step), `test_lakes.js` L7 (whole level path against 0.1 s chunks), L10 (withdrawal), L11 (two-way link), `test_couple2way.js` C17, `test_worker.js` W15, browser B25.
   - `tests/node/test_worker.js` (new): the worker in node with W1–W9 above, including a two-way run whose SWMM report equals the inlet tally (13,678 vs 13,692 cf).
   - `tests/node/test_results_io.js` (new): round trip with flags and NaN; six malformed headers and extra bytes refused.
   - `tests/node/test_landcover.js`: expected values written out from the published tables (not read from the code); Green-Ampt infiltration against EPA SWMM 5.2.4 for groups A and D (1.919 vs 1.920 in; 0.358 vs 0.358 in); default IMD = porosity − field capacity; refusals, coverage, codes, NoData and out-of-raster sampling.
@@ -223,7 +230,7 @@ Updated 2026-11-11. Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/re
 - A soils GeoTIFF in the browser (the code path exists; only soils GeoJSON was run in the app).
 - Land cover classes other than NLCD codes (other schemes need an edited table).
 - Results files from very large grids (file size and memory when reopening).
-- The 0.3.1 fixes were checked by the tests above, not by a second independent review round. The 0.4.2 fixes have not had a review round of their own.
+- The 0.3.1 fixes were checked by the tests above, not by a second independent review round. The 0.4.3 fixes have not had a review round of their own.
 - The work PC (only the home laptop's Intel GPU was tested).
 - **Winter Haven:**
   - No check against observed flooding.

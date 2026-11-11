@@ -87,6 +87,18 @@ function raw(nx, ny, dx, fz, ft = () => 0, o = {}) {
     ok("T8 pipe connection fills and drains a hollow behind a ridge", Math.abs(lvl4 - 9) < 0.02 && lvl6 < 0.05 && fd < 0.02 && Math.abs(L.err) < 1,
       `level after 4 h ${lvl4.toFixed(3)} ft (lake 9.0); depth 2 h after the lake drops to 5.0: ${lvl6.toFixed(3)} ft; level-spill map differs by ${fd.toFixed(4)} ft; ledger closure ${L.err.toFixed(3)} cf (hollow holds about 60,000 cf)`);
   }
+  // T9 the answer does not depend on how finely the time is cut: a dam break (3 ft of water released over a dry flat bed, 20 s)
+  // moves the same volume with the Courant step (dtMax 5) and with dtMax 0.1, 0.02 and 0.005 s (within 3%)
+  {
+    const nx = 40, ny = 30, g = F.makeGrid(raw(nx, ny, 10, () => 100, (r, c) => (r === 0 || c === 0 || r === ny - 1 || c === nx - 1) ? 1 : 0));
+    const moved = [];
+    for (const dtMax of [5, 0.1, 0.02, 0.005]) {
+      const init = new Float32Array(4 * g.N); for (let r = 1; r < ny - 1; r++) for (let c = 30; c < nx - 1; c++) init[4 * (r * nx + c)] = 3;
+      const out = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 20 / 3600, rainAt: () => 0, stageAt: () => [0], dtMax, readSec: 3600, init });
+      const st = out.frames.at(-1).st; let v = 0; for (let r = 1; r < ny - 1; r++) for (let c = 1; c < 30; c++) v += st[4 * (r * nx + c)] * 100; moved.push(v);
+    }
+    ok("T9 a dam break moves the same water whatever the step (dtMax 5, 0.1, 0.02, 0.005 s; within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
+  }
   require("fs").writeFileSync((process.env.OUTDIR || require("os").tmpdir()) + "/test_flood_results.json", JSON.stringify(res, null, 1));
   console.log(res.every((r) => r.pass) ? "ALL PASS" : "SOME FAILED"); process.exitCode = res.every((r) => r.pass) ? 0 : 1;
 })();

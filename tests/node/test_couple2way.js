@@ -246,7 +246,8 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const msgs = [];
     const c2 = await C2.makeCoupler(build(), createSWMM, inp, model, {});
     try { await c2.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.map(() => NaN), readClamp: async (cells) => cells.map(() => 0) }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
-    try { await c2.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.map(() => 0.3), readClamp: async (cells) => cells.map(() => NaN) }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    const c2b = await C2.makeCoupler(build(), createSWMM, inp, model, {});   // a coupler of its own, so this check does not depend on the one above
+    try { await c2b.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.map(() => 0.3), readClamp: async (cells) => cells.map(() => NaN) }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
     const c3 = await C2.makeCoupler(build(), createSWMM, inp, model, {}); await c3.sourceAt(1, 1 + 30 / 3600, flat(0.3)); try { c3.finish(); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
     try { await C2.makeCoupler(build(), createSWMM, inp + "\n[EVENTS]\n07/15/2024 03:00 07/15/2024 06:00\n", model, {}); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
     ok("C16 a NaN depth, a NaN clamp at the start of an interval, finish() with an interval not booked and an [EVENTS] section are refused",
@@ -255,6 +256,21 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const c4 = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x, y: j4.y, node: "J4", type: "curb", curbLength: 15, curbHeight: 0.5, depressionWidth: 2, ccw: 2.3, rimFt: 0 }], defaultInlets: false });
     await sweep(c4, 1, 1 + 30 / 3600, 0.3);
     ok("C16 a curb opening over 12 ft uses Cw 3.0 even when 2.3 is given", Math.abs(c4.tally.perInlet[0] - 3.0 * 15 * Math.pow(0.3, 1.5) * 30) < 1e-3, `took ${c4.tally.perInlet[0].toFixed(2)} cf`);
+  }
+  // C17 bad values that would be hidden or would make inlets add water are refused: a weir coefficient given for a long curb, short depth or
+  // clamp readings from the 2D, and negative or missing panel values (weir and orifice coefficients, capture limit)
+  {
+    const j4 = model.nodes.find((n) => n.name === "J4"), msgs = [], tryIt = async (f) => { try { await f(); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } };
+    for (const ccw of ["abc", -1, NaN, 0]) await tryIt(() => C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x, y: j4.y, node: "J4", type: "curb", curbLength: 15, curbHeight: 0.5, ccw }], defaultInlets: false }));
+    const cS = await C2.makeCoupler(build(), createSWMM, inp, model, {});
+    await tryIt(() => cS.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.slice(1).map(() => 0.3), readClamp: async (cells) => cells.map(() => 0) }));
+    const cT = await C2.makeCoupler(build(), createSWMM, inp, model, {});
+    await tryIt(() => cT.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.map(() => 0.3), readClamp: async () => [] }));
+    for (const opt of [{ cw: -3 }, { co: -0.6 }, { cw: NaN }, { capFrac: -1 }, { capFrac: NaN }]) await tryIt(() => C2.makeCoupler(build(), createSWMM, inp, model, opt));
+    await tryIt(() => C2.makeCoupler(build(), createSWMM, inp, model, { cw: 0, area: 0 }));
+    ok("C17 a bad weir coefficient on a long curb, short 2D readings and negative or missing panel values are refused; zero (closed inlets) is accepted",
+      msgs.slice(0, 4).every((m) => /curb weir coefficient .* is not a positive number/.test(m)) && /depths for/.test(msgs[4]) && /clamp values for/.test(msgs[5]) &&
+      msgs.slice(6, 11).every((m) => /is not (zero or )?a positive number/.test(m)) && msgs[11] === "accepted", msgs.join(" | "));
   }
   // C3 prepareInp forces ALLOW_PONDING NO
   {

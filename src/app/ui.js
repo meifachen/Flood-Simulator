@@ -178,7 +178,7 @@ const UI = (() => {
     { sel: "#ex-load", text: "Step 1, Data. Next loads the built-in example: a DEM, buildings, a pond and a SWMM model, with its own run settings.", act: async () => { const d0 = window.S.dem; $("#ex-pick").value = "0"; await loadExample(0); if (!window.S.dem || window.S.dem === d0) throw new Error($("#msg").textContent); } },
     { sel: "#cell", text: "Step 2, Grid and surface. The cell size sets detail and run time. Hover over any setting for its units, default and range." },
     { sel: "#coupling", text: "Step 3, Water sources. The example spreads SWMM node flooding from its .out file over the ground, between the start and end hours below." },
-    { sel: "#b-run", text: "Step 4, Run. Next starts the run; it takes a few seconds on the GPU and about 15 seconds on the CPU.", act: async () => { const f0 = window.S.final; await run(); if (!window.S.final || window.S.final === f0) throw new Error($("#msg").textContent); } },
+    { sel: "#b-run", text: "Step 4, Run. Next starts the run; it takes a few seconds on the GPU and about 15 seconds on the CPU.", act: async () => { if (window.S.running) throw new Error("a run is already going; stop it, then press Next again"); const f0 = window.S.final; await run(); if (!window.S.final || window.S.final === f0) throw new Error($("#msg").textContent); } },
     { sel: "#map", text: "Step 5, Results. Move the time slider or press Play; choose Maximum depth under Show; click the map for the depth over time at a point." },
     { sel: "#ledger", text: "The water balance shows where the water went; closure should be about 0. The User Guide (Guide button) explains every term. That is the tour." },
   ];

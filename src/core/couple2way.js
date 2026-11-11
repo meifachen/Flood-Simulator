@@ -116,10 +116,15 @@
    *     were all rejected gets none), maxLeadFt: 300 (an inlet farther than this from its node is reported), crestTolFt: 0.5}
    * Overflow leaves SWMM at each coupled node's cell; capture enters through each inlet's cell. The engine gets one source per node
    * (overflow, >= 0) and one sink per inlet (<= 0). rates() gives the net exchange per coupled node (+ out of SWMM). */
+  const show0 = (v) => (typeof v === "string" ? JSON.stringify(v) : String(v));
   async function makeCoupler(B, createSWMM, inpText, model, o = {}) {
+    const def = { kind: "generic", cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0, clog: o.clog ?? 0 }, capFrac = o.capFrac ?? Infinity;   // capFrac: optional extra limit (fraction of the cell's water per interval)
+    // the panel's inlet values: zero closes the default inlets; a negative or missing value would make an inlet add water, so it is refused
+    for (const [k, what] of [["cw", "weir coefficient"], ["lw", "weir length"], ["co", "orifice coefficient"], ["area", "orifice area"]]) if (!(typeof def[k] === "number" && Number.isFinite(def[k]) && def[k] >= 0)) throw new Error(`Default inlet ${what} ${show0(def[k])} is not zero or a positive number`);
+    if (!(typeof def.clog === "number" && def.clog >= 0 && def.clog < 1)) throw new Error(`Default inlet clogging ${show0(def.clog)} is not a fraction from 0 to below 1`);
+    if (!(capFrac > 0)) throw new Error(`Inlet capture limit (capFrac) ${show0(capFrac)} is not a positive number`);
     const sw = await SwmmEngine.open(createSWMM, inpText);
     const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = Math.max(1, Math.ceil(searchFt / Gd.dxFt));
-    const def = { kind: "generic", cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0, clog: o.clog ?? 0 }, capFrac = o.capFrac ?? Infinity;   // capFrac: optional extra limit (fraction of the cell's water per interval)
     const links = [], nodeMap = [], byName = {}, lakeOutfalls = [];
     const lakeOf = (k0) => {   // the level boundary an outfall discharges into: its own cell, or the nearest lake cell within the search distance
       if (B.type[k0] === 2) return (B.g.aux[4 * k0 + 2] >> 4) & 255;
@@ -165,6 +170,8 @@
         if (!(typeof dw === "number" && Number.isFinite(dw) && dw >= 0)) throw new Error(`${label}: gutter depression width ${show(dw)} is not zero or a positive number`);
         // TxDOT HDM ch. 10 sec. 6: for an opening longer than 12 ft the depression is not counted (W = 0, Cw 3.0)
         const dwUse = it.curbLength > 12 ? 0 : dw, longCurb = it.curbLength > 12;
+        // a weir coefficient given for a long curb is not used, but it is still checked: a bad value in the table is refused, not hidden
+        if (it.ccw !== undefined && !(typeof it.ccw === "number" && Number.isFinite(it.ccw) && it.ccw > 0)) throw new Error(`${label}: ${NAMES.ccw} ${show(it.ccw)} is not a positive number`);
         if (longCurb && (dw > 0 || (it.ccw !== undefined && it.ccw !== 3.0))) W.push(`${label}: curb opening ${it.curbLength} ft is longer than 12 ft, so its gutter depression is not counted and its weir coefficient is 3.0 (TxDOT HDM ch. 10)`);
         Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw: dwUse, ccw: longCurb ? 3.0 : it.ccw ?? (dwUse > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });   // over 12 ft TxDOT sets Cw 3.0 as well
       }
@@ -194,13 +201,14 @@
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
     let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null; const owed = links.map(() => 0);
     const inletCells = inlets.map((it) => it.k), cells = [...new Set(inletCells)];
-    const clampAt = async (solver) => (solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length));
+    const clampAt = async (solver) => { const c = solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length); if (!c || c.length !== cells.length) throw new Error(`The 2D gave ${c ? c.length : "no"} clamp values for ${cells.length} cells`); return c; };
     /* before an interval: inlet demands from the depths now, and last interval's overflow volume as this interval's source */
     async function sourceAt(h0, h1, solver) {
       const dt = (h1 - h0) * 3600; if (!(dt > 0)) return sources.map(() => 0);
       if (cur) throw new Error(`afterChunk was not called for the interval from hour ${cur.h0.toFixed(4)}: the water the inlets took there would never reach SWMM`);
       if (sw.tSec < h0 * 3600 - 1e-6) { sw.advance(h0 * 3600, []); if (sw.inVol) sw.inVol.fill(0); }   // a run that starts later than SWMM: SWMM catches up without exchange
       const h = await solver.readCells(inletCells);
+      if (!h || h.length !== inletCells.length) throw new Error(`The 2D gave ${h ? h.length : "no"} depths for ${inletCells.length} inlet cells at hour ${h0.toFixed(2)}`);
       if (!Array.from(h).every(Number.isFinite)) throw new Error(`The 2D depth at an inlet cell is not a number at hour ${h0.toFixed(2)}; inlet capture cannot be computed`);
       const qin = inlets.map((it, m) => {
         if (sw.done) return 0;   // after the SWMM run ends nothing can be passed to it

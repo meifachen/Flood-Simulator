@@ -230,6 +230,7 @@ function runOptions() {
   return o;
 }
 async function run() {
+  if (S.running) { msg("A run is already going; stop it first.", "err"); return; }
   let o; try { o = runOptions(); } catch (e) { msg(esc(e.message), "err"); return; }
   S.running = true; $("#b-run").disabled = true; $("#b-stop").disabled = false; clearResults(); $("#warns").innerHTML = "";
   try {
@@ -577,11 +578,11 @@ async function saveResults() {
 function applyOptions(o) {
   if (!o) return;
   const set = (id, v) => { const el = $(id); if (el && v !== undefined && v !== null && !(typeof v === "number" && !Number.isFinite(v))) el.value = String(v); };
-  set("#imp", o.imperv !== undefined ? +(o.imperv * 100).toPrecision(12) : undefined); set("#n-imp", o.nImp); set("#n-perv", o.nPerv); set("#ks", o.ksInHr); set("#psi", o.suctionIn); set("#imd", o.imd);
+  set("#imp", o.imperv !== undefined ? +(o.imperv * 100).toPrecision(15) : undefined); set("#n-imp", o.nImp); set("#n-perv", o.nPerv); set("#ks", o.ksInHr); set("#psi", o.suctionIn); set("#imd", o.imd);
   set("#edges", o.closedEdges ? "closed" : "open"); set("#roof", o.roofToGround ? "1" : "0"); set("#use-bld", o.useBuildings ? "1" : "0");
   set("#coupling", o.coupling); set("#rain", o.rainSource); set("#rain-ih", o.rainInHr); set("#rain-h", o.rainHours); set("#gauge", o.gauge);
-  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#clog", o.clog === undefined ? undefined : +(o.clog * 100).toPrecision(12)); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
-  set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? +(o.outputSec / 60).toPrecision(12) : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
+  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#clog", o.clog === undefined ? undefined : +(o.clog * 100).toPrecision(15)); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
+  set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? +(o.outputSec / 60).toPrecision(15) : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
   S.lcTable = o.lcTable || null; S.soilTable = o.soilTable || null; S.bspec = o.boundaries || []; S.bspecTouched = true; S._tSet = true;
 }
 async function openResults(file) {

@@ -77,6 +77,13 @@ with sync_playwright() as p:
     ok("B24 the example and Run steps fail when they leave the earlier site or results in place", "did not work" in t24a and "Stop the run first" in t24a and n24a == "3 of 8" and "did not work" in t24b and "Courant" in t24b and n24b == "6 of 8",
        f"{n24a}: {t24a[:80]} | {n24b}: {t24b[:80]}")
     pg.click(".tour-skip"); pg.fill("#cfl", "0.7"); pg.evaluate("clearResults()")
+    # B25 the tour's Run step does not start a second run on top of one already going
+    pg.evaluate("UI.startTour()"); nxt(); nxt(); nxt(); nxt(); nxt()
+    pg.fill("#t1", "6"); pg.click("#b-run"); pg.wait_for_function("S.frames.length >= 1", timeout=300000)
+    pg.click(".tour-next"); pg.wait_for_timeout(500); t25 = pg.inner_text(".tour-text"); n25 = pg.inner_text(".tour-n")
+    pg.click("#b-stop"); pg.wait_for_function("!S.running", timeout=60000)
+    ok("B25 the tour's Run step refuses while a run is going and stays on its step", "already going" in t25 and n25 == "6 of 8", f"{n25}: {t25[:90]}")
+    pg.click(".tour-skip"); pg.evaluate("clearResults()")
 
     # ---- B1 example loads with SWMM results and the pond tied to the SWMM storage node; its run settings are filled in
     pg.fill("#t0", "3"); pg.fill("#t1", "4"); pg.fill("#outmin", "30")

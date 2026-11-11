@@ -67,9 +67,15 @@
     if (v === null || v === undefined || typeof v === "boolean") return 0; if (typeof v === "number") return Number.isInteger(v) && v >= 1 && v <= 4 ? v : 0;
     const s = String(v).trim().toUpperCase(); if (/^[1-4]$/.test(s)) return Number(s); const last = s.split("/").pop(); const i = "ABCD".indexOf(last); return i >= 0 && last.length === 1 ? i + 1 : 0;
   }
+  /* the hydrologic soil group of a soils polygon: the first of hsg, hydgrp and hydgrpdcd (SSURGO), in any letter case */
+  function hsgValue(p) {
+    const lk = Object.create(null); for (const k of Object.keys(p || {})) { const l = k.toLowerCase(); if (!(l in lk)) lk[l] = p[k]; }
+    for (const n of ["hsg", "hydgrp", "hydgrpdcd"]) if (lk[n] !== undefined && lk[n] !== null && lk[n] !== "") return lk[n];
+    return undefined;
+  }
   function rasterizeHsg(features, G) {
     const out = new Uint8Array(G.nx * G.ny); let unknown = 0;
-    for (const f of features) { const p = f.properties || {}, code = hsgCode(p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd); if (!code) { unknown++; continue; } fillRings(featureRings(f), G, (k) => { out[k] = code; }); }
+    for (const f of features) { const p = f.properties || {}, code = hsgCode(hsgValue(p)); if (!code) { unknown++; continue; } fillRings(featureRings(f), G, (k) => { out[k] = code; }); }
     return { hsg: out, unknown };
   }
   /* Manning n for NLCD classes: Kalyanapu, Burian & McPherson (2009), Table 2, for every class it lists (21-24, 31, 41-43, 52, 71, 81, 90, 95).
@@ -320,6 +326,6 @@
     return buf;
   }
 
-  const api = { readRaster, sampleRaster, hsgCode, rasterizeHsg, NLCD, NLCD_SOURCE, HSG, proj4UnitFt, lookupCrs, readDEM, featureRings, fillRings, buildGrid, cellOf, nearestOpen, coupleSwmm, geoTiff };
+  const api = { readRaster, sampleRaster, hsgCode, hsgValue, rasterizeHsg, NLCD, NLCD_SOURCE, HSG, proj4UnitFt, lookupCrs, readDEM, featureRings, fillRings, buildGrid, cellOf, nearestOpen, coupleSwmm, geoTiff };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FloodModel = api;
 })(typeof self !== "undefined" ? self : this);

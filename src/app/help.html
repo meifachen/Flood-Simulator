@@ -177,8 +177,7 @@
 <li>Two-way coupling is explicit (one coupling interval of lag).</li>
 <li>Inlets use sag equations at the local depth; on-grade interception curves are not used.</li>
 <li>A routed lake is a level pool with a constant area and no outlet.</li>
-<li>A routed lake's level is updated once per chunk of 2D steps, from the water that crossed its edge in that chunk. Chunks are kept short while the level moves, so it ends where a fine update ends (within 0.02 ft in the tests); but when a lake suddenly spills onto dry land, its lowest level can be off by a few tenths of a foot for a short time.</li>
-<li>Peak depths during fast changes depend somewhat on the 2D time step (the Courant number); a lower Courant number gives a closer peak at more cost.</li>
+<li>A routed lake's level is updated once per chunk of 2D steps (at most the coupling interval in two-way runs), from the water that crossed its edge and the outside inflow in that chunk. Chunks are kept short while the level moves and under the measured stability limit of a level-dependent outside inflow, so the level follows a fine update within about 0.03 ft in the tests. The first chunk after such an inflow starts is not limited, because its dependence on the level is not known yet.</li>
 <li>Cell velocity is the mean of the two face flows in each direction divided by the depth; it is a cell-average value.</li>
 <li>The local-inertial method is for subcritical flow: speeds above critical are capped (see the hatched cells).</li>
 <li>Building heights in 3D are assumed from footprint area unless the file has a <code>height</code> property.</li>

@@ -135,5 +135,25 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
     ok("W14 new boundaries clear the grid; Infinity, true and \"5\" areas are refused as given; a routed lake with node 0 is refused", r.gridCleared === true && /Build the grid first/.test(mA) &&
       /area Infinity \(acres\)/.test(areas[0]) && /area true \(acres\)/.test(areas[1]) && /area "5" \(acres\)/.test(areas[2]) && /cannot also take its level from SWMM node 0/.test(m0), [r.gridCleared, mA, ...areas, m0].join(" | "));
   }
+  // W15 a refused call undoes all its layers; the DEM's CRS cannot be changed under reprojected layers; unread fields named like built-in
+  // object properties or repeated in two cases are ignored; soils fields in capitals are read; each grid layer (and the CRS) clears the grid
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    const fc = (feats) => JSON.stringify({ type: "FeatureCollection", features: feats }), pt = (props, xy = [500750, 1599200]) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: xy } });
+    w.build(Object.assign({}, bopt, { lcTable: null }));
+    const mA = await refused(w.load({ buildings: text(US, "buildings.geojson"), landcover: many }));
+    const after = { bld: w.peek("BLD.length"), grid: w.peek("B !== null") };
+    const ll = proj4(dem.proj4, "EPSG:4326").forward([500750, 1599200]);
+    await w.load({ inlets: fc([pt({ node: "J3" }, ll)]) }); const x0 = w.peek("INLETS[0].x");
+    const mB = await refused(w.load({ epsg: 26917 })), x1 = w.peek("INLETS[0].x");
+    const mC = await refused(w.load({ inlets: fc([pt({ node: "J3", constructor: "x", __proto__x: 1, ID: 1, id: 2 })]) }));
+    const sq = (x, y, d) => [[[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]]];
+    const rs = await w.load({ soils: JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { HYDGRPDCD: "D" }, geometry: { type: "Polygon", coordinates: sq(500700, 1599150, 100) } }] }) });
+    const cleared = [];
+    for (const l of [{ buildings: text(US, "buildings.geojson") }, { landcover: forest }, { soils: null }, { epsg: dem.epsg }]) { w.build(Object.assign({}, bopt, { lcTable: null })); cleared.push(!!(await w.load(l)).gridCleared && w.peek("B === null")); }
+    ok("W15 a refused call undoes all its layers; a CRS change under reprojected inlets is refused; unread repeated or built-in-named fields are ignored; capital soils fields are read; buildings, land cover, soils and the CRS clear the grid",
+      /100 distinct values/.test(mA) && after.bld === 0 && after.grid && /already in EPSG 2236/.test(mB) && x1 === x0 && mC === "" && rs.soils.groups.D === 1 && cleared.every(Boolean),
+      `${mA.slice(0, 40)} -> buildings ${after.bld}, grid kept ${after.grid} | ${mB.slice(0, 60)} | "${mC}" | soils ${JSON.stringify(rs.soils.groups)} | cleared ${cleared.join()}`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

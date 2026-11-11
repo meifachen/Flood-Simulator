@@ -152,8 +152,9 @@ def main(a):
             "surface_spread_ft": round(spread, 2), "acres_in_domain": round(g.area / 43560, 1), "acres_whole_lake_nhd": full_ac})
         print(f"lake {name}: lidar {lvl:.2f} ft (surface spread {spread:.2f} ft); City SAIP {city} ft; using {use:.2f} ft")
     start = "start at" if a.routed else "are held at"
-    if a.lake_levels == "city": note(f"Lake levels {start} the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are level boundaries in the 2D")
-    else: note(f"Lake levels {start} the lidar water surface (2018 survey), not a flood stage; lakes are level boundaries in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
+    kind = "routed level pools" if a.routed else "level boundaries"
+    if a.lake_levels == "city": note(f"Lake levels {start} the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are {kind} in the 2D")
+    else: note(f"Lake levels {start} the lidar water surface (2018 survey), not a flood stage; lakes are {kind} in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
     if a.routed: note("Lakes are routed: each is a level pool over its whole NHD area (area_ac) that rises with the rain on it, the water the 2D spills into it and the SWMM outfalls on it (two-way runs); it has no outlet, so its rise is an upper bound")
     json.dump(fc(lakes), open(os.path.join(a.out, "lakes.geojson"), "w"))
     lake_geoms = [(shape(f["geometry"]), f["properties"]) for f in lakes]

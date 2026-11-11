@@ -72,10 +72,10 @@
         const s = stages[(info >> 4) & 255]; st[4 * k] = Math.max(s - a[4 * k], 0);
       }
     }
-    step(dt, rain, drain, tHours) {
+    step(dt, rain, drain, tHours, theta) {
       const g = this.g, N = g.N, nx = g.nx, ny = g.ny, a = g.aux, p = g.prm, st = this.st, r = this.r, acc = this.acc, nqx = this.nqx, dx = g.dx;
       const qo = this.q, q = this.qo; this.q = q; this.qo = qo;   // qo: previous step, q: this step
-      const sqKN = Math.sqrt(KN), gdt = G * dt, th = this.theta, th2 = (1 - th) / 2, lim = this.lim;
+      const sqKN = Math.sqrt(KN), gdt = G * dt, th = theta ?? this.theta, th2 = (1 - th) / 2, lim = this.lim;
       let hm = 0;
       // (A) faces from the previous step's limited flows (de Almeida et al. 2012 weighting with the two neighbouring faces)
       const edgeQ = (k, opp, e) => {
@@ -164,7 +164,7 @@
     }
     async chunk(o) {   // o: {dt, n, rain, drain, stages, tHours, pipes:[{cell, cda (sq ft), lake}]}
       this.setBoundary(o.stages); this.stages = o.stages; this.pipes = o.pipes || []; if (o.sources) this.setSources(o.sources); let hm = 0;
-      for (let i = 0; i < o.n; i++) hm = Math.max(hm, this.step(o.dt, o.rain, o.drain, o.tHours));
+      for (let i = 0; i < o.n; i++) hm = Math.max(hm, this.step(o.dt, o.rain, o.drain, o.tHours, o.theta));
       return hm;
     }
     async readCells(cells) { const h = new Float32Array(cells.length); for (let i = 0; i < cells.length; i++) h[i] = this.st[4 * cells[i]]; return h; }
@@ -401,7 +401,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const d = this.dev, g = this.g;
       if (this.lost) throw new Error("GPU device lost: " + this.lost);
       const u = new ArrayBuffer(384), ui = new Uint32Array(u), uf = new Float32Array(u);
-      ui[0] = g.nx; ui[1] = g.ny; ui[2] = this.nqx; ui[3] = this.nf; uf[4] = g.dx; uf[5] = o.dt; uf[6] = o.rain; uf[7] = o.drain; uf[8] = o.tHours; uf[9] = G; uf[10] = KN; uf[11] = HMIN; uf[12] = g.theta ?? 0.8;
+      ui[0] = g.nx; ui[1] = g.ny; ui[2] = this.nqx; ui[3] = this.nf; uf[4] = g.dx; uf[5] = o.dt; uf[6] = o.rain; uf[7] = o.drain; uf[8] = o.tHours; uf[9] = G; uf[10] = KN; uf[11] = HMIN; uf[12] = o.theta ?? g.theta ?? 0.8;
       for (let i = 0; i < Math.min(o.stages.length, 64); i++) uf[16 + i] = o.stages[i];
       if ((o.pipes || []).length > 4) throw new Error("The GPU solver handles at most 4 pipe connections; use the CPU for more");
       const pipes = o.pipes || []; uf[13] = pipes.length;
@@ -489,7 +489,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (!(Number.isInteger(r.lake) && r.lake >= 0 && r.lake < K)) throw new Error(`Routed lake ${i + 1}: lake ${r.lake} is not one of the ${K} level boundaries`);
       if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${i + 1}: area ${r.areaFt2} is not a positive number`);
       if (!Number.isFinite(r.level0)) throw new Error(`Routed lake ${i + 1}: starting level ${r.level0} is not a number`);
-      return { lake: r.lake, area: r.areaFt2, level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0 };
+      return { lake: r.lake, area: r.areaFt2, level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0, kExt: 0, lastRate: null, lastLv: 0 };
     });
     if (routed.length) {
       const byLake = new Map();
@@ -513,10 +513,13 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
      * H = level - lip (lowest open ground next to the lake) and Lf the edge length, so dQ/dh = sqrt(g) Lf (2/3)^1.5 1.5 H^0.5. An eighth of the limit is used: the chunk-held level still lags the edge flux, and a lake that starts well above dry land loses its first water faster than this crest formula says. */
     /* Outside inflow that depends on the level (SWMM outfalls taking the lake as their stage) is not in that formula, so each lake also keeps
      * an adaptive cap that keeps its level change to about 0.02 ft per chunk: it starts at 1 s, shrinks in proportion when a chunk moved the
-     * level more than that, and grows by half each chunk that moved it less (no cap once it passes an hour). */
-    const lakeDt = () => { let m = Infinity; for (const r of routed) { m = Math.min(m, r.cap); const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
+     * level more than that, and grows by half each chunk that moved it less (no cap once it passes an hour). A cap that only reacts
+     * can still grow past the stability limit of a level-dependent outside inflow, so each lake also measures that dependence from one
+     * chunk to the next, k = -d(outside inflow rate)/d(level) (cfs/ft), and keeps its chunks under A/k, half the explicit limit 2A/k.
+     * A level that reverses by more than 0.002 ft two chunks running halves the cap as well. */
+    const lakeDt = () => { let m = Infinity; for (const r of routed) { m = Math.min(m, r.cap, r.kExt > 0 ? Math.max(0.05, r.area / r.kExt) : Infinity); const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
       const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.05, 0.25 * r.area / dqdh)); } return m; };
-    // the lowest ground of the grid: water drains no lower than this, so a lake level below it can only be a numerical failure
+    // the lowest ground of the grid: water drains over the land no lower than this
     let zLow = Infinity; if (routed.length) for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) !== 1) zLow = Math.min(zLow, g.aux[4 * k]);
     if (o.lakeInflow !== undefined && o.lakeInflow !== null) {
       if (typeof o.lakeInflow !== "function") throw new Error("lakeInflow must be a function");
@@ -583,9 +586,15 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         for (const q of perCell.values()) if (q > 0) hSrc = Math.max(hSrc, Math.min(hm + q / A * span, Math.pow(q / (g.dx * sqG), 2 / 3)));
       }
       // step size: Courant number cfl at the deepest water expected in this chunk (the last reading, point inflows, rain on the wettest cell)
-      const dtC = Math.min(dtMax, cfl * g.dx / Math.sqrt(G * Math.max(hm, hSrc, Math.max(hm, 0.05) + rain * maxMult * span)));
+      const dtCour = cfl * g.dx / Math.sqrt(G * Math.max(hm, hSrc, Math.max(hm, 0.05) + rain * maxMult * span)), dtC = Math.min(dtMax, dtCour);
       const n = Math.max(1, Math.ceil(span / dtC)), dt = span / n;
-      const co = { dt, n, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
+      // The de Almeida et al. (2012) weighting smooths each face flow toward its neighbors once per step, a diffusion of about
+      // (1 - theta) dx^2 / (2 dt). Taken as is, a shorter step (a short chunk, a low dtMax) would smooth more per second and slow the flow.
+      // Scaling (1 - theta) with dt / (0.9 x the Courant step) keeps the smoothing per second near that of the Courant step, so the answer
+      // does not depend on how finely the time is cut. Steps within 90% of the Courant step (every step of a chunk of 10 or more steps)
+      // keep theta as given. One value per chunk, rounded to Float32, is used by both back ends.
+      const theta = Math.fround(1 - (1 - (g.theta ?? 0.8)) * Math.min(1, dt / (0.9 * dtCour)));
+      const co = { dt, n, theta, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
       let hmC = 0, done = n;
       if (solver.kind === "cpu") {
         // the CPU runs the chunk in pieces of at most 10 steps, yielding between them so a stop request is seen within a second or two;
@@ -601,7 +610,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (o.afterChunk) await o.afterChunk(t / 3600, (t + dt * done) / 3600, solver);
       if (routed.length) {
         // the depth each edge cell had to be given (+) or lost (-) to hold the lake level over this chunk, since the last reading reset the tallies
-        const ext = o.lakeInflow ? await o.lakeInflow(t / 3600, (t + dt * done) / 3600, routed.map((r) => r.level)) : null;
+        const levels0 = routed.map((r) => r.level), ext = o.lakeInflow ? await o.lakeInflow(t / 3600, (t + dt * done) / 3600, levels0.slice()) : null;
         if (o.lakeInflow && !(ext && ext.length === routed.length && Array.from(ext).every((v) => typeof v === "number" && Number.isFinite(v))))
           throw new Error(`Inflow to the routed lakes is missing or not a number at hour ${(t / 3600).toFixed(2)} (${JSON.stringify(ext && Array.from(ext))})`);
         for (const [i, r] of routed.entries()) {
@@ -610,11 +619,18 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           const v2d = dv * A, vr = rain * dt * done * r.area, ve = ext ? ext[i] : 0;
           const d = (v2d + vr + ve) / r.area;
           r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.level += d;
-          const used = dt * done;
-          if (Math.abs(d) > 0.02) r.cap = Math.max(0.05, used * 0.02 / Math.abs(d)); else if (Number.isFinite(r.cap)) r.cap = Math.min(used, r.cap) * 1.5 > 3600 ? Infinity : Math.min(used, r.cap) * 1.5;
+          const used = dt * done, rate = ve / used, lv = levels0[i];
+          // level dependence of the outside inflow, measured between this chunk and the last (only from a level change large enough to read)
+          if (ext && r.lastRate !== null && Math.abs(lv - r.lastLv) > 1e-4) { const k = -(rate - r.lastRate) / (lv - r.lastLv); r.kExt = Math.max(k > 0 ? k : 0, r.kExt * 0.9); }
+          if (ext) { r.lastRate = rate; r.lastLv = lv; }
+          if (Math.abs(d) > 0.02) r.cap = Math.max(0.05, used * 0.02 / Math.abs(d));
+          else if (d * r.lastD < 0 && Math.min(Math.abs(d), Math.abs(r.lastD)) > 0.002) r.cap = Math.max(0.05, used * 0.5);
+          else if (Number.isFinite(r.cap)) r.cap = Math.min(used, r.cap) * 1.5 > 3600 ? Infinity : Math.min(used, r.cap) * 1.5;
           r.lastD = d;
-          // a lidar lake's cells are its flattened water surface, so the level may fall below them; it cannot fall below the lowest ground of the grid
-          if (r.level < Math.min(zLow, r.start) - 0.01) throw new Error(`Routed lake ${r.name} fell to ${r.level.toFixed(2)} ft, below the lowest ground of the grid (${zLow.toFixed(2)} ft), at hour ${(t / 3600).toFixed(2)}: it lost more water than it can, a numerical failure`);
+          // Only the 2D exchange is checked: a lake loses water to the land only down to its edge, so its 2D share alone cannot take it below
+          // the grid's lowest ground. Outside withdrawals (water flowing back into SWMM) may lower a lidar lake below its flattened surface.
+          const lv2d = r.start + (r.gain2d + r.gainRain) / r.area;
+          if (lv2d < Math.min(zLow, r.start) - 0.01) throw new Error(`Routed lake ${r.name}: the water it exchanged with the 2D grid alone would put it at ${lv2d.toFixed(2)} ft, below the lowest ground of the grid (${zLow.toFixed(2)} ft), at hour ${(t / 3600).toFixed(2)}: a numerical failure`);
         }
         lakeSeries.push({ tHours: (t + dt * done) / 3600, levels: routed.map((r) => r.level) });
       }

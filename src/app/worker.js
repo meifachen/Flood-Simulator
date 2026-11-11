@@ -35,7 +35,14 @@ function toDemCrs(gj, what) {
 function parseJson(text, what) { try { const j = JSON.parse(text); if (!j || !Array.isArray(j.features)) throw new Error("no features"); return j; } catch (e) { throw new Error(`${what}: not a GeoJSON FeatureCollection (${e.message})`); } }
 
 // --------------------------------------------------------------- commands
+/* load: one call may carry several layers. If any of them is refused, every layer of the call is undone, so a refused call leaves the
+ * worker exactly as it was (the DEM's CRS fields included). */
 async function load(a) {
+  const saved = { DEM, B, LCR, SOIL, INLETS, BLD, BOUND, MODEL, INP, OUT, CAT }, crs = DEM && { epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt };
+  try { return await loadAll(a); }
+  catch (e) { ({ DEM, B, LCR, SOIL, INLETS, BLD, BOUND, MODEL, INP, OUT, CAT } = saved); if (DEM && crs) Object.assign(DEM, crs); throw e; }
+}
+async function loadAll(a) {
   if (a.catalog) CAT = a.catalog;
   const res = {};
   const regrid = () => { if (B) { B = null; res.gridCleared = true; } };   // the grid is built from the layers: a new one accepted means building it again
@@ -49,6 +56,8 @@ async function load(a) {
     res.cleared = true;
   }
   if (!DEM) throw new Error("Load a DEM first");
+  // the vector layers already loaded were placed in the DEM's CRS; once it has one, changing it would leave them in the old one
+  if (a.epsg && !a.dem && DEM.proj4 && a.epsg !== DEM.epsg && (BLD.length || BOUND.length || INLETS)) throw new Error(`The DEM is already in EPSG ${DEM.epsg}, and the buildings, boundaries or inlets loaded were placed in it; load the DEM again to use EPSG ${a.epsg}`);
   if (a.epsg && !a.dem) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); regrid(); }
   const z = DEM.data; let zmin = Infinity, zmax = -Infinity; for (const v of z) if (v === v) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
   res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, zmin, zmax, valid: DEM.valid };
@@ -64,7 +73,7 @@ async function load(a) {
   }
   if ("soils" in a) {
     let soil = null; res.soils = null;
-    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); soil = { kind: "polygons", feats: r.feats }; const g = {}; let dual = 0; for (const f of r.feats) { const p = f.properties || {}, v = p.hsg ?? p.HSG ?? p.hydgrp ?? p.HYDGRP ?? p.hydgrpdcd, c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
+    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); soil = { kind: "polygons", feats: r.feats }; const g = {}; let dual = 0; for (const f of r.feats) { const v = Model.hsgValue(f.properties || {}), c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
     else if (a.soils) {
       const R = await Model.readRaster(a.soils, GeoTIFF, CAT, "Soils"), g = {}; let other = 0;
       for (const v of R.data) { if (v !== v) continue; const c = Model.hsgCode(v); if (c) g["ABCD"[c - 1]] = (g["ABCD"[c - 1]] || 0) + 1; else other++; }
@@ -89,8 +98,9 @@ async function load(a) {
         const pts = g && g.type === "Point" ? [g.coordinates] : g && g.type === "MultiPoint" ? g.coordinates : null;
         if (!pts) { skipped.push(fi); return; }
         // property names in any letter case (shapefile fields are often upper case); the same name in two cases is refused
-        const p = {}, seen = {};
-        for (const k of Object.keys(p0)) { const lk = k.toLowerCase(); if (lk in seen) errs.push(`inlet ${fi}: ${lk} is given twice (${seen[lk]} and ${k}); keep one`); else { seen[lk] = k; p[lk] = p0[k]; } }
+        // (only the names read here are checked for duplicates; other fields are left alone)
+        const p = Object.create(null), seen = Object.create(null);
+        for (const k of Object.keys(p0)) { const lk = k.toLowerCase(); if (!INLET_KEYS.has(lk)) continue; if (lk in seen) errs.push(`inlet ${fi}: ${lk} is given twice (${seen[lk]} and ${k}); keep one`); else { seen[lk] = k; p[lk] = p0[k]; } }
         const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
         if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
         // inlet_type, not type: GIS inventories often carry their own "type" field (CURB_INLET, MANHOLE ...).
@@ -141,6 +151,7 @@ async function load(a) {
   return res;
 }
 
+const INLET_KEYS = new Set(["node", "inlet_type", "type", "perimeter_ft", "weir_length_ft", "open_area_sqft", "orifice_area_sqft", "cw", "co", "curb_length_ft", "curb_height_ft", "depression_width_ft", "clog", "rim_ft"]);
 /* a note when a raster's CRS cannot be matched to the DEM's (it is then read as if in the DEM's CRS) */
 function crsNote(R, what) {
   if (!R.proj4 && R.epsg !== DEM.epsg) return `${what} has no known CRS; it is taken to be in the DEM's CRS`;
