@@ -51,7 +51,7 @@ Use `--zfactor 3.2808333333 --zunits ft` to convert meter elevations to US surve
 |---|---|---|
 | What runs SWMM | You, beforehand. The app reads your `.out`. | The app: EPA SWMM 5.2.4 compiled to WebAssembly, run in step with the 2D. Results are identical to the native engine. |
 | Into the 2D | Node flooding (cfs) at each node's location | Node overflow every coupling interval |
-| Back into SWMM | Nothing | Surface water through inlets: weir flow while the node is below its rim, orifice flow when it is surcharged, capped at half the water standing in the cell. Inlets come from an inlets file (each at its own cell, with its own size), or default to one at each manhole. |
+| Back into SWMM | Nothing | Surface water through inlets: weir flow while the node is below its rim, orifice flow when it is surcharged, limited each step by the water in the cell, with SWMM sent the volume actually taken (independent of cell size). Inlets come from an inlets file (each at its own cell, with its own size), or default to one at each manhole. |
 | Level boundaries | Storage or outfall head from the `.out` | Live storage or outfall head |
 | Outputs | Results in the app | Also the coupled SWMM report (`.rpt`) and results (`.out`) |
 

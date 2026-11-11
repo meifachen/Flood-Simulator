@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.3.2",
- "bytes": 5629450,
- "sha256": "2aa1e057d07e18e33db3ffe94c4ce9d67d76793ce2c0dc1d4195568f837a941b",
+ "version": "0.3.3",
+ "bytes": 5629790,
+ "sha256": "ce74b200c98c808fa69d9df7bb0fa843e191ec6a4f56459638adf0c1de4c2ca2",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -102,7 +102,7 @@
   },
   {
    "file": "src/app/help.html",
-   "sha256": "9e897c223b1e034000e5af8692f08e41b3738dd19d8cac41b8725d207b4bfbd5"
+   "sha256": "0ec9c68b454ff2112e2f45dc43f386cba33f689b620695080673e8e481b3e3f9"
   },
   {
    "file": "src/app/index.html",

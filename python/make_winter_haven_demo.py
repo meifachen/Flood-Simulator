@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Real-site example: downtown Winter Haven, Florida, around Lake Martha, built only from public data.
 
-    python python/make_winter_haven_demo.py examples/winter_haven [--cell 3] [--margin 400] [--ari 25]
+    python python/make_winter_haven_demo.py examples/winter_haven [--cell 3] [--margin 400] [--ari 25] [--lake-levels lidar|city]
 
 Downloads, in NAD83 / Florida West (ftUS), EPSG 2237:
   - storm sewer: City of Winter Haven stormwater inventory (ArcGIS Online, public view): pipes with inverts, sizes and from/to structures,
     structures (inlets, manholes, ends) and the Lake Martha outfall basin;
   - ground: USGS 3DEP 1 m lidar DEM (FL Peninsular FDEM 2018), resampled to --cell ft, NAVD88 converted to feet;
-  - lakes: USGS NHD waterbodies (level boundaries; the level is the lidar water surface);
+  - lakes: USGS NHD waterbodies (level boundaries). --lake-levels lidar (default) holds each lake at its lidar water surface;
+    --lake-levels city holds it at the WaterLevel of the City's SAIP ICPR v4 lake polygons. Both are written to lakes.geojson and the report;
+  - vertical datum: the lidar is NAVD 88. The City's layers do not state a datum; they are taken as NAVD 88 with no shift, and the
+    NGVD 29 to NAVD 88 shift at the site (NGS NCAT, VERTCON 3.0) is recorded so the effect of the other choice can be judged;
   - buildings: FEMA USA Structures footprints;
   - land cover: NLCD 2021 (MRLC); soils: USDA SSURGO hydrologic soil groups (Soil Data Access);
   - rain: NOAA Atlas 14 depth-duration values at the site, arranged as a nested (balanced) 24-hour storm in 5-minute steps.
@@ -34,6 +37,9 @@ TNM = "https://tnmaccess.nationalmap.gov/api/v1/products"
 NLCD_WCS = "https://www.mrlc.gov/geoserver/mrlc_download/NLCD_2021_Land_Cover_L48/wcs"
 SDA = "https://sdmdataaccess.sc.egov.usda.gov/Tabular/post.rest"
 PFDS = "https://hdsc.nws.noaa.gov/cgi-bin/hdsc/new/cgi_readH5.py"
+SAIP_LAKES = "SAIP_Preliminary_Results_Map_WFL1/FeatureServer/5"   # City SAIP (ICPR v4) lake polygons with WaterLevel
+NCAT = "https://geodesy.noaa.gov/api/ncat/llh"
+NCAT_FALLBACK_M = -0.284   # NCAT/VERTCON 3.0 at 28.0324 N, 81.7219 W, queried 2026-11-10: NAVD 88 = NGVD 29 - 0.284 m (sigma 0.023 m)
 ROUGH = {"CONCRETE": 0.013, "CORRUGATED_METAL": 0.024, "CLAY": 0.013, "PVC": 0.011, "HDPE": 0.012, "DUCTILE_IRON": 0.013, "CAST_IRON": 0.013}
 FT_PER_M = 1 / 0.3048
 
@@ -48,6 +54,16 @@ def arcgis(url, bbox, fields="*", where="1=1"):
         feats += d["features"]
         if not d.get("properties", {}).get("exceededTransferLimit") and not d.get("exceededTransferLimit"): return feats
         off = len(feats)
+
+
+def get_retry(url, tries=3, **kw):
+    """GET with a few retries: the national map services time out now and then."""
+    for i in range(tries):
+        try:
+            r = requests.get(url, **kw); r.raise_for_status(); return r
+        except requests.RequestException as e:
+            if i == tries - 1: raise
+            print(f"  {url}: {e.__class__.__name__}; retrying"); import time; time.sleep(10)
 
 
 def fc(feats, crs=EPSG):
@@ -94,9 +110,26 @@ def main(a):
             v = dem[max(rr - 1, 0):rr + 2, max(c - 1, 0):c + 2]; v = v[v > -9000]; return float(np.median(v)) if v.size else None
         return None
 
+    # ---- vertical datum: lidar NAVD 88; the City's layers state none. Record the NGVD 29 -> NAVD 88 shift at the site.
+    clon, clat = to_ll.transform((x0 + x1) / 2, (y0 + y1) / 2)
+    try:
+        d = requests.get(NCAT, params={"lat": f"{clat:.5f}", "lon": f"{clon:.5f}", "inDatum": "nad83(2011)", "outDatum": "nad83(2011)", "inVertDatum": "ngvd29", "outVertDatum": "navd88", "orthoHt": "40.0"}, timeout=60).json()
+        shift_m, sig_m, how = float(d["destOrthoht"]) - 40.0, float(d["sigOrthoht"]), f"NGS NCAT (VERTCON {d.get('vertconVersion')}) at {clat:.4f}, {clon:.4f}"
+    except Exception as e:
+        shift_m, sig_m, how = NCAT_FALLBACK_M, 0.023, f"NGS NCAT not reached ({e.__class__.__name__}); value from the 2026-11-10 query at 28.0324, -81.7219"
+    ngvd_to_navd_ft = shift_m * FT_PER_M
+    rep["datum"] = {"horizontal": "NAD83 / Florida West (ftUS), EPSG 2237; 3DEP NAD83(2011) taken as NAD83 with no grid shift (under 1 m here)",
+                    "ground": "NAVD 88 (3DEP lidar, FL Peninsular FDEM 2018), meters converted to US survey feet",
+                    "city_layers": "not stated in the City's service metadata (pipe inverts, SAIP lake levels); taken as NAVD 88 with no shift",
+                    "ngvd29_to_navd88_ft": round(ngvd_to_navd_ft, 3), "ngvd29_to_navd88_sigma_ft": round(sig_m * FT_PER_M, 3), "ngvd29_to_navd88_source": how,
+                    "meaning": "if the City's elevations are NGVD 29, their NAVD 88 values are lower by this much"}
+    note(f"Vertical datum: ground is NAVD 88; the City's inverts and lake levels state no datum and are taken as NAVD 88. If they are NGVD 29, NAVD 88 = NGVD 29 {ngvd_to_navd_ft:+.2f} ft here ({how})")
+
     # ---- lakes: NHD waterbodies in the domain; level = median lidar surface inside (hydro-flattened water)
-    r = requests.get(NHD + "/query", params={"geometry": ",".join(map(str, bbox)), "geometryType": "esriGeometryEnvelope", "inSR": EPSG, "spatialRel": "esriSpatialRelIntersects",
+    r = get_retry(NHD + "/query", params={"geometry": ",".join(map(str, bbox)), "geometryType": "esriGeometryEnvelope", "inSR": EPSG, "spatialRel": "esriSpatialRelIntersects",
                                              "where": "ftype=390", "outFields": "gnis_name,ftype,areasqkm", "outSR": EPSG, "f": "geojson"}, timeout=120).json()
+    saip = arcgis(f"{CITY}/{SAIP_LAKES}", bbox, fields="Waterbody,WaterLevel,Modeled")
+    rep["sources"]["lake_levels_city"] = "City of Winter Haven SAIP Preliminary Results (ICPR v4), LakePolygons layer, WaterLevel field; datum not stated"
     lakes = []
     for f in r["features"]:
         g = shape(f["geometry"]).intersection(dom); name = f["properties"].get("gnis_name") or f["properties"].get("GNIS_NAME") or "Lake"
@@ -104,10 +137,20 @@ def main(a):
         from rasterio.features import geometry_mask
         msk = ~geometry_mask([mapping(g.buffer(-30))], (ny, nx), tf); vals = dem[msk & valid]
         lvl = float(np.median(vals)); spread = float(np.percentile(vals, 95) - np.percentile(vals, 5))
-        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(lvl, 2)}, "geometry": mapping(g)})
-        rep["checks"].setdefault("lakes", []).append({"name": name, "level_ft": round(lvl, 2), "surface_spread_ft": round(spread, 2), "acres_in_domain": round(g.area / 43560, 1)})
-        print(f"lake {name}: level {lvl:.2f} ft (lidar surface spread {spread:.2f} ft)")
-    note("Lake levels are fixed at the lidar water surface (2018 survey), not a flood stage; lakes are level boundaries in the 2D")
+        # the City's lake: same name, else the SAIP polygon that overlaps most
+        cand = [c for c in saip if c["geometry"] and (c["properties"].get("Waterbody") or "").strip().lower() == name.strip().lower()]
+        if not cand: cand = sorted([c for c in saip if c["geometry"] and shape(c["geometry"]).intersects(g)], key=lambda c: -shape(c["geometry"]).intersection(g).area)[:1]
+        city = float(cand[0]["properties"]["WaterLevel"]) if cand and cand[0]["properties"].get("WaterLevel") is not None else None
+        use = city if (a.lake_levels == "city" and city is not None) else lvl
+        if a.lake_levels == "city" and city is None: note(f"{name}: no City SAIP water level; held at the lidar level {lvl:.2f} ft")
+        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city}, "geometry": mapping(g)})
+        rep["checks"].setdefault("lakes", []).append({"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city,
+            "city_minus_lidar_ft": None if city is None else round(city - lvl, 2),
+            "city_minus_lidar_if_city_is_ngvd29_ft": None if city is None else round(city + ngvd_to_navd_ft - lvl, 2),
+            "surface_spread_ft": round(spread, 2), "acres_in_domain": round(g.area / 43560, 1)})
+        print(f"lake {name}: lidar {lvl:.2f} ft (surface spread {spread:.2f} ft); City SAIP {city} ft; using {use:.2f} ft")
+    if a.lake_levels == "city": note("Lake levels are the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are level boundaries in the 2D")
+    else: note("Lake levels are fixed at the lidar water surface (2018 survey), not a flood stage; lakes are level boundaries in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
     json.dump(fc(lakes), open(os.path.join(a.out, "lakes.geojson"), "w"))
     lake_geoms = [(shape(f["geometry"]), f["properties"]) for f in lakes]
 
@@ -145,10 +188,18 @@ def main(a):
         lake = next((pr for g, pr in lake_geoms if g.distance(Point(n["x"], n["y"])) < 40), None)
         n["outfall"] = (n["dn"] == 0) and (lake is not None or not inside or n["type"] in ("MITERED_END", "PROJECTED_END", "HEADWALL"))
         n["lake"] = lake
-        if gz is None: gz = n["invert"] + 4; issues.append(f"{nid}: outside the DEM; rim set 4 ft above the invert")
-        n["rim"] = gz
+        if gz is None: gz = n["invert"] + 4; n["off_dem"] = True; issues.append(f"{nid}: outside the DEM; rim set 4 ft above the invert")
+        n["rim"] = gz; n["lidar"] = None if n.get("off_dem") else gz
         if n["rim"] - n["invert"] < 0.5 and not n["outfall"]: issues.append(f"{nid}: lidar ground {gz:.2f} ft is within 0.5 ft of the invert {n['invert']:.2f} ft; depth set to 0.5 ft"); n["rim"] = n["invert"] + 0.5
         (out_lake if n["outfall"] and lake else out_free if n["outfall"] else []).append(nid)
+    # inverts at or above the lidar ground: a sign of a datum difference, a rim-less record or a wrong invert in the inventory
+    above = sorted([(round(n["invert"] - n["lidar"], 2), nid, n["type"]) for nid, n in nodes.items() if n.get("lidar") is not None and n["invert"] > n["lidar"]], reverse=True)
+    rep["checks"]["inverts_above_lidar_ground"] = {"count": len(above), "of_nodes_on_the_dem": sum(1 for n in nodes.values() if n.get("lidar") is not None),
+        "over_1_ft": sum(1 for v in above if v[0] > 1), "over_2_ft": sum(1 for v in above if v[0] > 2),
+        "still_above_if_city_is_ngvd29": sum(1 for v in above if v[0] + ngvd_to_navd_ft > 0),
+        "nodes": [{"node": nid, "type": t, "invert_minus_ground_ft": v} for v, nid, t in above]}
+    if above: note(f"{len(above)} structures have an inventory invert above the lidar ground (up to {above[0][0]:.1f} ft); those that are not outfalls were given a 0.5 ft depth. "
+                   f"{rep['checks']['inverts_above_lidar_ground']['still_above_if_city_is_ngvd29']} would still be above if the inventory were NGVD 29. Listed in checks.inverts_above_lidar_ground")
     sinks = [nid for nid, n in nodes.items() if n["dn"] == 0 and not n["outfall"]]
     for nid in sinks: nodes[nid]["outfall"] = True; out_free.append(nid); issues.append(f"{nid}: no pipe leaves this node; made a free outfall")
     rep["checks"]["sewer"] = {"pipes": len(links), "nodes": len(nodes), "outfalls_to_lakes": len(out_lake), "free_outfalls": len(out_free), "issues": issues}
@@ -234,7 +285,7 @@ def main(a):
 
     ex = {"name": "Winter Haven, FL – Lake Martha (real public data)", "epsg": EPSG, "units": "US", "dem": "dem.tif", "buildings": "buildings.geojson", "boundaries": "lakes.geojson",
           "inp": "model.inp", "inlets": "inlets.geojson", "landcover": "landcover.tif", "soils": "soils.geojson",
-          "note": f"Real storm sewer (City of Winter Haven inventory) on 2018 lidar; lakes held at their 2018 lidar levels. Loading fills in a two-way run at 12 ft cells, 8 to 16 h, with rain from the SWMM gauge ({a.ari}-year 24-hour Atlas 14 storm, {tot:.2f} in) and no water taken at manholes.",
+          "note": f"Real storm sewer (City of Winter Haven inventory) on 2018 lidar; lakes held at {'the City SAIP (ICPR v4) levels' if a.lake_levels == 'city' else 'their 2018 lidar levels'}. Loading fills in a two-way run at 12 ft cells, 8 to 16 h, with rain from the SWMM gauge ({a.ari}-year 24-hour Atlas 14 storm, {tot:.2f} in) and no water taken at manholes.",
           "sources": rep["sources"],
           "settings": {"coupling": "two", "rain": "gauge", "gauge": f"ATLAS14_{a.ari}Y", "defaultInlets": False, "cellFt": 12, "t0": 8, "t1": 16, "outputMin": 15}}
     json.dump(ex, open(os.path.join(a.out, "example.json"), "w"), indent=1)
@@ -244,5 +295,6 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("out"); ap.add_argument("--cell", type=float, default=3); ap.add_argument("--margin", type=float, default=400)
-    ap.add_argument("--ari", type=int, default=25); ap.add_argument("--cache", default=os.path.join(os.path.expanduser("~"), ".cache", "fsim"))
+    ap.add_argument("--ari", type=int, default=25); ap.add_argument("--lake-levels", choices=["lidar", "city"], default="lidar")
+    ap.add_argument("--cache", default=os.path.join(os.path.expanduser("~"), ".cache", "fsim"))
     main(ap.parse_args())

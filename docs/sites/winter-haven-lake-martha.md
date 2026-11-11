@@ -1,4 +1,4 @@
-# Real-site test: Winter Haven, Florida (Lake Martha), November 2026
+# Real-site test: Winter Haven, Florida (Lake Martha), November 2026 (updated for 0.3.3)
 
 ## Why this site
 
@@ -17,7 +17,7 @@ It has a real storm sewer in a public inventory: the City of Winter Haven's ArcG
 | Storm sewer | City of Winter Haven inventory (pipes, inlets, manholes, outlets) | 145 pipes, 162 nodes, 84 curb and grate inlets, 15 outfalls to lakes, 6 free outfalls. 2 pipes without inverts were skipped |
 | Rims | USGS 3DEP 1 m lidar at each structure | The inventory has no rim elevations. 4 nodes had lidar ground within 0.5 ft of the invert, and their depth was set to 0.5 ft |
 | Ground | 3DEP 1 m lidar (FL Peninsular FDEM 2018) | Resampled to 3 ft in EPSG 2237; NAVD88 ft |
-| Lakes | USGS NHD | Held at the 2018 lidar water surface: Martha 139.19 ft, Silver 142.73 ft, Maude 139.17 ft |
+| Lakes | USGS NHD | Held at the 2018 lidar water surface (Martha 139.19 ft, Silver 142.73 ft, Maude 139.17 ft), or with `--lake-levels city` at the City's SAIP levels (141.3, 145.2, 139.6 ft) |
 | Buildings | FEMA USA Structures | 352 footprints |
 | Land cover | NLCD 2021 | 30 m |
 | Soils | SSURGO hydrologic soil groups | Groups A and A/D |
@@ -36,36 +36,99 @@ The first whole-storm run at 6 ft gave a deepest water of 66.4 ft and needed 700
 - **Test:** `test_model.js` checks a courtyard against a hand-computed answer. It fails on 0.3.1 (11 times the rain) and passes now.
 - **After the fix:** the whole storm at 6 ft gives a deepest water of 5.51 ft in 224,896 steps (249.8 s on the GPU, down from 703.5 s), and the 8-hour window takes 71,835 steps.
 
-### 2. Inlet capture depends on cell size (open; the next fix to make)
+### 2. Inlet capture depended on cell size (fixed in 0.3.3)
 
-Each inlet may take at most half the water in its cell per 30-second coupling interval. That cap is proportional to cell area, so it binds far below real inlet capacity on fine grids.
+Each inlet could take at most half the water in its cell per 30-second coupling interval. That cap is proportional to cell area, so it bound far below the inlet equations on fine grids.
 
-Same storm, 8–16 h, two-way, on the GPU:
+- **Fix:** an inlet asks for the rate the weir and orifice equations give at the start of the interval. Each engine step it takes that rate, or the water left in its cell if that is less. SWMM is sent the volume actually taken, and node overflow is spread on the ground in the next interval. The cap is now an option (`capFrac`), off by default.
+- **Test:** C9 in `test_couple2way.js` holds the same depth over the same inlet on a 12 ft and a 6 ft grid. Before the fix, the 12 ft grid took 4.000 times as much water; now the ratio is 1.000.
 
-| Cell | Water into inlets | Overflow out of nodes | Area deeper than 0.25 ft | Deepest |
-|---|---|---|---|---|
-| 12 ft | 488,918 cf | 200,393 cf | 29.17 ac | 5.26 ft |
-| 6 ft | 217,612 cf | 62,131 cf | 31.03 ac | 5.47 ft |
-| 3 ft | 72,909 cf | 11,261 cf | 32.03 ac | 5.60 ft |
+Same storm, 8–16 h, two-way, on the laptop GPU:
 
-At 12 ft on the CPU, without land cover or soils, the cap was varied:
+| Cell | Into inlets, before | Into inlets, now | Overflow, now | Net drained, before | Net drained, now | Deeper than 0.25 ft, now | Deepest, now | Engine time |
+|---|---|---|---|---|---|---|---|---|
+| 12 ft | 488,918 cf | 1,058,534 cf | 677,612 cf | 288,525 cf | 380,922 cf | 28.30 ac | 5.20 ft | 26.9 s |
+| 6 ft | 217,612 cf | 1,276,194 cf | 854,835 cf | 155,481 cf | 421,359 cf | 29.30 ac | 5.28 ft | 93.2 s |
+| 3 ft | 72,909 cf | 1,317,609 cf | 880,417 cf | 61,648 cf | 437,192 cf | 29.86 ac | 5.34 ft | 786.6 s |
 
-| Cap | Into inlets | Overflow | Net drained | 2D clamp |
-|---|---|---|---|---|
-| 0.5 (default) | 681,420 cf | 281,730 cf | 399,690 cf | 0 cf |
-| 2 | 1,602,741 cf | 1,073,886 cf | 528,855 cf | 0 cf |
-| none | 1,686,452 cf | 1,157,595 cf | 528,857 cf | 0 cf |
+Net drained = into inlets − overflow.
 
-- **The cap, not the inlet, sets the exchange.** With the default, the net water drained is 24% lower than with no cap, and the exchange shrinks as the cells get finer.
-- **The flooded area moves less** (33.97 vs 33.21 ac), because the surcharged sewer limits drainage here. That will not hold on every site.
-- **Proposed fix:** take what the inlet equations ask, limited each engine step by the water actually in the cell, and send SWMM the volume actually taken. This removes the per-interval cap and its dependence on cell size.
+- **Before,** the water drained fell by 79% from 12 ft to 3 ft. **Now** it rises by 15% and settles: 6 ft to 3 ft adds only 4%. The remaining change comes from finer grids resolving the gutters that lead to the inlets.
+- **Demand the cells could not supply:** 0 cf at 12 ft, 2,306 cf at 6 ft, 3,679 cf at 3 ft. It is shown in the water balance and is not sent to SWMM.
+- **SWMM report against the inlet tally:** 1,058,552 vs 1,058,534 cf, 1,276,221 vs 1,276,194 cf, and 1,317,646 vs 1,317,609 cf.
+- **Continuity:** the 2D balance closes within 0.001%, and SWMM within 0.01%.
 
 ### 3. Checks that held on the real network
 
-- **SWMM report against the inlet tally:** 488,917 cf in the SWMM report against 488,918 cf taken by the inlets. Before 0.3.1, SWMM kept adding the last capture after the 2D run ended.
+- **SWMM report against the inlet tally:** see the table in section 2. Before 0.3.1, SWMM kept adding the last capture after the 2D run ended.
 - **Continuity:** SWMM's flow-routing continuity stays between −0.25% and 0.005%, and the 2D water balance closes within 0.0007%.
 - **GPU against CPU at 12 ft:** the same flooded areas to 0.01 ac, deepest water 5.239 vs 5.239 ft, and inlet volume 484,039 vs 484,035 cf.
 - **Double-counting warning:** it no longer shows for a model without subcatchments (fixed in 0.3.2).
+
+### 4. Against the City's SAIP ICPR v4 inundation, 25-year 24-hour
+
+The City of Winter Haven published the results of its Stormwater Assessment and Improvement Project (SAIP) as an ArcGIS Online layer, "SAIP Preliminary Results Map". Its inundation layers come from an ICPR v4 model and mark where at least 3 in of water stands. `python/compare_icpr_winter_haven.py` compares them with the simulator's peak depth over the whole storm (0–26 h), using the same 3 in threshold.
+
+**Where the comparison is made:**
+
+- open ground in both models, inside the SAIP model boundary;
+- outside the lakes of either model;
+- 174.5 ac in the domain.
+
+| Run | ICPR ac | Simulator ac | Both | ICPR only | Simulator only | Hit rate | False alarm ratio | CSI | Hit rate within 1 cell |
+|---|---|---|---|---|---|---|---|---|---|
+| Lidar lake levels, 12 ft | 15.23 | 28.99 | 5.80 | 9.43 | 23.18 | 0.38 | 0.80 | 0.15 | 0.52 |
+| Lidar lake levels, 6 ft | 15.32 | 29.91 | 6.14 | 9.18 | 23.77 | 0.40 | 0.79 | 0.16 | 0.50 |
+| City lake levels, 12 ft | 15.23 | 29.29 | 5.99 | 9.24 | 23.30 | 0.39 | 0.80 | 0.16 | 0.54 |
+| City lake levels, 6 ft | 15.32 | 30.28 | 6.38 | 8.94 | 23.90 | 0.42 | 0.79 | 0.16 | 0.53 |
+
+How to read the columns:
+
+- **Hit rate:** the share of the ICPR area that the simulator also floods.
+- **False alarm ratio:** the share of the simulator's area that ICPR leaves dry.
+- **CSI:** both ÷ (both + ICPR only + simulator only).
+
+**What the table shows:**
+
+- **The simulator floods about twice the ICPR area and overlaps it poorly** (CSI 0.15–0.16). Cell size and lake level change these figures by no more than 0.04.
+- **About 2.2 of the 9.4 ac that only ICPR floods lie within 60 ft of a lake shore.** ICPR routes the lakes, so they rise during the storm. The simulator holds them at a fixed level. Across the whole ICPR-only area, the simulator's median peak depth is 0.05 ft.
+- **The area only the simulator floods is not marginal:** the median peak depth there is 0.42 ft. About 7.4 of its 23.2 ac lie within 25 ft of the centerlines in the SAIP roads layer, so they are street flow. That layer holds only 65 road lines in the domain, so street flow may account for more.
+
+**Not like-for-like.** The table is a consistency check, not a validation. Neither model was checked against observed flooding.
+
+- **Rainfall:** the simulator uses a nested Atlas 14 storm (7.69 in; peak 10.4 in/hr for 5 minutes). The City's layer does not state its rainfall distribution. Florida Modified or SCS Type II is usual in the region. Their peaks differ from the nested storm's.
+- **Ground:** the simulator uses the 2018 USGS lidar. ICPR uses the City's 2017 SAIP DEM. The City's vertical datum is not stated (section 6).
+- **Lakes:** they are fixed in the simulator and routed in ICPR.
+- **Inlets:** the simulator uses the app's default sizes, because the inventory has none. The network in ICPR is not published.
+- **Mapping:** ICPR inundation maps are drawn from modeled stages. How the SAIP drew them (from node stages or from a 2D mesh) is not stated.
+
+### 5. Lake levels: lidar or the City's model
+
+The builder now records both levels. `--lake-levels city` uses the City's levels for the level boundaries and for the outfalls on the lakes.
+
+| Lake | Lidar water surface, 2018 | City SAIP WaterLevel | City − lidar | City − lidar, if the City used NGVD 29 |
+|---|---|---|---|---|
+| Martha | 139.19 ft | 141.3 ft | +2.11 ft | +1.18 ft |
+| Silver | 142.73 ft | 145.2 ft | +2.47 ft | +1.54 ft |
+| Maude | 139.17 ft | 139.6 ft | +0.43 ft | −0.50 ft |
+
+- **What the City's levels are:** the layer gives the field name `WaterLevel` and no explanation. It may be a starting or control level in ICPR rather than a flood stage.
+- **Effect on the 25-year whole storm:**
+  - At 12 ft, the City levels flood 0.3 ac more than the lidar levels (29.29 vs 28.99 ac, open ground over 3 in, compared area).
+  - The inlets take 1,207,937 cf with the City levels and 1,195,106 cf with the lidar levels.
+  - At 6 ft, the City-level run has the largest unsupplied inlet demand (31,158 cf) and the largest SWMM continuity error (−0.25%).
+
+### 6. Vertical datum
+
+- **Ground:** the lidar is NAVD 88.
+- **The City's layers:** neither the inventory nor the SAIP layers state a datum. The builder takes them as NAVD 88, with no shift, and says so in `build_report.json`.
+- **If they are NGVD 29:** at the site, NAVD 88 = NGVD 29 − 0.93 ft (NGS NCAT, VERTCON 3.0, σ 0.08 ft). The City's elevations would then be 0.93 ft lower in NAVD 88.
+- **Inverts above the lidar ground:** the builder now lists every structure whose inventory invert is above the lidar ground. 9 of the 154 structures on the DEM are, by 0.04 to 3.17 ft.
+  - **Seven are outfalls on a lake** (0.04 to 1.61 ft). At a lake, the lidar is the flattened water surface, so an invert above it is expected.
+  - **Two are inside the network:**
+    - STRUCTURE-4059, a grate inlet, 3.17 ft above the ground: still above it with the 0.93 ft shift, so not explained by the datum;
+    - STRUCTURE-6227, a mitered end, 0.50 ft above.
+  - **Next step:** both need checking against record drawings. The builder gave them a 0.5 ft depth.
 
 ## Speed on a real GPU
 
@@ -76,14 +139,18 @@ The laptop has Intel Core 7 150U graphics (gen-12lp). Both engines ran in headle
 | Synthetic US example, 12 ft, 1 h, one-way | 26,600 | 12.9 s | 1.1 s |
 | Synthetic US example, 6 ft, 1 h, one-way | 106,800 | 110.1 s | 3.4 s |
 | Synthetic US example, 12 ft, 1.5 h, two-way | 26,600 | 18.7 s | 2.2 s |
-| Winter Haven, 12 ft, 8 h, two-way | 83,160 | 279 s (cloud CPU) | 19.3 s |
-| Winter Haven, 6 ft, 8 h, two-way | 332,640 | not run | 84.6 s |
-| Winter Haven, 3 ft, 8 h, two-way | 1,330,560 | not run | 831 s |
-| Winter Haven, 6 ft, whole 26 h storm, two-way | 332,640 | not run | 249.8 s |
+| Winter Haven, 12 ft, 8 h, two-way (0.3.3) | 83,160 | 279 s (cloud CPU, 0.3.2) | 26.9 s |
+| Winter Haven, 6 ft, 8 h, two-way (0.3.3) | 332,640 | not run | 93.2 s |
+| Winter Haven, 3 ft, 8 h, two-way (0.3.3) | 1,330,560 | not run | 786.6 s |
+| Winter Haven, 12 ft, whole 26 h storm, two-way (0.3.3) | 83,160 | not run | 76.0 s |
+| Winter Haven, 6 ft, whole 26 h storm, two-way (0.3.3) | 332,640 | not run | 281.0 s |
 
 ## Not covered
 
-- **Calibration and observed flooding:** there is no comparison with observed flooding or with the City's own models. The lakes are held at their 2018 levels rather than flood stages.
+- **Calibration and observed flooding:** there is no comparison with observed flooding. The only comparison with the City's model is the inundation check in section 4, which is not like-for-like.
+- **Lakes:** they are held at fixed levels (lidar or City), not routed.
 - **Inlets:** inlet sizes are not in the inventory, so the app defaults were used.
-- **Datum:** horizontal NAD83(2011) was taken as NAD83, with no grid shift (under 1 m here).
+- **Datum:**
+  - Horizontal: NAD83(2011) was taken as NAD83, with no grid shift (under 1 m here).
+  - Vertical: the City's datum is unconfirmed (section 6).
 - **The work PC:** not tested.

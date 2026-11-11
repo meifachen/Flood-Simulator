@@ -21,6 +21,7 @@
 <ul>
 <li>overflow at a node spreads on the ground;</li>
 <li>water standing over a junction goes back in through its inlet: the smaller of a weir flow on the depth over the crest and an orifice flow, whose head is that depth while the node is below the crest and the 2D level minus the node head when it is surcharged (so the two meet at the crest);</li>
+<li>an inlet asks for the rate those equations give at the start of the interval; each engine step it takes that rate, or the water left in its cell if that is less, and SWMM is sent the volume actually taken. Capture therefore does not depend on the cell size. Node overflow from one interval is spread on the ground during the next;</li>
 <li>each inlet in the inlets file takes water from its own cell; junctions without a listed inlet get the default inlet at the manhole, or none, as you choose; a junction whose listed inlets were all rejected gets none;</li>
 <li>when the 2D run ends before SWMM's, the inlet inflow is set back to zero and SWMM runs on to its end, so its report holds only the water the inlets took;</li>
 <li><code>ALLOW_PONDING</code> is set to NO in the copy SWMM runs;</li>
