@@ -28,6 +28,7 @@
       if (/^\s*ALLOW_PONDING\s+/i.test(ln)) { found = true; if (!/\bNO\b/i.test(ln)) { notes.push("ALLOW_PONDING was YES; set to NO so that node overflow reaches the 2D surface"); return "ALLOW_PONDING        NO"; } }
       return ln;
     });
+    if (lines.some((ln) => /^\s*\[EVENTS\]/i.test(ln))) throw new Error("The SWMM model has an [EVENTS] section: SWMM skips lateral inflows between events, so two-way coupling cannot pass it the inlet water. Remove [EVENTS] to couple it");
     let out = lines.join("\n");
     if (!found) out = out.replace(/\[OPTIONS\][^\n]*\n/i, (m) => m + "ALLOW_PONDING        NO\n");
     return { text: out, notes };
@@ -66,13 +67,14 @@
         if (this.latQ) for (const [i, q] of this.latQ) this.latV.set(i, (this.latV.get(i) || 0) + q * dt);
         // outfalls on routed lakes: the signed flow of the links that reach each one (into the outfall +, back out of it into the network -).
         // NODE_INFLOW cannot be used: SWMM gives an outfall's backflow as a positive inflow (node.c, node_getSystemOutflow)
-        if (this.watchIn) for (let m = 0; m < this.watchIn.length; m++) { let q = 0; for (const [li, sg] of this.watchIn[m]) q += sg * this.get(P.LINK_FLOW, li); this.inVol[m] += q * this.qf * dt; }
+        // plus the lateral inflow SWMM adds at the outfall itself (runoff, [INFLOWS], dry weather flow: routing.c adds them to newLatFlow)
+        if (this.watchIn) for (let m = 0; m < this.watchIn.length; m++) { const w = this.watchIn[m]; let q = this.get(P.NODE_LATFLOW, w.i); for (const [li, sg] of w.links) q += sg * this.get(P.LINK_FLOW, li); this.inVol[m] += q * this.qf * dt; }
       }
       const span = Math.max(last - t0, 1e-9); for (let i = 0; i < n; i++) acc[i] /= span;
       return acc;
     }
     /* set a node's lateral inflow (cfs); the rate stays in force for later steps, and what SWMM receives is tallied per step in latV */
-    setLat(i, qCfs) { if (!this.latQ) { this.latQ = new Map(); this.latV = new Map(); } this.latQ.set(i, qCfs); this.set(P.NODE_LATFLOW, i, qCfs / this.qf); }
+    setLat(i, qCfs) { if (!Number.isFinite(qCfs)) throw new Error(`Lateral inflow ${qCfs} for SWMM node ${this.names[i]} is not a number`); if (!this.latQ) { this.latQ = new Map(); this.latV = new Map(); } this.latQ.set(i, qCfs); this.set(P.NODE_LATFLOW, i, qCfs / this.qf); }
     /* zero the lateral inflow set on the given nodes (a value set through the API stays in force for later steps) */
     clearInflow(nodes) { for (const i of nodes) { this.set(P.NODE_LATFLOW, i, 0); if (this.latQ) this.latQ.set(i, 0); } }
     finish() {
@@ -162,9 +164,9 @@
         const dw = it.depressionWidth ?? 0;
         if (!(typeof dw === "number" && Number.isFinite(dw) && dw >= 0)) throw new Error(`${label}: gutter depression width ${show(dw)} is not zero or a positive number`);
         // TxDOT HDM ch. 10 sec. 6: for an opening longer than 12 ft the depression is not counted (W = 0, Cw 3.0)
-        const dwUse = it.curbLength > 12 ? 0 : dw;
-        if (dw > 0 && !dwUse) W.push(`${label}: curb opening ${it.curbLength} ft is longer than 12 ft, so its gutter depression is not counted (TxDOT HDM ch. 10)`);
-        Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw: dwUse, ccw: it.ccw ?? (dwUse > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });
+        const dwUse = it.curbLength > 12 ? 0 : dw, longCurb = it.curbLength > 12;
+        if (longCurb && (dw > 0 || (it.ccw !== undefined && it.ccw !== 3.0))) W.push(`${label}: curb opening ${it.curbLength} ft is longer than 12 ft, so its gutter depression is not counted and its weir coefficient is 3.0 (TxDOT HDM ch. 10)`);
+        Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw: dwUse, ccw: longCurb ? 3.0 : it.ccw ?? (dwUse > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });   // over 12 ft TxDOT sets Cw 3.0 as well
       }
       for (const [key, v] of Object.entries(p)) if (key !== "kind" && key !== "dw" && !(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: ${NAMES[key]} ${show(v)} is not a positive number`);
       p.clog = it.clog ?? def.clog;
@@ -199,6 +201,7 @@
       if (cur) throw new Error(`afterChunk was not called for the interval from hour ${cur.h0.toFixed(4)}: the water the inlets took there would never reach SWMM`);
       if (sw.tSec < h0 * 3600 - 1e-6) { sw.advance(h0 * 3600, []); if (sw.inVol) sw.inVol.fill(0); }   // a run that starts later than SWMM: SWMM catches up without exchange
       const h = await solver.readCells(inletCells);
+      if (!Array.from(h).every(Number.isFinite)) throw new Error(`The 2D depth at an inlet cell is not a number at hour ${h0.toFixed(2)}; inlet capture cannot be computed`);
       const qin = inlets.map((it, m) => {
         if (sw.done) return 0;   // after the SWMM run ends nothing can be passed to it
         const d = Math.max(h[m], 0); if (!(d > 1e-3)) return 0;
@@ -207,7 +210,9 @@
         return Math.min(q, capFrac * d * A / dt / perCell[it.k]);
       });
       const over = pendV.map((v) => v / dt); pendV = links.map(() => 0);
-      cur = { h0, qin, over, c0: await clampAt(solver) };
+      const c0 = await clampAt(solver);
+      if (!Array.from(c0).every(Number.isFinite)) throw new Error(`The 2D clamp at an inlet cell is not a number at hour ${h0.toFixed(2)}; the exchange cannot be booked`);
+      cur = { h0, qin, over, c0 };
       return over.concat(qin.map((q) => -q));
     }
     /* after an interval (h1 is where it stopped): what the inlets took goes to SWMM, which steps over the same interval */
@@ -246,6 +251,7 @@
     const stop = () => { if (!sw.done) sw.clearInflow(junctionIdx); };
     /* stop the exchange, run SWMM to the end of its simulation and close it */
     const finish = () => {
+      if (cur) throw new Error(`afterChunk was not called for the last interval (from hour ${cur.h0.toFixed(4)}): the water the inlets took there would never reach SWMM`);
       // hand SWMM what the inlets took but its steps have not yet received (at most about one routing step), then stop and run to the end
       for (let k = 0; k < 50 && !sw.done && owed.some((v) => v > 1e-6); k++) {
         const step = sw.lastStep > 0 ? sw.lastStep : 1, v0 = links.map((l) => sw.latV.get(l.i) || 0);
@@ -264,7 +270,7 @@
       const nLinks = sw.M._swmm_getCount(3), buf = sw.M._malloc(64), idx = {};
       for (let li = 0; li < nLinks; li++) { sw.M._swmm_getName(3, li, buf, 63); idx[sw.M.UTF8ToString(buf)] = li; }
       sw.M._free(buf);
-      sw.watchIn = outs.map((x) => (model.links || []).flatMap((lk) => (idx[lk.name] === undefined ? [] : lk.to === x.name ? [[idx[lk.name], 1]] : lk.from === x.name ? [[idx[lk.name], -1]] : [])));
+      sw.watchIn = outs.map((x) => ({ i: x.i, links: (model.links || []).flatMap((lk) => (idx[lk.name] === undefined ? [] : lk.to === x.name ? [[idx[lk.name], 1]] : lk.from === x.name ? [[idx[lk.name], -1]] : [])) }));
       sw.inVol = new Float64Array(outs.length);
       tally.toLakes = routedLakes.map(() => 0);
       return (h0, h1, levels) => {

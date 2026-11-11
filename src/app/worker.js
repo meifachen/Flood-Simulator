@@ -38,6 +38,7 @@ function parseJson(text, what) { try { const j = JSON.parse(text); if (!j || !Ar
 async function load(a) {
   if (a.catalog) CAT = a.catalog;
   const res = {};
+  const regrid = () => { if (B) { B = null; res.gridCleared = true; } };   // the grid is built from the layers: a new one accepted means building it again
   // Every layer is read and checked into a local first and only replaces the stored one once it is accepted:
   // a refused file leaves the worker exactly as it was.
   if (a.dem) {
@@ -48,18 +49,18 @@ async function load(a) {
     res.cleared = true;
   }
   if (!DEM) throw new Error("Load a DEM first");
-  if (a.epsg && !a.dem) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); }
+  if (a.epsg && !a.dem) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); regrid(); }
   const z = DEM.data; let zmin = Infinity, zmax = -Infinity; for (const v of z) if (v === v) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
   res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, zmin, zmax, valid: DEM.valid };
-  if ("buildings" in a) { let bld = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); bld = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: bld.length, note: r.note, feats: bld }; } else res.buildings = { count: 0 }; BLD = bld; }
-  if ("boundaries" in a) { let bnd = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); bnd = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: bnd.length, note: r.note, props: bnd.map((f) => f.properties || {}), feats: bnd }; } else res.boundaries = { count: 0 }; BOUND = bnd; }
+  if ("buildings" in a) { let bld = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); bld = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: bld.length, note: r.note, feats: bld }; } else res.buildings = { count: 0 }; BLD = bld; regrid(); }
+  if ("boundaries" in a) { let bnd = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); bnd = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: bnd.length, note: r.note, props: bnd.map((f) => f.properties || {}), feats: bnd }; } else res.boundaries = { count: 0 }; BOUND = bnd; regrid(); }
   if ("landcover" in a) {
     const R = a.landcover ? await Model.readRaster(a.landcover, GeoTIFF, CAT, "Land cover") : null;
     if (R) { const cnt = {}; for (const v of R.data) if (v === v) cnt[v] = (cnt[v] || 0) + 1; const codes = Object.keys(cnt);
       if (codes.length > 64) throw new Error(`Land cover has ${codes.length} distinct values; it should be a class map (for example NLCD codes)`);
       res.landcover = { nx: R.nx, ny: R.ny, res: R.rx, epsg: R.epsg, crsName: R.crsName, classes: codes.map(Number).sort((x, y) => x - y), counts: cnt, sameCrs: !R.proj4 || R.epsg === DEM.epsg, crsNote: crsNote(R, "Land cover") }; }
     else res.landcover = null;
-    LCR = R;
+    LCR = R; regrid();
   }
   if ("soils" in a) {
     let soil = null; res.soils = null;
@@ -70,7 +71,7 @@ async function load(a) {
       if (!Object.keys(g).length) throw new Error("Soils raster has no cells coded 1-4 (A-D); code the hydrologic soil groups as 1 = A, 2 = B, 3 = C, 4 = D");
       soil = { kind: "raster", R }; res.soils = { kind: "raster", nx: R.nx, ny: R.ny, epsg: R.epsg, groups: g, other, note: (crsNote(R, "Soils") || `EPSG ${R.epsg || "unknown"}`) + (other ? `; ${other} cells have other codes (not 1-4) and use the global values` : "") };
     }
-    SOIL = soil;
+    SOIL = soil; regrid();
   }
   if ("inlets" in a) {
     let list = null; res.inlets = null;
@@ -84,17 +85,19 @@ async function load(a) {
         return x;
       };
       (gj.features || []).forEach((f, i) => {
-        const fi = i + 1, g = f && f.geometry, p = (f && f.properties) || {};
+        const fi = i + 1, g = f && f.geometry, p0 = (f && f.properties) || {};
         const pts = g && g.type === "Point" ? [g.coordinates] : g && g.type === "MultiPoint" ? g.coordinates : null;
         if (!pts) { skipped.push(fi); return; }
+        // property names in any letter case (shapefile fields are often upper case); the same name in two cases is refused
+        const p = {}, seen = {};
+        for (const k of Object.keys(p0)) { const lk = k.toLowerCase(); if (lk in seen) errs.push(`inlet ${fi}: ${lk} is given twice (${seen[lk]} and ${k}); keep one`); else { seen[lk] = k; p[lk] = p0[k]; } }
         const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
         if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
-        // inlet_type (any letter case, as shapefile fields often are), not type: GIS inventories often carry their own "type" field
-        // (CURB_INLET, MANHOLE ...). Such a field is not read, but the load reports how many inlets have one and no inlet_type.
-        const key = Object.keys(p).find((k) => k.toLowerCase() === "inlet_type"), it0 = key ? p[key] : undefined;
+        // inlet_type, not type: GIS inventories often carry their own "type" field (CURB_INLET, MANHOLE ...).
+        // Such a field is not read, but the load reports how many inlets have one and no inlet_type.
+        const it0 = p.inlet_type;
         const type = it0 === undefined || it0 === null || it0 === "" ? undefined : String(it0).trim().toLowerCase();
-        const invKey = Object.keys(p).find((k) => k.toLowerCase() === "type");
-        if (type === undefined && invKey && p[invKey] !== null && p[invKey] !== "") { invTyped++; const v = String(p[invKey]); invType.set(v, (invType.get(v) || 0) + 1); }
+        if (type === undefined && p.type !== undefined && p.type !== null && p.type !== "") { invTyped += pts.length; const v = String(p.type); invType.set(v, (invType.get(v) || 0) + pts.length); }
         if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: inlet_type ${JSON.stringify(it0)} is not generic, grate, curb or combination`);
         const both = (k1, k2) => {   // the grate name or the generic one, not both
           const a1 = num(fi, k1, p[k1], true), a2 = num(fi, k2, p[k2], true);
@@ -110,7 +113,7 @@ async function load(a) {
       });
       if (errs.length) throw new Error(`Inlets: ${errs.slice(0, 5).join("; ")}${errs.length > 5 ? `; and ${errs.length - 5} more` : ""}`);
       if (!list.length) throw new Error("Inlets: the file has no point features");
-      const typeNote = invTyped ? `${invTyped} inlet${invTyped > 1 ? "s have" : " has"} a type field (${[...invType].map(([k, n]) => `${k} ${n}`).join(", ")}) but no inlet_type, so ${invTyped > 1 ? "they are" : "it is"} modeled as generic inlets with the panel sizes unless sizes are given` : "";
+      const typeNote = invTyped ? `${invTyped} inlet${invTyped > 1 ? "s have" : " has"} a type field (${[...invType].map(([k, n]) => `${k} ${n}`).join(", ")}) but no inlet_type, so ${invTyped > 1 ? "they are modeled as generic inlets" : "it is modeled as a generic inlet"} with the panel sizes unless sizes are given` : "";
       res.inlets = { typeNote, count: list.length, nodes: [...new Set(list.map((i) => i.node))], pts: list.map((i) => [i.x, i.y, i.node]), reprojected: !!fwd, note: fwd ? `reprojected from ${c === "lonlat" ? "longitude/latitude" : "EPSG " + c}` : "in the DEM's CRS", skipped: skipped.length };
     }
     INLETS = list;
@@ -189,15 +192,16 @@ async function run(o, id) {
   // the boundaries must be the ones the grid was built with, in the same order: lake cells are numbered by position
   const keys = (o.boundaries || []).map((b) => b.key);
   if (B.bkeys && (keys.length !== B.bkeys.length || keys.some((k, i) => k !== B.bkeys[i]))) throw new Error(`The level boundaries (${keys.join(", ") || "none"}) are not the ones the grid was built with (${B.bkeys.join(", ") || "none"}); build the grid again`);
-  for (const b of o.boundaries || []) if (b.routed && b.node) throw new Error(`Level boundary ${b.key}: a routed lake cannot also take its level from SWMM node ${b.node}`);
-  const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.routed ? null : b.node || null, level: b.level, routed: !!b.routed, areaAc: b.areaAc }));
+  const given = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+  for (const b of o.boundaries || []) if (b.routed && given(b.node)) throw new Error(`Level boundary ${b.key}: a routed lake cannot also take its level from SWMM node ${b.node}`);
+  const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.routed || !given(b.node) ? null : String(b.node), level: b.level, routed: !!b.routed, areaAc: b.areaAc }));
   // routed lakes: a level pool that starts at the level given and rises with what it gains; its area is the one given, else the part inside the grid
   const routedLakes = [];
   bspec.forEach((b, i) => {
     if (!b.routed) return;
     if (!Number.isFinite(b.level)) throw new Error(`Routed lake ${b.key} needs a starting level`);
     let cells = 0; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 2 && ((g.aux[4 * k + 2] >> 4) & 255) === i) cells++;
-    if (b.areaAc !== undefined && b.areaAc !== null && b.areaAc !== "" && !(typeof b.areaAc === "number" && b.areaAc > 0 && Number.isFinite(b.areaAc))) throw new Error(`Routed lake ${b.key}: area ${JSON.stringify(b.areaAc)} (acres) is not a positive number`);
+    if (b.areaAc !== undefined && b.areaAc !== null && b.areaAc !== "" && !(typeof b.areaAc === "number" && b.areaAc > 0 && Number.isFinite(b.areaAc))) throw new Error(`Routed lake ${b.key}: area ${typeof b.areaAc === "number" ? String(b.areaAc) : JSON.stringify(b.areaAc)} (acres) is not a positive number`);
     const areaFt2 = b.areaAc > 0 ? b.areaAc * 43560 : cells * A;
     if (!(areaFt2 > 0)) throw new Error(`Routed lake ${b.key} has no cells in the grid; give its area`);
     routedLakes.push({ lake: i, areaFt2, level0: b.level, name: b.key, areaFrom: b.areaAc > 0 ? "given" : "inside the grid", gridAc: cells * A / 43560 });

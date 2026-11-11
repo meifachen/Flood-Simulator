@@ -235,6 +235,27 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     await c2.sourceAt(1, 1 + 30 / 3600, s0); try { await c2.sourceAt(1 + 30 / 3600, 1 + 60 / 3600, s0); } catch (e) { m = e.message; }
     ok("C15 an interval whose afterChunk was never called is refused", /afterChunk was not called/.test(m), m);
   }
+  // C16 water SWMM puts on a lake's outfall directly ([INFLOWS] here) reaches the routed lake: the lake gets what SWMM's report says left by that outfall
+  {
+    const pond = model.nodes.find((n) => n.name === "POND");
+    const inpL = inp.replace(/^(C7\s+J7\s+)POND/m, "$1LK").replace(/\[OUTFALLS\][^\n]*\n[^\n]*\n/, (m) => m + "LK               46.142 FIXED 50.0 NO\n").replace(/\[COORDINATES\][^\n]*\n[^\n]*\n/, (m) => m + `LK               ${pond.x} ${pond.y}\n`) + '\n[INFLOWS]\nLK FLOW "" FLOW 1.0 1.0 2.0\n';
+    const c = await C2.makeCoupler(build(), createSWMM, inpL, S.parseInp(inpL), { cw: 0, area: 0 }), f = c.lakeInflowFor([{ lake: 0 }]);
+    let booked = 0; for (let t = 0; t < 6 - 1e-9; t += 300 / 3600) { const sv = flat(0); await c.sourceAt(t, t + 300 / 3600, sv); await c.afterChunk(t, t + 300 / 3600, sv); booked += f(t, t + 300 / 3600, [50])[0]; }
+    const fin = c.finish(), m = new RegExp("^\\s*LK\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)", "m").exec(fin.rpt.split("Outfall Loading Summary")[1] || ""), rptCf = m ? Number(m[4]) * 1e6 / 7.48052 : NaN;
+    ok("C16 a routed lake gets the outfall's direct inflow too: booked = SWMM's outfall total volume", Math.abs(booked / rptCf - 1) < 0.01 && booked > 43200, `booked ${booked.toFixed(0)} cf; SWMM outfall LK ${rptCf.toFixed(0)} cf (2 cfs x 6 h = 43,200 cf of it direct)`);
+    const msgs = [];
+    const c2 = await C2.makeCoupler(build(), createSWMM, inp, model, {});
+    try { await c2.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.map(() => NaN), readClamp: async (cells) => cells.map(() => 0) }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    try { await c2.sourceAt(1, 1 + 30 / 3600, { readCells: async (cells) => cells.map(() => 0.3), readClamp: async (cells) => cells.map(() => NaN) }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    const c3 = await C2.makeCoupler(build(), createSWMM, inp, model, {}); await c3.sourceAt(1, 1 + 30 / 3600, flat(0.3)); try { c3.finish(); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    try { await C2.makeCoupler(build(), createSWMM, inp + "\n[EVENTS]\n07/15/2024 03:00 07/15/2024 06:00\n", model, {}); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    ok("C16 a NaN depth, a NaN clamp at the start of an interval, finish() with an interval not booked and an [EVENTS] section are refused",
+      /depth at an inlet cell is not a number/.test(msgs[0]) && /clamp at an inlet cell is not a number/.test(msgs[1]) && /not called for the last interval/.test(msgs[2]) && /\[EVENTS\]/.test(msgs[3]), msgs.join(" | "));
+    const j4 = model.nodes.find((n) => n.name === "J4");
+    const c4 = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [{ x: j4.x, y: j4.y, node: "J4", type: "curb", curbLength: 15, curbHeight: 0.5, depressionWidth: 2, ccw: 2.3, rimFt: 0 }], defaultInlets: false });
+    await sweep(c4, 1, 1 + 30 / 3600, 0.3);
+    ok("C16 a curb opening over 12 ft uses Cw 3.0 even when 2.3 is given", Math.abs(c4.tally.perInlet[0] - 3.0 * 15 * Math.pow(0.3, 1.5) * 30) < 1e-3, `took ${c4.tally.perInlet[0].toFixed(2)} cf`);
+  }
   // C3 prepareInp forces ALLOW_PONDING NO
   {
     const p = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\nALLOW_PONDING YES\n[JUNCTIONS]\nJ 1 2\n");

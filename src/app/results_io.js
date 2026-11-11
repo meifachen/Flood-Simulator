@@ -81,7 +81,7 @@ const RIO = {
       st.cells++;
       const ha = fa.hmax[k] || 0, hb = fb.hmax[k] || 0, wa = ha >= wetFt, wb = hb >= wetFt;
       if (!wa && !wb) continue;
-      const d = ha - hb; diff[k] = d;
+      const d = Math.fround(ha - hb); diff[k] = d;   // as stored and mapped (Float32), so the counts match the map
       if (wa && wb) st.both++; else if (wa) st.onlyA++; else st.onlyB++;
       if (d >= tolFt) st.deeper++; else if (d <= -tolFt) st.shallower++;
       if (d > st.maxRise) { st.maxRise = d; st.kRise = k; } if (d < st.maxDrop) { st.maxDrop = d; st.kDrop = k; }

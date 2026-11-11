@@ -489,7 +489,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (!(Number.isInteger(r.lake) && r.lake >= 0 && r.lake < K)) throw new Error(`Routed lake ${i + 1}: lake ${r.lake} is not one of the ${K} level boundaries`);
       if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${i + 1}: area ${r.areaFt2} is not a positive number`);
       if (!Number.isFinite(r.level0)) throw new Error(`Routed lake ${i + 1}: starting level ${r.level0} is not a number`);
-      return { lake: r.lake, area: r.areaFt2, level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0 };
+      return { lake: r.lake, area: r.areaFt2, level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0 };
     });
     if (routed.length) {
       const byLake = new Map();
@@ -511,8 +511,17 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     /* Longest chunk a routed lake allows. The level is held over a chunk and updated after it (explicit in time), which is stable only for
      * dt < 2 A / (dQ/dh), Q being the lake's outflow over its edge. Over a broad crest at critical depth, Q = Lf sqrt(g) (2H/3)^1.5 with
      * H = level - lip (lowest open ground next to the lake) and Lf the edge length, so dQ/dh = sqrt(g) Lf (2/3)^1.5 1.5 H^0.5. An eighth of the limit is used: the chunk-held level still lags the edge flux, and a lake that starts well above dry land loses its first water faster than this crest formula says. */
-    const lakeDt = () => { let m = Infinity; for (const r of routed) { const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
-      const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.5, 0.25 * r.area / dqdh)); } return m; };
+    /* Outside inflow that depends on the level (SWMM outfalls taking the lake as their stage) is not in that formula, so each lake also keeps
+     * an adaptive cap that keeps its level change to about 0.02 ft per chunk: it starts at 1 s, shrinks in proportion when a chunk moved the
+     * level more than that, and grows by half each chunk that moved it less (no cap once it passes an hour). */
+    const lakeDt = () => { let m = Infinity; for (const r of routed) { m = Math.min(m, r.cap); const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
+      const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.05, 0.25 * r.area / dqdh)); } return m; };
+    // the lowest ground of the grid: water drains no lower than this, so a lake level below it can only be a numerical failure
+    let zLow = Infinity; if (routed.length) for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) !== 1) zLow = Math.min(zLow, g.aux[4 * k]);
+    if (o.lakeInflow !== undefined && o.lakeInflow !== null) {
+      if (typeof o.lakeInflow !== "function") throw new Error("lakeInflow must be a function");
+      if (!routed.length) throw new Error("lakeInflow is given but no lake is routed: its water would go nowhere");
+    }
     const lakeStages = (s) => { if (!routed.length) return s; const out = Array.from(s); for (const r of routed) out[r.lake] = r.level; return out; };
     const lakeSeries = [];
     const s0 = lakeStages(checkStages(o.stageAt(o.t0), o.t0));
@@ -599,8 +608,13 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           const cur = r.cells.length ? (solver.kind === "cpu" ? Float64Array.from(r.cells, (k) => solver.acc[4 * k + 3]) : Float64Array.from(await solver.cellsOf(solver.bAcc, r.cells, 3))) : new Float64Array(0);
           let dv = 0; for (let m = 0; m < cur.length; m++) dv += cur[m] - r.prev[m]; r.prev = cur;
           const v2d = dv * A, vr = rain * dt * done * r.area, ve = ext ? ext[i] : 0;
-          r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.level += (v2d + vr + ve) / r.area;
-          if (r.level < Math.min(r.bed, r.start) - 0.01) throw new Error(`Routed lake ${r.name} fell to ${r.level.toFixed(2)} ft, below its bed (${r.bed.toFixed(2)} ft) and its starting level, at hour ${(t / 3600).toFixed(2)}: it lost more water than it holds`);
+          const d = (v2d + vr + ve) / r.area;
+          r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.level += d;
+          const used = dt * done;
+          if (Math.abs(d) > 0.02) r.cap = Math.max(0.05, used * 0.02 / Math.abs(d)); else if (Number.isFinite(r.cap)) r.cap = Math.min(used, r.cap) * 1.5 > 3600 ? Infinity : Math.min(used, r.cap) * 1.5;
+          r.lastD = d;
+          // a lidar lake's cells are its flattened water surface, so the level may fall below them; it cannot fall below the lowest ground of the grid
+          if (r.level < Math.min(zLow, r.start) - 0.01) throw new Error(`Routed lake ${r.name} fell to ${r.level.toFixed(2)} ft, below the lowest ground of the grid (${zLow.toFixed(2)} ft), at hour ${(t / 3600).toFixed(2)}: it lost more water than it can, a numerical failure`);
         }
         lakeSeries.push({ tHours: (t + dt * done) / 3600, levels: routed.map((r) => r.level) });
       }

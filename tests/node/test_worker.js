@@ -111,5 +111,29 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
     ok("W12 boundaries other than the grid's, routed with a SWMM node and a text area are refused; a one-way routed run warns about outfalls", /not the ones the grid was built with/.test(mA) && /cannot also take its level from SWMM node POND/.test(mB) && /area "5 ac" \(acres\) is not a positive number/.test(mC) && /get no water from SWMM outfalls in a one-way run/.test(warn) && r.lakes,
       [mA, mB, mC, warn.slice(0, 160)].join(" | "));
   }
+  // W13 inlet properties in any letter case; a name given twice is refused; the inventory count is of inlets, not features
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    const fc = (feats) => JSON.stringify({ type: "FeatureCollection", features: feats }), pt = (props) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: [500750, 1599200] } });
+    const m1 = await refused(w.load({ inlets: fc([pt({ NODE: "J3", INLET_TYPE: "grate", PERIMETER_FT: 6, OPEN_AREA_SQFT: 2, CLOG: 0.5, RIM_FT: 60 })]) })), t = m1 ? { m1 } : w.peek("INLETS[0]");
+    const m2 = await refused(w.load({ inlets: fc([pt({ node: "J3", inlet_type: "grate", INLET_TYPE: "curb" })]) }));
+    const r3 = await w.load({ inlets: fc([{ type: "Feature", properties: { node: "J4", type: "GRATE_INLET" }, geometry: { type: "MultiPoint", coordinates: [[500000, 1599000], [500010, 1599000]] } }]) });
+    ok("W13 upper-case sizes, clogging and rim are read; inlet_type in two cases is refused; a MultiPoint's inlets are each counted in the type note", t.node === "J3" && t.type === "grate" && t.lw === 6 && t.area === 2 && t.clog === 0.5 && t.rimFt === 60 &&
+      /inlet 1: inlet_type is given twice \(inlet_type and INLET_TYPE\)/.test(m2) && /^2 inlets have a type field \(GRATE_INLET 2\)/.test(r3.inlets.typeNote), `${JSON.stringify(t)} | ${m2} | ${r3.inlets.typeNote}`);
+  }
+  // W14 a new boundaries (or other grid) layer clears the grid; routed lake areas that are not finite numbers are named as given; node 0 with routed is refused
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), boundaries: text(US, "pond.geojson"), inp: text(US, "model.inp"), out: ab(ex(US, "model.out")) });
+    const bnd = [{ index: 0, key: "POND", level: 58, routed: true }];
+    w.build(Object.assign({}, bopt, { lcTable: null, boundaries: bnd }));
+    const r = await w.load({ boundaries: text(US, "pond.geojson") }), mA = await refused(w.run({ coupling: "off", t0: 0, t1: 0.05, engine: "cpu", rainSource: "none", outputSec: 900, boundaries: bnd }));
+    w.build(Object.assign({}, bopt, { lcTable: null, boundaries: bnd }));
+    const base = { coupling: "one", useSwmmFlooding: true, t0: 1, t1: 1.05, engine: "cpu", rainSource: "none", outputSec: 900 };
+    const areas = [];
+    for (const v of [Infinity, true, "5"]) areas.push(await refused(w.run(Object.assign({}, base, { boundaries: [{ index: 0, key: "POND", level: 58, routed: true, areaAc: v }] }))));
+    const m0 = await refused(w.run(Object.assign({}, base, { boundaries: [{ index: 0, key: "POND", level: 58, routed: true, node: 0 }] })));
+    ok("W14 new boundaries clear the grid; Infinity, true and \"5\" areas are refused as given; a routed lake with node 0 is refused", r.gridCleared === true && /Build the grid first/.test(mA) &&
+      /area Infinity \(acres\)/.test(areas[0]) && /area true \(acres\)/.test(areas[1]) && /area "5" \(acres\)/.test(areas[2]) && /cannot also take its level from SWMM node 0/.test(m0), [r.gridCleared, mA, ...areas, m0].join(" | "));
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

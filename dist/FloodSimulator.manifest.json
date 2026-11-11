@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.4.1",
- "bytes": 5706107,
- "sha256": "7e8d6cec2994d040bbaf4efba84acbb2fd92af863e26f6832bfcefdcb45f0c6f",
+ "version": "0.4.2",
+ "bytes": 5711550,
+ "sha256": "7adf31ce4e36af9e414c6252bd240ffa6080b521630ee1cdc101784aafe75b49",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -98,11 +98,11 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "e3bf4eb48c201d4e58941f712e4d3c78d21b4397aefc5a77a4efcf64f8937aa8"
+   "sha256": "7e069b1eb9ffaca20f988f783e186e49b3bb65db38406874d7e608f406a9dc83"
   },
   {
    "file": "src/app/help.html",
-   "sha256": "3edeb4a340573bcbfad9e19edf2c03c247e9553833193ca9acd1b2465319fae8"
+   "sha256": "a429e29db85f274ff583076784ce61f0e76f68225fa035e9246144142882e5a6"
   },
   {
    "file": "src/app/index.html",
@@ -110,11 +110,11 @@
   },
   {
    "file": "src/app/results_io.js",
-   "sha256": "c9cc03b818b15ade4f2c27c3e89c44b07fd26966969c475a619fd388c5237bec"
+   "sha256": "677167edbd9ea911bba2a5b48bd1040068406cb40b9c22ff95792b992dee3afd"
   },
   {
    "file": "src/app/ui.js",
-   "sha256": "d9af12a9e9b89cda75546f6564ca3774c3529335933b051c3653b49a7a31d244"
+   "sha256": "4b7b7c2f161cce61fc2aafcc36a87da22644ffca5d5cf4b44bb090decfded8ab"
   },
   {
    "file": "src/app/view3d.js",
@@ -122,11 +122,11 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "eddb62b1a1c10824313ce56ae45e8e81243cf64836ce3313d5294be51848e9c0"
+   "sha256": "40c70f09790ff72c0b710a904e1cbb8bea1c31cfb923aebf35788f6053818fc2"
   },
   {
    "file": "src/core/couple2way.js",
-   "sha256": "4dbaaaa95f961d912027f1125d9eb05cdea4b2853e2ba5099ae19f9fecc9908b"
+   "sha256": "66dc11ece8f0bea24c2d267c168a5eb1fb306b661c0de5fb4e9e8d3c6b12046f"
   },
   {
    "file": "src/core/model.js",
@@ -134,7 +134,7 @@
   },
   {
    "file": "src/engine/flood2d.js",
-   "sha256": "668993091ee8a42384a9aaf0c583d4f351cd3b6421dd12a0c3a9bf125a0a7d30"
+   "sha256": "1bff47e96dba022e967edc12659a3a0a1e1c3df84511d9db669630ee2a38f1ef"
   },
   {
    "file": "src/io/swmm.js",

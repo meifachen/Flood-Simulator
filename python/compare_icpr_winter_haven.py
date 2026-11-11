@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Compare Flood Simulator peak depths at Winter Haven (Lake Martha) with the City's SAIP ICPR v4 inundation for the same design storm.
 
-    python python/compare_icpr_winter_haven.py RUN_DIR [--ari 25] [--depth-in 3] [--out RUN_DIR/icpr_compare]
+    python python/compare_icpr_winter_haven.py RUN_DIR [--ari 25] [--depth-in 3] [--tol-ft 12] [--out RUN_DIR/icpr_compare]
 
 RUN_DIR holds runs saved by the site benchmark: <tag>.json (grid: x0, y1, cs, nx, ny), <tag>.hmax.f32 (peak depth, ft, row 0 at the top)
 and <tag>.type.u8 (0 open ground, 1 building or no data, 2 lake). Every run in RUN_DIR is compared.
 
 The City layer (SAIP Preliminary Results, Inundation_<ari>yr_24hr) marks where ICPR v4 gave at least 3 in of standing water. A cell is
 wet in the Flood Simulator when its peak depth is at least --depth-in. Cells are compared only where both models say something:
-open ground (not buildings, not lakes in either model) inside the SAIP model boundary.
+open ground (not buildings, not lakes in either model) inside the SAIP model boundary. --tol-ft adds scores within a distance in
+feet (the same at every cell size); a tolerance smaller than the cell gives n/a for those scores, with a note.
 
 Not like-for-like (written into the output):
   - rainfall: the Flood Simulator uses a nested (balanced) Atlas 14 storm; the SAIP distribution is not stated in the City's layer
     (Florida Modified or SCS Type II are usual in the region);
   - ground: 2018 3DEP lidar vs the City's 2017 SAIP DEM; vertical datum of the City's model not stated;
-  - lakes: the Flood Simulator holds lakes at a fixed level (lidar or the City's SAIP WaterLevel), ICPR routes them;
+  - lakes: the Flood Simulator holds lakes as level pools, either fixed (lidar or the City's SAIP WaterLevel) or routed without an
+    outlet (each run says which); ICPR routes them with their outlets;
   - the sewer: the City inventory with app-default inlet sizes vs the ICPR network.
 """
 import argparse, glob, json, os, sys
@@ -95,8 +97,12 @@ def main(a):
                     if dr == 0 and dc == 0 or (dr * dr + dc * dc) * cs * cs > a.tol_ft * a.tol_ft + 1e-9: continue
                     y[max(dr, 0):ny + min(dr, 0), max(dc, 0):nx + min(dc, 0)] |= x[max(-dr, 0):ny + min(-dr, 0), max(-dc, 0):nx + min(-dc, 0)]
             return y
-        hit1 = int((mask & I & grow(S & mask)).sum()); fa1 = int((mask & S & ~grow(I & mask)).sum())
-        row["hit_rate_within_tol"] = round(hit1 / nI, 3) if nI else None; row["false_alarm_ratio_beyond_tol"] = round(fa1 / nS, 3) if nS else None
+        if rcell < 1:   # the tolerance is less than one cell: no neighbor is within it, so the scores would only repeat the cell-by-cell ones
+            row["hit_rate_within_tol"] = row["false_alarm_ratio_beyond_tol"] = "n/a"
+            note.setdefault("tolerance_not_applied", []).append(f"{row['run']}: {a.tol_ft:g} ft is less than the {cs:g} ft cell, so the scores within the tolerance are n/a")
+        else:
+            hit1 = int((mask & I & grow(S & mask)).sum()); fa1 = int((mask & S & ~grow(I & mask)).sum())
+            row["hit_rate_within_tol"] = round(hit1 / nI, 3) if nI else None; row["false_alarm_ratio_beyond_tol"] = round(fa1 / nS, 3) if nS else None
         rows.append(row); print(json.dumps(row))
         # map: agree / ICPR only / Flood Simulator only
         try:
@@ -122,6 +128,7 @@ def main(a):
                 f"Compared on {note['compared_cells']}.\n\n| Run | Cell | ICPR ac | Flood Sim ac | Both ac | ICPR only ac | Flood Sim only ac | Hit rate | False alarm ratio | CSI | Area ratio | Hit rate within {a.tol_ft:g} ft | False alarms beyond {a.tol_ft:g} ft | Lakes |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in rows: f.write(f"| {r['run']} | {r['cell_ft']:g} ft | {r['icpr_ac']} | {r['flood_sim_ac']} | {r['both_ac']} | {r['icpr_only_ac']} | {r['flood_sim_only_ac']} | {r['hit_rate']} | {r['false_alarm_ratio']} | {r['csi']} | {r['area_ratio']} | {r['hit_rate_within_tol']} | {r['false_alarm_ratio_beyond_tol']} | {r['lakes']} |\n")
         f.write("\nNot like-for-like:\n\n" + "".join(f"- {s}\n" for s in note["not_like_for_like"]))
+        if note.get("tolerance_not_applied"): f.write("\nTolerance:\n\n" + "".join(f"- {s}\n" for s in note["tolerance_not_applied"]))
     print("wrote", out)
 
 

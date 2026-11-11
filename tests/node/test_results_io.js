@@ -50,5 +50,11 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
     let m2 = ""; try { RIO.compare(ga, fa, { G: Object.assign({}, G, { dxFt: 10 / 0.3048 }), type: gb.type }, fb, 0.1); } catch (e) { m2 = e.message; }
     ok("R-C1 the same numbers in feet and in meters are refused", /cell size in feet/.test(m2), m2);
   }
+  // R-C2 the "deeper" count uses the per-cell change as it is stored and mapped (Float32), so a cell mapped as deeper is counted as deeper
+  {
+    const G = { nx: 1, ny: 1, x0: 0, y1: 0, cs: 1, dxFt: 1 }, g = { G, type: new Uint8Array(1) };
+    const c = RIO.compare(g, { hmax: Float32Array.of(0.1) }, g, { hmax: Float32Array.of(3e-9) }, 0.05, 0.1);
+    ok("R-C2 a change stored as 0.1 ft (Float32) is counted as deeper by 0.1 ft, as the map shows it", c.diff[0] >= 0.1 && c.acres.deeper === 1 / 43560, `stored change ${c.diff[0]}; deeper ${c.acres.deeper * 43560} cells`);
+  }
   const bad2 = res.filter((x) => !x.pass).length; console.log(bad2 ? `${bad2} FAILED` : "ALL PASS"); process.exit(bad2 ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

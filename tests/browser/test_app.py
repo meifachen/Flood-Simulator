@@ -67,6 +67,16 @@ with sync_playwright() as p:
     t23 = pg.inner_text(".tour-text"); n23 = pg.inner_text(".tour-n")
     ok("B23 a tour step whose action fails reports it and does not move on", "did not work" in t23 and "Courant" in t23 and n23 == "6 of 8", f"{n23}: {t23[:100]}")
     pg.click(".tour-skip"); pg.fill("#cfl", "0.7")
+    # B24 a tour step whose action fails is reported even when an earlier site or run is still loaded
+    nxt = lambda: (pg.click(".tour-next"), pg.wait_for_function("!document.querySelector('.tour-next').disabled", timeout=120000))
+    pg.evaluate("S.running = true; UI.startTour()"); nxt(); nxt(); nxt()
+    t24a = pg.inner_text(".tour-text"); n24a = pg.inner_text(".tour-n")
+    pg.evaluate("S.running = false"); nxt(); nxt(); nxt()
+    pg.fill("#cfl", "5"); pg.evaluate("S.final = S.final || { stand_in: true }"); nxt()
+    t24b = pg.inner_text(".tour-text"); n24b = pg.inner_text(".tour-n")
+    ok("B24 the example and Run steps fail when they leave the earlier site or results in place", "did not work" in t24a and "Stop the run first" in t24a and n24a == "3 of 8" and "did not work" in t24b and "Courant" in t24b and n24b == "6 of 8",
+       f"{n24a}: {t24a[:80]} | {n24b}: {t24b[:80]}")
+    pg.click(".tour-skip"); pg.fill("#cfl", "0.7"); pg.evaluate("clearResults()")
 
     # ---- B1 example loads with SWMM results and the pond tied to the SWMM storage node; its run settings are filled in
     pg.fill("#t0", "3"); pg.fill("#t1", "4"); pg.fill("#outmin", "30")
@@ -310,14 +320,20 @@ with sync_playwright() as p:
     # ---- B22 a clogging value that is not a whole percent comes back unchanged when a run's settings are restored
     pg.select_option("#coupling", "two"); pg.evaluate("waterNotes()"); pg.fill("#clog", "12.5"); o22 = pg.evaluate("(() => { const o = runOptions(); applyOptions(o); return [o.clog, document.querySelector('#clog').value]; })()")
     ok("B22 clogging 12.5% survives saving the settings and restoring them", abs(o22[0] - 0.125) < 1e-12 and o22[1] == "12.5", o22)
+    imp0 = pg.input_value("#imp"); pg.fill("#imp", "12.34567")
+    o22b = pg.evaluate("(() => { const o = runOptions(); applyOptions(o); return document.querySelector('#imp').value; })()")
+    ok("B22 impervious 12.34567% comes back unchanged", o22b == "12.34567", o22b)
+    pg.fill("#imp", imp0)
     pg.fill("#clog", "0"); pg.select_option("#coupling", "one"); pg.evaluate("waterNotes()")
 
     # ---- B9 Stop ends a long run and keeps the maps so far
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
     settings(pg, cell_index=0, t0="0", t1="6", outmin="2", engine="cpu"); pg.click("#b-run")
     pg.wait_for_function("S.frames.length >= 2", timeout=300000)
+    # the run's progress lines replace the status line within moments, so every status text is recorded while the file is offered
+    pg.evaluate("window._msgs = []; new MutationObserver(() => window._msgs.push(document.querySelector('#msg').textContent)).observe(document.querySelector('#msg'), { childList: true, characterData: true, subtree: true })")
     nx_run = pg.evaluate("S.grid.G.nx"); pg.set_input_files("#f-res", resf); pg.wait_for_timeout(500)
-    ok("B9 saved results cannot be opened while a run is going", "Stop the run first" in pg.inner_text("#msg") and pg.evaluate("S.running") and pg.evaluate("S.grid.G.nx") == nx_run, pg.inner_text("#msg")[:80])
+    ok("B9 saved results cannot be opened while a run is going", pg.evaluate("window._msgs.some((m) => /Stop the run first/.test(m))") and pg.evaluate("S.running") and pg.evaluate("S.grid.G.nx") == nx_run, pg.inner_text("#msg")[:80])
     t = time.time(); pg.click("#b-stop"); pg.wait_for_function("/^Stopped/.test(document.querySelector('#msg').textContent)", timeout=60000); msg = pg.inner_text("#msg"); dt = time.time() - t
     ok("B9 Stop ends the run within 5 s and keeps the maps", msg.startswith("Stopped") and dt < 5 and pg.evaluate("S.frames.length") >= 2, f"{dt:.1f} s; {msg[:90]}")
     pg.set_input_files("#f-cmp", routed_res); pg.wait_for_timeout(800)

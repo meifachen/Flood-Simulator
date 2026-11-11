@@ -151,8 +151,10 @@ def main(a):
             "city_minus_lidar_if_city_is_ngvd29_ft": None if city is None else round(city + ngvd_to_navd_ft - lvl, 2),
             "surface_spread_ft": round(spread, 2), "acres_in_domain": round(g.area / 43560, 1), "acres_whole_lake_nhd": full_ac})
         print(f"lake {name}: lidar {lvl:.2f} ft (surface spread {spread:.2f} ft); City SAIP {city} ft; using {use:.2f} ft")
-    if a.lake_levels == "city": note("Lake levels are the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are level boundaries in the 2D")
-    else: note("Lake levels are fixed at the lidar water surface (2018 survey), not a flood stage; lakes are level boundaries in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
+    start = "start at" if a.routed else "are held at"
+    if a.lake_levels == "city": note(f"Lake levels {start} the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are level boundaries in the 2D")
+    else: note(f"Lake levels {start} the lidar water surface (2018 survey), not a flood stage; lakes are level boundaries in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
+    if a.routed: note("Lakes are routed: each is a level pool over its whole NHD area (area_ac) that rises with the rain on it, the water the 2D spills into it and the SWMM outfalls on it (two-way runs); it has no outlet, so its rise is an upper bound")
     json.dump(fc(lakes), open(os.path.join(a.out, "lakes.geojson"), "w"))
     lake_geoms = [(shape(f["geometry"]), f["properties"]) for f in lakes]
 
@@ -200,7 +202,7 @@ def main(a):
         pt = Point(n["x"], n["y"])
         near = next((pr["name"] for g, pr in lake_geoms if g.distance(pt) < 10), None) or next((c["properties"].get("Waterbody") for c in saip if c["geometry"] and shape(c["geometry"]).contains(pt)), None)
         if not n["outfall"] and near:
-            issues.append(f"{nid}: a {n['type'].lower().replace('_', ' ')} on {near} (within 10 ft of the NHD lake or inside the City's lake polygon); its lidar 'ground' is the lake's flattened water surface, and the 2D does not couple a node in a lake cell")
+            issues.append(f"{nid}: a {n['type'].lower().replace('_', ' ')} on {near} (within 10 ft of the NHD lake or inside the City's lake polygon); its lidar 'ground' is the lake's flattened water surface. The 2D does not couple a node in a lake cell; in an open cell at the shore it is coupled, but takes water only when the surface rises above its rim")
         (out_lake if n["outfall"] and lake else out_free if n["outfall"] else []).append(nid)
     # inverts at or above the lidar ground: a sign of a datum difference, a rim-less record or a wrong invert in the inventory
     above = sorted([(round(n["invert"] - n["lidar"], 2), nid, n["type"]) for nid, n in nodes.items() if n.get("lidar") is not None and n["invert"] > n["lidar"]], reverse=True)

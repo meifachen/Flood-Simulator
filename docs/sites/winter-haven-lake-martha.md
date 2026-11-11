@@ -15,7 +15,7 @@ It has a real storm sewer in a public inventory: the City of Winter Haven's ArcG
 | Input | Source | Notes |
 |---|---|---|
 | Storm sewer | City of Winter Haven inventory (pipes, inlets, manholes, outlets) | 145 pipes, 162 nodes, 84 curb and grate inlets, 15 outfalls to lakes, 6 free outfalls. 2 pipes without inverts were skipped |
-| Rims | USGS 3DEP 1 m lidar at each structure | The inventory has no rim elevations. 3 nodes had lidar ground within 0.5 ft of the invert, or below it,, and their depth was set to 0.5 ft |
+| Rims | USGS 3DEP 1 m lidar at each structure | The inventory has no rim elevations. 3 nodes had lidar ground within 0.5 ft of the invert, or below it, and their depth was set to 0.5 ft |
 | Ground | 3DEP 1 m lidar (FL Peninsular FDEM 2018) | Resampled to 3 ft in EPSG 2237; NAVD88 ft |
 | Lakes | USGS NHD | Held at the 2018 lidar water surface (Martha 139.19 ft, Silver 142.73 ft, Maude 139.17 ft), or with `--lake-levels city` at the City's SAIP levels (141.3, 145.2, 139.6 ft) |
 | Buildings | FEMA USA Structures | 352 footprints |
@@ -61,7 +61,7 @@ Net drained = into inlets − overflow.
 ### 3. Checks that held on the real network
 
 - **SWMM report against the inlet tally:** see the table in section 2. Before 0.3.1, SWMM kept adding the last capture after the 2D run ended.
-- **Continuity:** SWMM's flow-routing continuity stays between −0.11% and +0.01% in every run reported here, and the 2D water balance closes within 0.0015%.
+- **Continuity:** SWMM's flow-routing continuity stays between −0.26% and +0.01% in every run reported here (the low end is the 6 ft City-level run, section 5), and the 2D water balance closes within 0.0015%.
 - **GPU against CPU at 12 ft:** the same flooded areas to 0.01 ac, deepest water 5.239 vs 5.239 ft, and inlet volume 484,039 vs 484,035 cf.
 - **Double-counting warning:** it no longer shows for a model without subcatchments (fixed in 0.3.2).
 
@@ -77,14 +77,14 @@ The City of Winter Haven published the results of its Stormwater Assessment and 
 
 | Run | ICPR ac | Simulator ac | Both | ICPR only | Simulator only | Hit rate | False alarm ratio | CSI | Hit rate within 12 ft |
 |---|---|---|---|---|---|---|---|---|---|
-| Lidar lake levels, 12 ft | 15.23 | 28.99 | 5.80 | 9.43 | 23.18 | 0.38 | 0.80 | 0.15 | 0.52 |
-| Lidar lake levels, 6 ft | 15.32 | 29.91 | 6.14 | 9.18 | 23.77 | 0.40 | 0.79 | 0.16 | 0.56 |
-| City lake levels, 12 ft | 15.23 | 29.29 | 5.99 | 9.24 | 23.30 | 0.39 | 0.80 | 0.16 | 0.54 |
-| City lake levels, 6 ft | 15.32 | 30.28 | 6.38 | 8.94 | 23.90 | 0.42 | 0.79 | 0.16 | 0.59 |
-| Routed lakes (lidar start), 12 ft | 15.23 | 28.99 | 5.80 | 9.43 | 23.18 | 0.38 | 0.80 | 0.15 | 0.52 |
-| Routed lakes (lidar start), 6 ft | 15.32 | 29.91 | 6.14 | 9.18 | 23.77 | 0.40 | 0.79 | 0.16 | 0.56 |
+| Lidar lake levels, 12 ft (0.4.0) | 15.23 | 28.99 | 5.80 | 9.43 | 23.18 | 0.38 | 0.80 | 0.15 | 0.52 |
+| Lidar lake levels, 6 ft (0.4.0) | 15.32 | 29.91 | 6.14 | 9.18 | 23.77 | 0.40 | 0.79 | 0.16 | 0.56 |
+| City lake levels, 12 ft (0.4.0) | 15.23 | 29.29 | 5.99 | 9.24 | 23.30 | 0.39 | 0.80 | 0.16 | 0.54 |
+| City lake levels, 6 ft (0.4.0) | 15.32 | 30.28 | 6.38 | 8.94 | 23.90 | 0.42 | 0.79 | 0.16 | 0.59 |
+| Routed lakes (lidar start), 12 ft (0.4.1) | 15.23 | 28.99 | 5.80 | 9.43 | 23.18 | 0.38 | 0.80 | 0.15 | 0.52 |
+| Routed lakes (lidar start), 6 ft (0.4.1) | 15.32 | 29.91 | 6.14 | 9.18 | 23.77 | 0.40 | 0.79 | 0.16 | 0.56 |
 
-"Within 12 ft" uses the same distance at both cell sizes: an ICPR cell counts as a hit if the simulator is wet within 12 ft of it.
+The fixed-level runs were made with 0.4.0 and not repeated. The routed runs were repeated with 0.4.1; their peaks moved by less than 0.001 ft (section 7), so the fixed-level rows are not expected to change at the precision shown, but that was not run. "Within 12 ft" uses the same distance at both cell sizes: an ICPR cell counts as a hit if the simulator is wet within 12 ft of it.
 
 How to read the columns:
 
@@ -102,7 +102,7 @@ How to read the columns:
 
 - **Rainfall:** the simulator uses a nested Atlas 14 storm (7.69 in; peak 10.4 in/hr for 5 minutes). The City's layer does not state its rainfall distribution. Florida Modified or SCS Type II is usual in the region. Their peaks differ from the nested storm's.
 - **Ground:** the simulator uses the 2018 USGS lidar. ICPR uses the City's 2017 SAIP DEM. The City's vertical datum is not stated (section 6).
-- **Lakes:** they are fixed in the simulator and routed in ICPR.
+- **Lakes:** the simulator holds them at a fixed level, or routes them with no outlet (section 7); ICPR routes them with their outlets.
 - **Inlets:** the simulator uses the app's default sizes, because the inventory has none. The network in ICPR is not published.
 - **Mapping:** ICPR inundation maps are drawn from modeled stages. How the SAIP drew them (from node stages or from a 2D mesh) is not stated.
 
@@ -130,7 +130,7 @@ The builder now records both levels. `--lake-levels city` uses the City's levels
 - **Inverts above the lidar ground:** the builder now lists every structure whose inventory invert is above the lidar ground. 9 of the 154 structures on the DEM are, by 0.04 to 3.17 ft.
   - **Seven are outfalls on a lake** (0.04 to 1.61 ft). At a lake, the lidar is the flattened water surface, so an invert above it is expected.
   - **Two are inside the network:**
-    - **STRUCTURE-4059, a grate inlet, 3.17 ft:** it sits on Lake Silver, 0.9 ft from the NHD shoreline and inside the City's lake polygon. Its "ground" is the lake's flattened lidar water surface (142.73 ft), not land. The node falls in a lake cell, so the 2D does not couple it, and the builder flags it. Its invert (145.90 ft) is also above the City's own Silver level (145.2 ft); its location or invert in the inventory should be checked.
+    - **STRUCTURE-4059, a grate inlet, 3.17 ft:** it sits on Lake Silver, 0.9 ft from the NHD shoreline and inside the City's lake polygon. Its "ground" is the lake's flattened lidar water surface (142.73 ft), not land. The builder flags it. At 12 ft its node falls in a lake cell, so the 2D does not couple it. At 6 ft it falls in an open cell at the shore and is coupled, but it never takes water: the water surface there peaks near 143.3 ft, below its rim of 146.40 ft (invert plus the 0.5 ft depth). Its invert (145.90 ft) is also above the City's own Silver level (145.2 ft); its location or invert in the inventory should be checked.
     - **STRUCTURE-6227, a mitered end, 0.50 ft above the ground.**
   - The builder gave both a 0.5 ft depth.
 
@@ -155,8 +155,8 @@ In 0.4.0, a lake can rise with the water it gains instead of holding a fixed lev
   - At 6 ft, Lake Silver nets −0.011 ft from those sources. It lost 133,700 cf to the land by spilling onto low ground at its edge, ground the 6 ft grid resolves and the 12 ft grid averages away.
 - **Model limits:** the lakes have no outlet and a constant area, so the rise is an upper bound for the storm.
 - **Where the land got wetter:**
-  - Routing changed the peak depth on 0.83 ac of open ground at 12 ft (0.79 ac at 6 ft). All of it at 12 ft, and 0.78 ac at 6 ft, lies inside the City's SAIP lake polygons, which extend beyond the NHD shorelines.
-  - So the ICPR comparison in section 4 is unchanged.
+  - Routing changed the peak depth by more than 0.01 ft on 0.83 ac of open ground at 12 ft (251 cells) and 0.79 ac at 6 ft. All but one 12 ft cell (250 of 251), and 0.78 ac at 6 ft, lie inside the City's SAIP lake polygons, which extend beyond the NHD shorelines.
+  - So the ICPR comparison in section 4 is unchanged to the reported precision.
 - **What that implies (an inference, not tested):** the ring that only ICPR floods lies on higher ground, within 60 ft of the lakes. ICPR's lake stages would then peak above these routed levels. The City's model also starts the lakes 0.4 to 2.5 ft higher (section 5).
 - **Checks:**
   - SWMM continuity: −0.015% at 12 ft and −0.108% at 6 ft.
