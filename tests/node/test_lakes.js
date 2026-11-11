@@ -129,5 +129,30 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     }
     ok("L11 a lake linked both ways to a fixed 98 ft level stays within 0.005 ft of it from hour 1 to hour 6, with 60 s and 900 s chunks", dev.every((d) => d < 0.005), `largest departure ${dev.map((d) => d.toFixed(4)).join(" / ")} ft`);
   }
+  // L12 a stage-area table: a lake below its lip (no 2D exchange) given 1 cfs for an hour (3,600 cf) rises to the level whose storage holds it.
+  // Table 95 ft: 20,000 sq ft, 100 ft: 40,000 sq ft (linear between). From 98 ft (area 32,000): 3,600 = 32,000 x + 2,000 x^2, x = 0.111720 ft
+  {
+    const tab = [[95, 20000], [100, 40000]], x = (-32000 + Math.sqrt(32000 ** 2 + 4 * 2000 * 3600)) / (2 * 2000);
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 1, rainAt: () => 0, stageAt: () => [98], routedLakes: [{ lake: 0, stageArea: tab, level0: 98 }], lakeInflow: (a, b) => [1 * (b - a) * 3600], readSec: 3600 });
+    const cst = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 1, rainAt: () => 0, stageAt: () => [98], routedLakes: [{ lake: 0, areaFt2: 32000, level0: 98 }], lakeInflow: (a, b) => [1 * (b - a) * 3600], readSec: 3600 });
+    ok("L12 with a stage-area table the level holds the volume given (3,600 cf from 98 ft: +0.111720 ft by hand); a constant 32,000 sq ft gives +0.1125 ft", Math.abs(r.lakes.end[0] - 98 - x) < 1e-6 && Math.abs(cst.lakes.end[0] - 98 - 3600 / 32000) < 1e-6,
+      `table ${(r.lakes.end[0] - 98).toFixed(6)} ft (hand ${x.toFixed(6)}); constant ${(cst.lakes.end[0] - 98).toFixed(6)} ft`);
+  }
+  // L13 an outlet weir drains a lake below its lip (constant area 25,200 sq ft, crest 97 ft, 10 ft long, Cw 3.0, from 99 ft) as the level-pool
+  // solution does: dh/dt = -Cw L (h - c)^1.5 / A, so h(t) = c + (1 / sqrt(h0 - c) + Cw L t / (2 A))^-2; it never goes below the crest,
+  // and what the outlet released equals the storage the lake lost
+  {
+    const Ar = 25200, cw = 3.0, L = 10, c = 97, h0 = 99, ex = (t) => c + Math.pow(1 / Math.sqrt(h0 - c) + cw * L * t / (2 * Ar), -2);
+    const run = async (chunkSec) => F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 3, rainAt: () => 0, stageAt: () => [h0], routedLakes: [{ lake: 0, areaFt2: Ar, level0: h0, outlet: { crestFt: c, lengthFt: L, cw } }], chunkSec, readSec: 3600 });
+    const r1 = await run(60), r9 = await run(900), errs = [r1, r9].map((r) => r.lakes.series.reduce((m, x) => Math.max(m, Math.abs(x.levels[0] - ex(x.tHours * 3600))), 0));
+    const lo = Math.min(...r9.lakes.series.map((x) => x.levels[0]));
+    ok("L13 an outlet weir drains the lake along the level-pool solution (within 0.005 ft, 60 s and 900 s chunks), not below its crest; outlet volume = storage lost",
+      errs.every((e) => e < 0.005) && lo >= c && Math.abs(r9.lakes.outlet[0] - (h0 - r9.lakes.end[0]) * Ar) < 1e-3 * Ar,
+      `largest error ${errs.map((e) => e.toFixed(4)).join(" / ")} ft; end ${r9.lakes.end[0].toFixed(4)} ft (exact ${ex(3 * 3600).toFixed(4)}); outlet ${r9.lakes.outlet[0].toFixed(0)} cf`);
+    const msgs = [];
+    for (const rl of [{ stageArea: [[95, 20000]] }, { stageArea: [[100, 2e4], [95, 4e4]] }, { stageArea: [[95, 0], [100, 4e4]] }, { areaFt2: Ar, outlet: { crestFt: 97, lengthFt: 0 } }, { areaFt2: Ar, outlet: { crestFt: "97", lengthFt: 10 } }, { areaFt2: Ar, outlet: { crestFt: 97, lengthFt: 10, cw: -1 } }])
+      try { await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.01, rainAt: () => 0, stageAt: () => [98], routedLakes: [Object.assign({ lake: 0, level0: 98 }, rl)] }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    ok("L13 a one-row, falling or zero-area stage-area table and a zero length, text crest or negative coefficient outlet are refused", /two or more/.test(msgs[0]) && /must rise/.test(msgs[1]) && /positive areas/.test(msgs[2]) && /outlet length 0/.test(msgs[3]) && /outlet crest 97 is not/.test(msgs[4]) && /weir coefficient -1/.test(msgs[5]), msgs.join(" | "));
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log("CRASH " + (e.stack || e)); process.exit(1); });

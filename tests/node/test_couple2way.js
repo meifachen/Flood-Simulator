@@ -272,6 +272,21 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       msgs.slice(0, 4).every((m) => /curb weir coefficient .* is not a positive number/.test(m)) && /depths for/.test(msgs[4]) && /clamp values for/.test(msgs[5]) &&
       msgs.slice(6, 11).every((m) => /is not (zero or )?a positive number/.test(m)) && msgs[11] === "accepted", msgs.join(" | "));
   }
+  // C18 a routed lake's outlet discharging into SWMM: what each outlet released reaches its node (a coupled junction, J4, and the storage node
+  // POND, which is inside a level boundary and not coupled) as lateral inflow; SWMM's report gains exactly that external inflow
+  {
+    const runO = async (vols) => {
+      const c = await C2.makeCoupler(build(), createSWMM, inp, model, { cw: 0, area: 0 }), f = c.lakeOutletTo(["J4", "POND"]);
+      for (let t = 1; t < 2 - 1e-9; t += 300 / 3600) { const sv = flat(0); await c.sourceAt(t, t + 300 / 3600, sv); await c.afterChunk(t, t + 300 / 3600, sv); f(t, t + 300 / 3600, vols); }
+      const fin = c.finish(); return { ext: rptExternal(fin.rpt), t: c.tally };
+    };
+    const base = await runO([0, 0]), wo = await runO([1000, 500]);
+    const outfall = model.nodes.find((n) => /OUTFALL/i.test(n.type)), msgs = [];
+    for (const nm of [outfall && outfall.name, "NOPE"]) { try { (await C2.makeCoupler(build(), createSWMM, inp, model, {})).lakeOutletTo([nm]); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } }
+    ok("C18 lake outlet water handed to SWMM nodes reaches them: report external inflow +18,000 cf (12 x 1,000 at J4, 12 x 500 at POND); an outfall or unknown node is refused",
+      Math.abs(wo.ext - base.ext - 18000) < 0.01 * 18000 && wo.t.lakeOutletsToSwmm[0] === 12000 && wo.t.lakeOutletsToSwmm[1] === 6000 && Math.abs(wo.t.owedToSwmm) < 1 && /is an outfall/.test(msgs[0]) && /not in the SWMM model/.test(msgs[1]),
+      `report external inflow ${wo.ext.toFixed(0)} vs ${base.ext.toFixed(0)} cf without; outlets ${wo.t.lakeOutletsToSwmm.join(", ")} cf; owed ${wo.t.owedToSwmm.toFixed(2)} | ${msgs.join(" | ")}`);
+  }
   // C3 prepareInp forces ALLOW_PONDING NO
   {
     const p = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\nALLOW_PONDING YES\n[JUNCTIONS]\nJ 1 2\n");

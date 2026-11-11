@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-11-11. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/reviews/review-0.4.0-round3.md; response in docs/reviews/response-0.4.0-round3.md). Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/reviews/review-0.4.0-round2.md; response in docs/reviews/response-0.4.0-round2.md). Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
+Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and an outlet weir, discharging out of the model or into a SWMM node. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/reviews/review-0.4.0-round3.md; response in docs/reviews/response-0.4.0-round3.md). Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/reviews/review-0.4.0-round2.md; response in docs/reviews/response-0.4.0-round2.md). Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -33,6 +33,11 @@ Updated 2026-11-11. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/re
   - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
   - Loading a new DEM clears the other layers and says so.
 
+- **New in 0.5.0, lake outlets and storage:**
+  - A routed lake's polygon can carry `stage_area` (stage ft : area ac pairs; linear between, held beyond) and an outlet weir (`outlet_crest_ft`, `outlet_length_ft`, `outlet_cw` default 3.0), any letter case.
+  - The level follows from the volume held (exact inverse of the piecewise storage). The outlet uses the level half way through each chunk (a midpoint step), never draws the lake below its crest, and keeps chunks under its own stability limit.
+  - `outlet_node` sends the outlet's water into a SWMM junction or storage node in two-way runs (one coupling interval later); without it the water leaves the model and is reported. The lakes table and the two-way table show the outlet volumes.
+  - Checks: L12 (storage by hand: +0.111720 ft for 3,600 cf on a 20,000–40,000 sq ft table), L13 (weir drawdown against the closed-form level-pool solution within 0.001 ft at 60 s and 900 s chunks; refusals), C18 (SWMM report external inflow +17,990 of 18,000 cf through a coupled junction and a storage node), W16 (properties read; storage lost by hand = outlet + water to the 2D), B26 (the page, budget closed with the outlet; the lakes table scrolls in its own box at 390 px, where it widened the page before). These are new functions: on 0.4.3 they crash or are absent.
 - **Fixed in 0.4.3 (review round 3):**
   - **2D scheme converges in the time step:** the de Almeida smoothing is scaled with the step, so short chunks and a low dtMax no longer slow the flow (a dam break moved 14,134 cf at dt 0.005 s against 54,801 cf at the Courant step; now 53,438 against 54,801). Ordinary runs, whose chunks hold ten or more Courant steps, are unchanged.
   - **Routed lakes:** chunks are kept under the measured stability limit of a level-dependent outside inflow, and a reversing level halves the chunk; the low-level guard checks only the 2D share, so withdrawals may draw a lidar lake below its surface.
@@ -230,7 +235,7 @@ Updated 2026-11-11. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/re
 - A soils GeoTIFF in the browser (the code path exists; only soils GeoJSON was run in the app).
 - Land cover classes other than NLCD codes (other schemes need an edited table).
 - Results files from very large grids (file size and memory when reopening).
-- The 0.3.1 fixes were checked by the tests above, not by a second independent review round. The 0.4.3 fixes have not had a review round of their own.
+- The 0.3.1 fixes were checked by the tests above, not by a second independent review round. The 0.4.3 fixes and the 0.5.0 lake outlets have not had a review round of their own.
 - The work PC (only the home laptop's Intel GPU was tested).
 - **Winter Haven:**
   - No check against observed flooding.
@@ -243,7 +248,7 @@ Updated 2026-11-11. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/re
 - The browser checks were not run against 0.3.0 (its page lacks the new inputs), so their fail-first status is not established.
 
 ## Open items
-- Routed lakes have no outlet and a constant area; a stage-area curve and an outlet rating would let them drain.
+- Lake outlets are a single weir; an outlet rating curve, a pipe or a gate is not modeled. The Winter Haven builder does not yet write outlets (the City's outlet structures are not in the public layers).
 - Inlet sizes at Winter Haven: capture now follows the inlet equations, so the default sizes matter more; the inventory has no sizes.
 - On-grade inlet interception (HEC-22 curves for inlets on a grade). Inlets use the sag equations at the local depth.
 - Time series of velocity (only maxima are kept).

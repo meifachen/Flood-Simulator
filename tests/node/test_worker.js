@@ -155,5 +155,22 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
       /100 distinct values/.test(mA) && after.bld === 0 && after.grid && /already in EPSG 2236/.test(mB) && x1 === x0 && mC === "" && rs.soils.groups.D === 1 && cleared.every(Boolean),
       `${mA.slice(0, 40)} -> buildings ${after.bld}, grid kept ${after.grid} | ${mB.slice(0, 60)} | "${mC}" | soils ${JSON.stringify(rs.soils.groups)} | cleared ${cleared.join()}`);
   }
+  // W16 a routed lake's stage-area table and outlet weir are read from its boundary feature (any letter case); the outlet's water is reported;
+  // a bad table, an outlet without a crest and an outlet into a SWMM node in a one-way run are refused
+  {
+    const pondWith = (props) => { const gj = JSON.parse(text(US, "pond.geojson")); gj.features[0].properties = Object.assign({}, gj.features[0].properties, props); return JSON.stringify(gj); };
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp"), out: ab(ex(US, "model.out")) });
+    const bnd = [{ index: 0, key: "POND", level: 58, routed: true }], base = { coupling: "off", t0: 0, t1: 0.5, engine: "cpu", rainSource: "none", outputSec: 900, boundaries: bnd };
+    const runWith = async (props) => { await w.load({ boundaries: pondWith(props) }); w.build(Object.assign({}, bopt, { lcTable: null, boundaries: bnd })); w.posted.length = 0; return w.run(base); };
+    const r = await runWith({ STAGE_AREA: "50: 1.0; 60: 2.0", Outlet_Crest_Ft: 57, outlet_length_ft: 5 });
+    const warn = JSON.stringify(w.posted.filter((m) => m.progress && m.progress.warnings).map((m) => m.progress.warnings));
+    // storage by hand from the table (area 1 ac at 50 ft, 2 ac at 60 ft, linear): V(h) = 43,560 (h - 50) (1 + 0.05 (h - 50)) cf
+    const lk = r.lakes, V = (h) => 43560 * (h - 50) * (1 + 0.05 * (h - 50)), lost = V(58) - V(lk.end[0]), budget = lk.outlet[0] - lk.from2d[0] - lk.rain[0];
+    const m = [await refused(runWith({ stage_area: "50:1" })), await refused(runWith({ stage_area: "60:2; 50:1" })), await refused(runWith({ outlet_length_ft: 5 })), await refused(runWith({ outlet_crest_ft: 57, outlet_length_ft: 5, outlet_node: "J4" }))];
+    ok("W16 a stage-area table and an outlet weir are read from the lake's feature; storage lost (by hand from the table) = outlet + water to the 2D; bad tables, a crestless outlet and an outlet into SWMM in a run without two-way coupling are refused",
+      lk.areaFrom[0] === "stage-area table" && lk.outlet[0] > 100 && Math.abs(lost - budget) < 1e-6 * lost && lk.end[0] < 58 && lk.end[0] > 57 && /discharge out of the model/.test(warn) &&
+      /stage_area "50:1" is not two or more/.test(m[0]) && /stages must rise \(60 then 50\)/.test(m[1]) && /needs outlet_crest_ft and outlet_length_ft/.test(m[2]) && /need two-way coupling/.test(m[3]),
+      `end ${lk.end[0].toFixed(3)} ft; storage lost ${lost.toFixed(1)} cf = outlet ${lk.outlet[0].toFixed(1)} + to the 2D ${(-lk.from2d[0]).toFixed(1)} cf | ${m.join(" | ")}`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

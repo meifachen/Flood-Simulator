@@ -108,7 +108,13 @@
 <ul>
 <li><b>Fixed level</b> (ft), typed in or from the polygon's <code>level_ft</code>.</li>
 <li><b>A SWMM storage or outfall node:</b> its head from the .out file, or live in two-way coupling.</li>
-<li><b>Routed:</b> the lake starts at the level given and rises and falls with the water it gains: the water the 2D sends into it, rain on its whole area and, in two-way coupling, the inflow of SWMM outfalls that discharge into it. Those outfalls take the lake level as their stage. The lake is a level pool with a constant area and no outlet. Give its whole surface area in <i>Lake area</i> (or an <code>area_ac</code> property) when the grid holds only part of it; blank uses the part inside the grid. A <code>routed</code> property of true selects this when the file loads. The results show each routed lake's start, peak and end level and where its water came from.</li>
+<li><b>Routed:</b> the lake starts at the level given and rises and falls with the water it gains: the water the 2D sends into it, rain on its whole area and, in two-way coupling, the inflow of SWMM outfalls that discharge into it. Those outfalls take the lake level as their stage. Give its whole surface area in <i>Lake area</i> (or an <code>area_ac</code> property) when the grid holds only part of it; blank uses the part inside the grid. A <code>routed</code> property of true selects this when the file loads. The results show each routed lake's start, peak and end level and where its water came from.</li>
+</ul>
+<p>A routed lake can also have, as properties of its polygon (any letter case):</p>
+<ul>
+<li><b>A stage-area table,</b> <code>stage_area</code>: two or more pairs of stage (ft) and area (ac), such as <code>"95:12; 100:20"</code> or <code>[[95, 12], [100, 20]]</code>. The area is linear between stages and held beyond the first and last, and the level follows from the volume the lake holds. Without a table the area is constant.</li>
+<li><b>An outlet weir,</b> <code>outlet_crest_ft</code> and <code>outlet_length_ft</code>, with <code>outlet_cw</code> (default 3.0): Q = Cw L (level − crest)<sup>1.5</sup> cfs, taken at the level half way through each chunk. The outlet never draws the lake below its crest.</li>
+<li><b>Where the outlet goes,</b> <code>outlet_node</code>: a SWMM junction or storage node (not an outfall) that receives the outlet's water as inflow, one coupling interval later, in two-way runs. Without it the water leaves the model and is reported in the lakes table.</li>
 </ul>
 </section>
 
@@ -176,7 +182,7 @@
 <ul>
 <li>Two-way coupling is explicit (one coupling interval of lag).</li>
 <li>Inlets use sag equations at the local depth; on-grade interception curves are not used.</li>
-<li>A routed lake is a level pool with a constant area and no outlet.</li>
+<li>A routed lake is a level pool: one level over its whole area. Its area is constant unless a stage-area table is given, and its only outlet is the weir given (if any); an outlet rating curve or a gate is not modeled.</li>
 <li>A routed lake's level is updated once per chunk of 2D steps (at most the coupling interval in two-way runs), from the water that crossed its edge and the outside inflow in that chunk. Chunks are kept short while the level moves and under the measured stability limit of a level-dependent outside inflow, so the level follows a fine update within about 0.03 ft in the tests. The first chunk after such an inflow starts is not limited, because its dependence on the level is not known yet.</li>
 <li>Cell velocity is the mean of the two face flows in each direction divided by the depth; it is a cell-average value.</li>
 <li>The local-inertial method is for subcritical flow: speeds above critical are capped (see the hatched cells).</li>

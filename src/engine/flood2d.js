@@ -459,14 +459,33 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
    *     initVel ({vmax, dvmax, froude}: with init, a hot start that carries both the depth and the velocity maxima over), cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
    *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source,
    *     afterChunk(tHours0, tHours1, solver) called once the interval has run (tHours1 is where it stopped; two-way coupling reads what the inlets took),
-   *     routedLakes: [{lake, areaFt2, level0}] lakes whose level rises and falls with the water they gain instead of following stageAt:
-   *       after each chunk, level += (net 2D inflow at the lake's edge + rain on areaFt2 + lakeInflow volume) / areaFt2 (a level pool with a constant area),
-   *     lakeInflow(tHours0, tHours1, levels) -> volumes (cu ft) that reached each routed lake over the chunk from outside the 2D (for example SWMM outfalls)}
+   *     routedLakes: [{lake, areaFt2, level0, stageArea, outlet}] lakes whose level rises and falls with the water they gain instead of following stageAt:
+   *       after each chunk, the lake's volume changes by the net 2D inflow at its edge + rain on its area + lakeInflow volume - its outlet's outflow,
+   *       and the level follows from its storage: a constant area areaFt2, or stageArea [[stage ft, area sq ft], ...] (stages rising; the area is
+   *       interpolated between them and held beyond them). outlet {crestFt, lengthFt, cw}: a weir, Q = cw lengthFt (level - crestFt)^1.5 cfs,
+   *       taken at the level at the start of each chunk and never drawing the lake below the crest,
+   *     lakeInflow(tHours0, tHours1, levels) -> volumes (cu ft) that reached each routed lake over the chunk from outside the 2D (for example SWMM outfalls),
+   *     lakeOutflow(tHours0, tHours1, volumes) is told the volume each routed lake's outlet released over the chunk (for example to pass it to SWMM)}
    * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
    * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
    * 50 ms so a stop request sent as a message is seen. The solver is reset at the start, so nothing carries over from an earlier run. */
   const now = () => (typeof performance !== "undefined" ? performance : Date).now();
   const yieldTask = () => new Promise((r) => (typeof setImmediate === "function" ? setImmediate(r) : setTimeout(r, 0)));
+  /* storage of a routed lake from [[stage, area], ...] (one pair: a constant area): the area is linear between stages and held beyond the
+   * first and last; volume is measured from the first stage. levelOf inverts the volume exactly (quadratic within a segment). */
+  function storage(tab) {
+    const n = tab.length, s = tab.map((x) => x[0]), a = tab.map((x) => x[1]), V = [0];
+    for (let m = 1; m < n; m++) V.push(V[m - 1] + 0.5 * (a[m - 1] + a[m]) * (s[m] - s[m - 1]));
+    const area = (h) => { if (h <= s[0]) return a[0]; if (h >= s[n - 1]) return a[n - 1]; let m = 1; while (s[m] < h) m++; return a[m - 1] + (a[m] - a[m - 1]) * (h - s[m - 1]) / (s[m] - s[m - 1]); };
+    const vol = (h) => { if (h <= s[0]) return (h - s[0]) * a[0]; if (h >= s[n - 1]) return V[n - 1] + (h - s[n - 1]) * a[n - 1]; let m = 1; while (s[m] < h) m++; return V[m - 1] + 0.5 * (a[m - 1] + area(h)) * (h - s[m - 1]); };
+    const levelOf = (v) => {
+      if (v <= 0) return s[0] + v / a[0]; if (v >= V[n - 1]) return s[n - 1] + (v - V[n - 1]) / a[n - 1];
+      let m = 1; while (V[m] < v) m++;
+      const dv = v - V[m - 1], a0 = a[m - 1], k = (a[m] - a0) / (s[m] - s[m - 1]);   // a(x) = a0 + k x, volume a0 x + k x^2 / 2
+      return s[m - 1] + (Math.abs(k) < 1e-12 ? dv / a0 : 2 * dv / (a0 + Math.sqrt(a0 * a0 + 2 * k * dv)));
+    };
+    return { area, vol, levelOf, minArea: Math.min(...a) };
+  }
   async function simulate(g, solver, o) {
     const A = g.dx * g.dx, cfl = o.cfl ?? 0.7, dtMax = o.dtMax ?? 5, chunkSec = o.chunkSec ?? 60, readSec = o.readSec ?? 900;
     if (!(Number.isFinite(o.t0) && Number.isFinite(o.t1) && o.t1 > o.t0)) throw new Error(`Invalid simulation window: start ${o.t0}, end ${o.t1} (hours); the end must be after the start`);
@@ -487,9 +506,28 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     // routed lakes: a level pool per lake, driven by the volume that crosses its edge cells (the only lake cells with flux), rain on its area and outside inflow
     const routed = (o.routedLakes || []).map((r, i) => {
       if (!(Number.isInteger(r.lake) && r.lake >= 0 && r.lake < K)) throw new Error(`Routed lake ${i + 1}: lake ${r.lake} is not one of the ${K} level boundaries`);
-      if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${i + 1}: area ${r.areaFt2} is not a positive number`);
-      if (!Number.isFinite(r.level0)) throw new Error(`Routed lake ${i + 1}: starting level ${r.level0} is not a number`);
-      return { lake: r.lake, area: r.areaFt2, level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0, kExt: 0, lastRate: null, lastLv: 0 };
+      const nm = r.name || `Lake ${r.lake + 1}`;
+      if (!Number.isFinite(r.level0)) throw new Error(`Routed lake ${nm}: starting level ${r.level0} is not a number`);
+      let tab;
+      if (r.stageArea !== undefined && r.stageArea !== null) {
+        tab = r.stageArea;
+        if (!(Array.isArray(tab) && tab.length >= 2 && tab.every((x) => Array.isArray(x) && x.length === 2 && x.every((v) => typeof v === "number" && Number.isFinite(v)) && x[1] > 0)))
+          throw new Error(`Routed lake ${nm}: the stage-area table ${JSON.stringify(tab)} needs two or more [stage ft, area sq ft] pairs with positive areas`);
+        for (let m = 1; m < tab.length; m++) if (!(tab[m][0] > tab[m - 1][0])) throw new Error(`Routed lake ${nm}: stages in the stage-area table must rise (${tab[m - 1][0]} then ${tab[m][0]})`);
+      } else {
+        if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${nm}: area ${r.areaFt2} is not a positive number`);
+        tab = [[r.level0, r.areaFt2]];
+      }
+      let out = null;
+      if (r.outlet !== undefined && r.outlet !== null) {
+        const ol = r.outlet, cw = ol.cw ?? 3.0;
+        if (!Number.isFinite(ol.crestFt)) throw new Error(`Routed lake ${nm}: outlet crest ${ol.crestFt} is not a number`);
+        if (!(ol.lengthFt > 0 && Number.isFinite(ol.lengthFt))) throw new Error(`Routed lake ${nm}: outlet length ${ol.lengthFt} is not a positive number`);
+        if (!(cw > 0 && Number.isFinite(cw))) throw new Error(`Routed lake ${nm}: outlet weir coefficient ${cw} is not a positive number`);
+        out = { crest: ol.crestFt, len: ol.lengthFt, cw };
+      }
+      const S = storage(tab);
+      return { lake: r.lake, S, out, outVol: 0, area: S.area(r.level0), level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0, kExt: 0, lastRate: null, lastLv: 0 };
     });
     if (routed.length) {
       const byLake = new Map();
@@ -504,7 +542,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       }
       for (const r of routed) {
         // the lake's surface is at least its own cells: a smaller area would move the level too far for every cubic foot
-        if (r.area < r.nCells * A * (1 - 1e-9)) throw new Error(`Routed lake ${r.name}: area ${(r.area / 43560).toFixed(3)} ac is smaller than its ${r.nCells} cells in the grid (${(r.nCells * A / 43560).toFixed(3)} ac)`);
+        if (r.area < r.nCells * A * (1 - 1e-9)) throw new Error(`Routed lake ${r.name}: area ${(r.area / 43560).toFixed(3)} ac${r.S.minArea !== r.area ? " at its starting level" : ""} is smaller than its ${r.nCells} cells in the grid (${(r.nCells * A / 43560).toFixed(3)} ac)`);
         r.prev = new Float64Array(r.cells.length);
       }
     }
@@ -517,8 +555,13 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
      * can still grow past the stability limit of a level-dependent outside inflow, so each lake also measures that dependence from one
      * chunk to the next, k = -d(outside inflow rate)/d(level) (cfs/ft), and keeps its chunks under A/k, half the explicit limit 2A/k.
      * A level that reverses by more than 0.002 ft two chunks running halves the cap as well. */
-    const lakeDt = () => { let m = Infinity; for (const r of routed) { m = Math.min(m, r.cap, r.kExt > 0 ? Math.max(0.05, r.area / r.kExt) : Infinity); const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
-      const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.05, 0.25 * r.area / dqdh)); } return m; };
+    /* An outlet weir is known exactly, so its limit is set directly: dQ/dh = 1.5 cw L H^0.5, and chunks stay under A/(dQ/dh). */
+    const lakeDt = () => { let m = Infinity; for (const r of routed) { const Ah = r.S.area(r.level);
+      m = Math.min(m, r.cap, r.kExt > 0 ? Math.max(0.05, Ah / r.kExt) : Infinity);
+      if (r.out && r.level > r.out.crest) m = Math.min(m, Math.max(0.05, Ah / (1.5 * r.out.cw * r.out.len * Math.sqrt(r.level - r.out.crest))));
+      const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
+      const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.05, 0.25 * Ah / dqdh)); } return m; };
+    if (o.lakeOutflow !== undefined && o.lakeOutflow !== null && typeof o.lakeOutflow !== "function") throw new Error("lakeOutflow must be a function");
     // the lowest ground of the grid: water drains over the land no lower than this
     let zLow = Infinity; if (routed.length) for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) !== 1) zLow = Math.min(zLow, g.aux[4 * k]);
     if (o.lakeInflow !== undefined && o.lakeInflow !== null) {
@@ -613,13 +656,20 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         const levels0 = routed.map((r) => r.level), ext = o.lakeInflow ? await o.lakeInflow(t / 3600, (t + dt * done) / 3600, levels0.slice()) : null;
         if (o.lakeInflow && !(ext && ext.length === routed.length && Array.from(ext).every((v) => typeof v === "number" && Number.isFinite(v))))
           throw new Error(`Inflow to the routed lakes is missing or not a number at hour ${(t / 3600).toFixed(2)} (${JSON.stringify(ext && Array.from(ext))})`);
+        const outV = routed.map(() => 0);
         for (const [i, r] of routed.entries()) {
           const cur = r.cells.length ? (solver.kind === "cpu" ? Float64Array.from(r.cells, (k) => solver.acc[4 * k + 3]) : Float64Array.from(await solver.cellsOf(solver.bAcc, r.cells, 3))) : new Float64Array(0);
           let dv = 0; for (let m = 0; m < cur.length; m++) dv += cur[m] - r.prev[m]; r.prev = cur;
-          const v2d = dv * A, vr = rain * dt * done * r.area, ve = ext ? ext[i] : 0;
-          const d = (v2d + vr + ve) / r.area;
-          r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.level += d;
-          const used = dt * done, rate = ve / used, lv = levels0[i];
+          const used = dt * done, lv = levels0[i], V0 = r.S.vol(lv);
+          const v2d = dv * A, vr = rain * used * r.S.area(lv), ve = ext ? ext[i] : 0;
+          // the outlet runs at the level half way through the chunk (a midpoint step: the outflow at the start level, over half the chunk, gives
+          // that level), and never takes the lake below its crest
+          const qOut = (h) => (r.out && h > r.out.crest ? r.out.cw * r.out.len * Math.pow(h - r.out.crest, 1.5) : 0);
+          const hMid = r.S.levelOf(V0 + 0.5 * (v2d + vr + ve - qOut(lv) * used));
+          const vo = r.out ? Math.min(qOut(hMid) * used, Math.max(V0 + v2d + vr + ve - r.S.vol(r.out.crest), 0)) : 0;
+          r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.outVol += vo; outV[i] = vo;
+          r.level = r.S.levelOf(V0 + v2d + vr + ve - vo);
+          const d = r.level - lv, rate = ve / used;
           // level dependence of the outside inflow, measured between this chunk and the last (only from a level change large enough to read)
           if (ext && r.lastRate !== null && Math.abs(lv - r.lastLv) > 1e-4) { const k = -(rate - r.lastRate) / (lv - r.lastLv); r.kExt = Math.max(k > 0 ? k : 0, r.kExt * 0.9); }
           if (ext) { r.lastRate = rate; r.lastLv = lv; }
@@ -629,9 +679,10 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           r.lastD = d;
           // Only the 2D exchange is checked: a lake loses water to the land only down to its edge, so its 2D share alone cannot take it below
           // the grid's lowest ground. Outside withdrawals (water flowing back into SWMM) may lower a lidar lake below its flattened surface.
-          const lv2d = r.start + (r.gain2d + r.gainRain) / r.area;
+          const lv2d = r.S.levelOf(r.S.vol(r.start) + r.gain2d + r.gainRain);
           if (lv2d < Math.min(zLow, r.start) - 0.01) throw new Error(`Routed lake ${r.name}: the water it exchanged with the 2D grid alone would put it at ${lv2d.toFixed(2)} ft, below the lowest ground of the grid (${zLow.toFixed(2)} ft), at hour ${(t / 3600).toFixed(2)}: a numerical failure`);
         }
+        if (o.lakeOutflow && routed.some((r) => r.out)) await o.lakeOutflow(t / 3600, (t + dt * done) / 3600, outV);
         lakeSeries.push({ tHours: (t + dt * done) / 3600, levels: routed.map((r) => r.level) });
       }
       // next chunk: allow for the depth to grow by a quarter before the next reading
@@ -644,7 +695,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     if (stopped && (!frames.length || frames[frames.length - 1].tHours < t / 3600 - 1e-9)) frames.push(await doRead(true));
     const vel = solver.readVel ? await solver.readVel() : null;
     const lakes = routed.length ? { names: routed.map((r) => r.name), lake: routed.map((r) => r.lake), area: routed.map((r) => r.area), start: (o.routedLakes || []).map((r) => r.level0),
-      end: routed.map((r) => r.level), peak: routed.map((r, i) => lakeSeries.reduce((m, x) => Math.max(m, x.levels[i]), Math.max(r.level, (o.routedLakes || [])[i].level0))), from2d: routed.map((r) => r.gain2d), rain: routed.map((r) => r.gainRain), outside: routed.map((r) => r.gainExt), series: lakeSeries } : null;
+      end: routed.map((r) => r.level), peak: routed.map((r, i) => lakeSeries.reduce((m, x) => Math.max(m, x.levels[i]), Math.max(r.level, (o.routedLakes || [])[i].level0))), from2d: routed.map((r) => r.gain2d), rain: routed.map((r) => r.gainRain), outside: routed.map((r) => r.gainExt), outlet: routed.map((r) => r.outVol), series: lakeSeries } : null;
     return { ledger: L, steps, chunks, frames, stopped, vmax: vel && vel.vmax, dvmax: vel && vel.dvmax, froude: vel && vel.froude, lakes };
   }
 

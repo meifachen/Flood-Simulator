@@ -311,6 +311,21 @@ with sync_playwright() as p:
         settings(pg, t0="0", engine="gpu"); pg.click("#b-run"); msg = wait_done(pg); glk = pg.evaluate("S.final.lakes")
         ok("B20 the routed pond on the GPU matches the CPU (peak level within 0.001 ft)", "on the GPU" in msg and glk and abs(glk["peak"][0] - cpu_lk["peak"][0]) < 1e-3, f"CPU {cpu_lk['peak'][0]:.4f}, GPU {glk and glk['peak'][0]:.4f} ft")
 
+    # ---- B26 the pond with a stage-area table and an outlet weir from its boundary file: it drains through the outlet, the table shows it
+    gj = json.load(open(os.path.join(ROOT, "examples", "synthetic_us", "pond.geojson")))
+    gj["features"][0]["properties"].update({"stage_area": "50:1.0; 60:2.0", "outlet_crest_ft": 54.0, "outlet_length_ft": 4})
+    pond_out = os.path.join(TMP, "pond_outlet.geojson"); json.dump(gj, open(pond_out, "w"))
+    pg.set_input_files("#f-bnd", pond_out); pg.wait_for_function("/Loaded pond_outlet/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    pg.select_option(".b-src", "__routed__"); pg.fill(".b-lvl", "54.8")
+    settings(pg, t0="0", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)
+    lk = pg.evaluate("S.final.lakes"); V = lambda h: 43560 * (h - 50) * (1 + 0.05 * (h - 50))
+    bud = lk and (V(lk["end"][0]) - V(54.8)) - (lk["from2d"][0] + lk["rain"][0] + lk["outside"][0] - lk["outlet"][0])
+    led = pg.inner_text("#ledger")
+    ok("B26 a pond with a stage-area table and an outlet weir: storage change = 2D + rain - outlet; the lakes table shows the outlet", msg.startswith("Done") and lk and lk["outlet"][0] > 0 and abs(bud) < 1e-3 * lk["outlet"][0] and "out of the model" in led and "table, at start" in led,
+       f"end {lk and lk['end'][0]:.3f} ft; outlet {lk and lk['outlet'][0]:.0f} cf; budget error {bud and round(bud, 3)} cf")
+    vp = pg.viewport_size; pg.set_viewport_size({"width": 390, "height": 844}); pg.wait_for_timeout(400); sw26 = pg.evaluate("document.documentElement.scrollWidth"); pg.set_viewport_size(vp)
+    ok("B26 the lakes table scrolls in its own box at 390 px (no page scroll)", sw26 <= 390, f"scrollWidth {sw26}")
+
     # ---- B21 compare two saved runs: the fixed-level pond against the routed one
     pg.select_option(".b-src", "POND"); pg.select_option("#rain", "none"); pg.evaluate("waterNotes()"); settings(pg, t0="0", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)   # no rain: less flooding than the routed run
     pg.set_input_files("#f-cmp", routed_res); pg.wait_for_timeout(800)

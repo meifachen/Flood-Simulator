@@ -507,9 +507,10 @@ function ledger() {
 function lakesHtml() {
   const lk = S.final && S.final.lakes; if (!lk) return "";
   const ac = (v) => fmt(v / 43560, 3);
-  return `<h3 style="margin:12px 0 6px;font-size:15px">Routed lakes</h3><table class="t"><thead><tr><th>Lake</th><th class="n">Start (ft)</th><th class="n">Peak (ft)</th><th class="n">End (ft)</th><th class="n">Area (ac)</th><th class="n">From the 2D (ac-ft)</th><th class="n">Rain on the lake (ac-ft)</th><th class="n">SWMM outfalls (ac-ft)</th></tr></thead><tbody>` +
-    lk.names.map((n, i) => `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td></tr>`).join("") +
-    `</tbody></table><p class="note">A routed lake is a level pool with a constant area and no outlet: its level changes by (water from the 2D + rain on its area + SWMM outfall inflow) ÷ area.</p>`;
+  return `<h3 style="margin:12px 0 6px;font-size:15px">Routed lakes</h3><div style="overflow-x:auto;max-width:100%"><table class="t"><thead><tr><th>Lake</th><th class="n">Start (ft)</th><th class="n">Peak (ft)</th><th class="n">End (ft)</th><th class="n">Area (ac)</th><th class="n">From the 2D (ac-ft)</th><th class="n">Rain on the lake (ac-ft)</th><th class="n">SWMM outfalls (ac-ft)</th><th class="n">Outlet (ac-ft)</th></tr></thead><tbody>` +
+    lk.names.map((n, i) => { const tab = lk.areaFrom[i] === "stage-area table", out = lk.outlet ? lk.outlet[i] : 0, node = lk.outletNode && lk.outletNode[i];
+      return `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${tab ? " (table, at start)" : lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td><td class="n">${lk.hasOutlet && lk.hasOutlet[i] ? `${ac(out)}${node ? ` to ${esc(node)}` : " out of the model"}` : "none"}</td></tr>`; }).join("") +
+    `</tbody></table></div><p class="note">A routed lake is a level pool: its volume changes by water from the 2D + rain on its area + SWMM outfall inflow − its outlet, and its level follows from its area (constant, or its stage-area table).</p>`;
 }
 function swmm2Html() {
   const r2 = S.final && S.final.swmm2; if (!r2) return "";
@@ -521,7 +522,8 @@ function swmm2Html() {
     <tr><td>Inlet demand the surface could not supply</td><td class="n">${ac(t.shortfall || 0)} ac-ft</td></tr>
     <tr><td>Overflow made in the last interval (after the 2D ended)</td><td class="n">${ac(t.pendingOverflow || 0)} ac-ft</td></tr>
     <tr><td>Of the water into inlets: back out of the same flooding node in the same interval</td><td class="n">${ac(t.recirculated || 0)} ac-ft</td></tr>
-    <tr><td>Taken by inlets but not yet received by SWMM at the end (− means received ahead)</td><td class="n">${ac(t.owedToSwmm || 0)} ac-ft</td></tr>
+    ${t.lakeOutletsToSwmm ? `<tr><td>Routed lake outlets into SWMM nodes</td><td class="n">${ac(t.lakeOutletsToSwmm.reduce((a, v) => a + v, 0))} ac-ft</td></tr>` : ""}
+    <tr><td>Taken by inlets${t.lakeOutletsToSwmm ? " or lake outlets" : ""} but not yet received by SWMM at the end (− means received ahead)</td><td class="n">${ac(t.owedToSwmm || 0)} ac-ft</td></tr>
     <tr><td>Inlets used</td><td class="n">${(r2.inlets || []).length}</td></tr>
     <tr><td>SWMM flow routing continuity error</td><td class="n">${fmt(r2.massBalance.flow, 3)} %</td></tr></tbody></table>
     ${r2.notes && r2.notes.length ? `<p class="warn">${r2.notes.map(esc).join("<br>")}</p>` : ""}

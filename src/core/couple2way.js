@@ -200,6 +200,7 @@
     const tally = { recirculated: 0, deliveredToSwmm: 0, owedToSwmm: 0, sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, demanded: 0, shortfall: 0, pendingOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
     let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null; const owed = links.map(() => 0);
+    const extraOwed = new Map();   // SWMM node index -> lake outlet water owed to a node that is not a coupled junction
     const inletCells = inlets.map((it) => it.k), cells = [...new Set(inletCells)];
     const clampAt = async (solver) => { const c = solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length); if (!c || c.length !== cells.length) throw new Error(`The 2D gave ${c ? c.length : "no"} clamp values for ${cells.length} cells`); return c; };
     /* before an interval: inlet demands from the depths now, and last interval's overflow volume as this interval's source */
@@ -239,10 +240,12 @@
       // SWMM steps on its own routing step, which can end past h1, so a rate set for this interval is not always used for exactly dt.
       // What SWMM has received is tallied per step (latV); each interval's rate delivers this interval's capture plus what is still owed.
       links.forEach((l, j) => { if (!l.junction || sw.done) return; const due = owed[j] + lat[j] * dt; sw.setLat(l.i, Math.max(due, 0) / dt); });
-      const v0 = links.map((l) => (sw.latV ? sw.latV.get(l.i) || 0 : 0));
+      if (!sw.done) extraOwed.forEach((v, i) => sw.setLat(i, Math.max(v, 0) / dt));
+      const v0 = links.map((l) => (sw.latV ? sw.latV.get(l.i) || 0 : 0)), x0 = new Map([...extraOwed.keys()].map((i) => [i, sw.latV ? sw.latV.get(i) || 0 : 0]));
       const t0 = sw.tSec, ov = sw.advance(h1 * 3600, allIdx), dts = Math.max(sw.tSec - t0, 0);
       links.forEach((l, j) => { if (!l.junction) return; const got = (sw.latV ? sw.latV.get(l.i) || 0 : 0) - v0[j]; owed[j] += lat[j] * dt - got; tally.deliveredToSwmm += got; });
-      tally.owedToSwmm = owed.reduce((a, v) => a + v, 0);
+      x0.forEach((v, i) => { const got = (sw.latV ? sw.latV.get(i) || 0 : 0) - v; extraOwed.set(i, extraOwed.get(i) - got); tally.deliveredToSwmm += got; });
+      tally.owedToSwmm = owedTotal();
       for (let i = 0; i < sw.nNodes; i++) if (!coupledSet.has(i)) tally.lostOverflow += ov[i] * dts;
       lastRates = links.map((l, j) => {
         const v = ov[l.i] * dts; pendV[j] += v; tally.fromSwmm += v; tally.recirculated += Math.min(v, lat[j] * dt); tally.perNode[j].out += v; tally.perNode[j].in += lat[j] * dt; tally.sentToSwmm += lat[j] * dt;
@@ -256,18 +259,38 @@
     const headFt = (name) => { const i = sw.names.indexOf(name); if (i < 0) throw new Error(`Node ${name} is not in the SWMM model`); return sw.get(P.NODE_HEAD, i) * sw.lf; };
     const junctionIdx = links.filter((l) => l.junction).map((l) => l.i);
     /* end the exchange: zero the inlet inflow at every coupled junction (otherwise SWMM keeps adding the last capture for the rest of its run) */
-    const stop = () => { if (!sw.done) sw.clearInflow(junctionIdx); };
+    const stop = () => { if (!sw.done) sw.clearInflow(junctionIdx.concat([...extraOwed.keys()])); };
+    const owedTotal = () => owed.reduce((a, v) => a + v, 0) + [...extraOwed.values()].reduce((a, v) => a + v, 0);
+    /* routed lakes whose outlet discharges into a SWMM node (a name per lake, or null): the volume each outlet released over a chunk is handed
+     * to that node as lateral inflow over the next interval (with the inlet water when the node is also a coupled junction), and tallied */
+    function lakeOutletTo(names) {
+      const idx = names.map((nm, m) => {
+        if (nm === null || nm === undefined) return -1;
+        const i = sw.names.indexOf(String(nm)); if (i < 0) throw new Error(`Lake outlet ${m + 1}: node ${show0(nm)} is not in the SWMM model`);
+        if (sw.get(P.NODE_TYPE, i) === 1) throw new Error(`Lake outlet ${m + 1}: node ${nm} is an outfall; give the junction or storage node the outlet discharges into`);
+        return i;
+      });
+      tally.lakeOutletsToSwmm = names.map(() => 0);
+      return (h0, h1, vols) => vols.forEach((v, m) => {
+        if (idx[m] < 0 || !(v > 0)) return; tally.lakeOutletsToSwmm[m] += v;
+        const j = links.findIndex((l) => l.junction && l.i === idx[m]);
+        if (j >= 0) owed[j] += v; else extraOwed.set(idx[m], (extraOwed.get(idx[m]) || 0) + v);
+        tally.owedToSwmm = owedTotal();
+      });
+    }
     /* stop the exchange, run SWMM to the end of its simulation and close it */
     const finish = () => {
       if (cur) throw new Error(`afterChunk was not called for the last interval (from hour ${cur.h0.toFixed(4)}): the water the inlets took there would never reach SWMM`);
       // hand SWMM what the inlets took but its steps have not yet received (at most about one routing step), then stop and run to the end
-      for (let k = 0; k < 50 && !sw.done && owed.some((v) => v > 1e-6); k++) {
-        const step = sw.lastStep > 0 ? sw.lastStep : 1, v0 = links.map((l) => sw.latV.get(l.i) || 0);
+      for (let k = 0; k < 50 && !sw.done && (owed.some((v) => v > 1e-6) || [...extraOwed.values()].some((v) => v > 1e-6)); k++) {
+        const step = sw.lastStep > 0 ? sw.lastStep : 1, v0 = links.map((l) => sw.latV.get(l.i) || 0), x0 = new Map([...extraOwed.keys()].map((i) => [i, sw.latV.get(i) || 0]));
         links.forEach((l, j) => { if (l.junction) sw.setLat(l.i, Math.max(owed[j], 0) / step); });
+        extraOwed.forEach((v, i) => sw.setLat(i, Math.max(v, 0) / step));
         sw.advance(sw.tSec + step * 0.999, []);
         links.forEach((l, j) => { if (!l.junction) return; const got = (sw.latV.get(l.i) || 0) - v0[j]; owed[j] -= got; tally.deliveredToSwmm += got; });
+        x0.forEach((v, i) => { const got = (sw.latV.get(i) || 0) - v; extraOwed.set(i, extraOwed.get(i) - got); tally.deliveredToSwmm += got; });
       }
-      tally.owedToSwmm = owed.reduce((a, v) => a + v, 0);
+      tally.owedToSwmm = owedTotal();
       stop(); sw.advance(1e12, []); return sw.finish();
     };
     /* routed lakes [{lake}]: the outfalls on each lake hand it their inflow (volume since the last call), and take the lake's level as their stage */
@@ -288,7 +311,7 @@
         sw.inVol.fill(0); return v;
       };
     }
-    return { lakeOutfalls, lakeInflowFor, sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, type: it.kind, lw: it.lw, area: it.area, curbLength: it.cl, curbHeight: it.ch, clog: it.clog, rimFt: it.rim })),
+    return { lakeOutfalls, lakeInflowFor, lakeOutletTo, sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, type: it.kind, lw: it.lw, area: it.area, curbLength: it.cl, curbHeight: it.ch, clog: it.clog, rimFt: it.rim })),
       sourceAt, afterChunk, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), stop, finish };
   }
 

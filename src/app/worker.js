@@ -151,6 +151,35 @@ async function loadAll(a) {
   return res;
 }
 
+/* a routed lake's storage and outlet from its boundary feature's properties (any letter case):
+ *   stage_area: [[stage ft, area ac], ...] or "stage:area; stage:area" (two or more rows, stages rising),
+ *   outlet_crest_ft, outlet_length_ft, outlet_cw (default 3.0): a weir; outlet_node: the SWMM node it discharges into (two-way runs) */
+function lakeProps(name, p0) {
+  const p = Object.create(null); for (const k of Object.keys(p0 || {})) { const l = k.toLowerCase(); if (!(l in p)) p[l] = p0[k]; }
+  const has = (v) => v !== undefined && v !== null && v !== "", show = (v) => (typeof v === "string" ? JSON.stringify(v) : JSON.stringify(v) ?? String(v));
+  const numOf = (v) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN);
+  const out = {};
+  if (has(p.stage_area)) {
+    let rows = p.stage_area;
+    if (typeof rows === "string") { const t = rows.trim(); try { rows = t.startsWith("[") ? JSON.parse(t) : t.split(/[;\n]+/).filter((x) => x.trim()).map((x) => x.split(/[:,\s]+/).filter(Boolean)); } catch (e) { rows = null; } }
+    const ok = Array.isArray(rows) && rows.length >= 2 && rows.every((x) => Array.isArray(x) && x.length === 2 && x.every((v) => Number.isFinite(numOf(v))) && numOf(x[1]) > 0);
+    if (!ok) throw new Error(`Routed lake ${name}: stage_area ${show(p.stage_area)} is not two or more pairs of stage (ft) and area (ac), such as "95:12; 100:20"`);
+    const tab = rows.map((x) => [numOf(x[0]), numOf(x[1]) * 43560]);
+    for (let m = 1; m < tab.length; m++) if (!(tab[m][0] > tab[m - 1][0])) throw new Error(`Routed lake ${name}: stage_area stages must rise (${tab[m - 1][0]} then ${tab[m][0]})`);
+    out.stageArea = tab;
+  }
+  const oc = p.outlet_crest_ft, ol = p.outlet_length_ft, ow = p.outlet_cw, on = p.outlet_node;
+  if (has(oc) || has(ol) || has(ow) || has(on)) {
+    if (!has(oc) || !has(ol)) throw new Error(`Routed lake ${name}: an outlet needs outlet_crest_ft and outlet_length_ft`);
+    const crest = numOf(oc), len = numOf(ol), cw = has(ow) ? numOf(ow) : 3.0;
+    if (!Number.isFinite(crest)) throw new Error(`Routed lake ${name}: outlet_crest_ft ${show(oc)} is not a number`);
+    if (!(len > 0)) throw new Error(`Routed lake ${name}: outlet_length_ft ${show(ol)} is not a positive number`);
+    if (!(cw > 0)) throw new Error(`Routed lake ${name}: outlet_cw ${show(ow)} is not a positive number`);
+    out.outlet = { crestFt: crest, lengthFt: len, cw };
+    if (has(on)) out.outletNode = String(on).trim();
+  }
+  return out;
+}
 const INLET_KEYS = new Set(["node", "inlet_type", "type", "perimeter_ft", "weir_length_ft", "open_area_sqft", "orifice_area_sqft", "cw", "co", "curb_length_ft", "curb_height_ft", "depression_width_ft", "clog", "rim_ft"]);
 /* a note when a raster's CRS cannot be matched to the DEM's (it is then read as if in the DEM's CRS) */
 function crsNote(R, what) {
@@ -205,7 +234,8 @@ async function run(o, id) {
   if (B.bkeys && (keys.length !== B.bkeys.length || keys.some((k, i) => k !== B.bkeys[i]))) throw new Error(`The level boundaries (${keys.join(", ") || "none"}) are not the ones the grid was built with (${B.bkeys.join(", ") || "none"}); build the grid again`);
   const given = (v) => v !== undefined && v !== null && String(v).trim() !== "";
   for (const b of o.boundaries || []) if (b.routed && given(b.node)) throw new Error(`Level boundary ${b.key}: a routed lake cannot also take its level from SWMM node ${b.node}`);
-  const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.routed || !given(b.node) ? null : String(b.node), level: b.level, routed: !!b.routed, areaAc: b.areaAc }));
+  const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.routed || !given(b.node) ? null : String(b.node), level: b.level, routed: !!b.routed, areaAc: b.areaAc, props: (BOUND[b.index] && BOUND[b.index].properties) || {} }));
+  const lakeNotes = [];
   // routed lakes: a level pool that starts at the level given and rises with what it gains; its area is the one given, else the part inside the grid
   const routedLakes = [];
   bspec.forEach((b, i) => {
@@ -215,8 +245,14 @@ async function run(o, id) {
     if (b.areaAc !== undefined && b.areaAc !== null && b.areaAc !== "" && !(typeof b.areaAc === "number" && b.areaAc > 0 && Number.isFinite(b.areaAc))) throw new Error(`Routed lake ${b.key}: area ${typeof b.areaAc === "number" ? String(b.areaAc) : JSON.stringify(b.areaAc)} (acres) is not a positive number`);
     const areaFt2 = b.areaAc > 0 ? b.areaAc * 43560 : cells * A;
     if (!(areaFt2 > 0)) throw new Error(`Routed lake ${b.key} has no cells in the grid; give its area`);
-    routedLakes.push({ lake: i, areaFt2, level0: b.level, name: b.key, areaFrom: b.areaAc > 0 ? "given" : "inside the grid", gridAc: cells * A / 43560 });
+    const lk = lakeProps(b.key, b.props);
+    if (lk.stageArea && b.areaAc > 0) lakeNotes.push(`Routed lake ${b.key}: its stage-area table is used, not its area of ${b.areaAc} ac`);
+    routedLakes.push({ lake: i, areaFt2, level0: b.level, name: b.key, areaFrom: lk.stageArea ? "stage-area table" : b.areaAc > 0 ? "given" : "inside the grid", gridAc: cells * A / 43560,
+      stageArea: lk.stageArea, outlet: lk.outlet, outletNode: lk.outletNode });
   });
+  for (const b of bspec) if (!b.routed) { const lk = lakeProps(b.key, b.props); if (lk.stageArea || lk.outlet) lakeNotes.push(`Level boundary ${b.key}: its stage-area table and outlet are used only when it is routed`); }
+  const outletNodes = routedLakes.map((r) => r.outletNode || null);
+  if (outletNodes.some(Boolean) && o.coupling !== "two") throw new Error(`Lake outlets into a SWMM node (${routedLakes.filter((r) => r.outletNode).map((r) => `${r.name} to ${r.outletNode}`).join(", ")}) need two-way coupling`);
   if (o.coupling === "two") {
     // two-way: SWMM runs here in step with the 2D; boundary levels from SWMM nodes are the live heads
     if (!MODEL || !INP) throw new Error("Two-way coupling needs the SWMM .inp");
@@ -239,6 +275,9 @@ async function run(o, id) {
   else if (o.rainSource === "uniform") { const ih = o.rainInHr, dur = o.rainHours; if (!(ih >= 0) || !(dur > 0)) throw new Error("Uniform rain needs an intensity and a duration"); rainStep = 300; rainAt = (i) => (i * 300 < dur * 3600 ? ih : 0); }
   const sources = cpl.sources;
   const runWarn = [];
+  runWarn.push(...lakeNotes);
+  const freeOut = routedLakes.filter((r) => r.outlet && !r.outletNode).map((r) => r.name);
+  if (freeOut.length) runWarn.push(`The outlets of ${freeOut.join(", ")} discharge out of the model (no outlet_node); that water is reported, not routed`);
   if (routedLakes.length && !two && MODEL) runWarn.push(`Routed lakes (${routedLakes.map((r) => r.name).join(", ")}) get no water from SWMM outfalls in a one-way run; only two-way coupling passes outfall flow to them`);
   const fr0 = { sources: (two ? two.nodes : sources).map((s) => ({ name: s.name, cell: s.cell })), warnings: (cpl.warnings || []).concat(runWarn), nodeMap: cpl.nodeMap || [] };
   post({ id, progress: { phase: "start", ...fr0 } });
@@ -255,7 +294,7 @@ async function run(o, id) {
   const t0w = Date.now(), simLen = (o.t1 - o.t0) * 3600;
   const isOpen = (k) => (g.aux[4 * k + 2] & 3) === 0;
   const r = await Flood2D.simulate(g, solver, {
-    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, routedLakes, lakeInflow: two && routedLakes.length ? two.lakeInflowFor(routedLakes) : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
+    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, routedLakes, lakeInflow: two && routedLakes.length ? two.lakeInflowFor(routedLakes) : undefined, lakeOutflow: two && outletNodes.some(Boolean) ? two.lakeOutletTo(outletNodes) : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
     shouldStop: () => STOP,
     onRead: async (fr) => {
       const st = fr.st, q = new Uint8Array(N); let wet = 0, vol = 0, dmax = 0, bNow = 0;
@@ -283,7 +322,7 @@ async function run(o, id) {
   const bReached = bMax.reduce((s, v) => s + (v > bthr ? 1 : 0), 0);
   const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N), froude = r.froude || new Uint8Array(N);
   let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; } froudeCells += froude[k]; }
-  const lakes = r.lakes ? Object.assign({}, r.lakes, { areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
+  const lakes = r.lakes ? Object.assign({}, r.lakes, { outletNode: outletNodes, hasOutlet: routedLakes.map((x) => !!x.outlet), areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
     seriesT: r.lakes.series.map((x) => x.tHours), seriesL: r.lakes.series.map((x) => x.levels) }) : null;
   return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, froudeCells, ledger: r.ledger, lakes, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }
