@@ -36,5 +36,17 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
   ok("files whose header does not match their contents are refused", out.every((m) => !/: opened$/.test(m)), out.join(" | "));
   const b2 = raw(gz), extra = new Uint8Array(b2.length + 8); extra.set(b2);
   ok("bytes beyond what the header lists are refused", /bytes more than its header lists/.test(await refused(extra)), await refused(extra));
+  // R-C1 comparing two runs on the same grid: per-cell change in maximum depth and the areas gained and lost (hand-made 2 x 2 runs)
+  {
+    const G = { nx: 2, ny: 2, x0: 0, y1: 0, cs: 10, dxFt: 10 }, ga = { G, type: Uint8Array.from([0, 0, 0, 1]) }, gb = { G, type: Uint8Array.from([0, 0, 0, 1]) };
+    const fa = { hmax: Float32Array.from([0.5, 0.05, 1.0, 9]), bReached: 3 }, fb = { hmax: Float32Array.from([0.2, 0.3, 1.05, 9]), bReached: 1 };
+    const c = RIO.compare(ga, fa, gb, fb, 0.1, 0.1), ac = 100 / 43560;
+    ok("R-C1 change in maximum depth per cell, with cells dry in both and walls left out", Math.abs(c.diff[0] - 0.3) < 1e-6 && Math.abs(c.diff[1] + 0.25) < 1e-6 && Math.abs(c.diff[2] + 0.05) < 1e-6 && Number.isNaN(c.diff[3]),
+      Array.from(c.diff).map((v) => (Number.isNaN(v) ? "NaN" : v.toFixed(2))).join(", "));
+    ok("R-C1 areas: wet only here, only in the other run, in both; deeper and shallower by at least 0.1 ft", Math.abs(c.acres.onlyThis) < 1e-12 && Math.abs(c.acres.onlyOther - ac) < 1e-12 && Math.abs(c.acres.both - 2 * ac) < 1e-12 &&
+      Math.abs(c.acres.deeper - ac) < 1e-12 && Math.abs(c.acres.shallower - ac) < 1e-12 && Math.abs(c.maxRise - 0.3) < 1e-6 && Math.abs(c.maxDrop + 0.25) < 1e-6 && c.buildings.this === 3 && c.buildings.other === 1, JSON.stringify(c.acres));
+    let m = ""; try { RIO.compare(ga, fa, { G: Object.assign({}, G, { cs: 5 }), type: gb.type }, fb, 0.1); } catch (e) { m = e.message; }
+    ok("R-C1 runs on different grids are refused, naming the difference", /different grids \(cell size: 10 vs 5\)/.test(m), m);
+  }
   const bad2 = res.filter((x) => !x.pass).length; console.log(bad2 ? `${bad2} FAILED` : "ALL PASS"); process.exit(bad2 ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

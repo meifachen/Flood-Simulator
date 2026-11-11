@@ -458,7 +458,10 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
    *     stageAt(tHours) -> array (ft), drainInHr, pipes, init (initial state; alone it is an initial condition and the depth maxima restart from it),
    *     initVel ({vmax, dvmax, froude}: with init, a hot start that carries both the depth and the velocity maxima over), cfl, dtMax, chunkSec, readSec, onRead(frame), shouldStop(),
    *     sources: [{cell, name}] point inflows, sourceAt(tHours0, tHours1) -> array of mean rates (cfs) over the interval, one per source,
-   *     afterChunk(tHours0, tHours1, solver) called once the interval has run (tHours1 is where it stopped; two-way coupling reads what the inlets took)}
+   *     afterChunk(tHours0, tHours1, solver) called once the interval has run (tHours1 is where it stopped; two-way coupling reads what the inlets took),
+   *     routedLakes: [{lake, areaFt2, level0}] lakes whose level rises and falls with the water they gain instead of following stageAt:
+   *       after each chunk, level += (net 2D inflow at the lake's edge + rain on areaFt2 + lakeInflow volume) / areaFt2 (a level pool with a constant area),
+   *     lakeInflow(tHours0, tHours1, levels) -> volumes (cu ft) that reached each routed lake over the chunk from outside the 2D (for example SWMM outfalls)}
    * Chunks never cross a rain-interval boundary, so each chunk has one rain intensity.
    * Invalid input is refused with an error rather than producing NaN depths or a hang. A CPU run yields to the event loop at least every
    * 50 ms so a stop request sent as a message is seen. The solver is reset at the start, so nothing carries over from an earlier run. */
@@ -481,7 +484,26 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     for (const pp of pipes) { const r = (pp.cell / g.nx) | 0, c = pp.cell % g.nx; if (!(pp.cell >= 0 && pp.cell < g.N) || r === 0 || c === 0 || r === g.ny - 1 || c === g.nx - 1) throw new Error("A pipe connection must be on an interior cell"); }
     const N = g.N, st0 = new Float32Array(4 * N);
     // initial state: dry open cells, boundary at the engine level
-    const s0 = checkStages(o.stageAt(o.t0), o.t0);
+    // routed lakes: a level pool per lake, driven by the volume that crosses its edge cells (the only lake cells with flux), rain on its area and outside inflow
+    const routed = (o.routedLakes || []).map((r, i) => {
+      if (!(Number.isInteger(r.lake) && r.lake >= 0 && r.lake < K)) throw new Error(`Routed lake ${i + 1}: lake ${r.lake} is not one of the ${K} level boundaries`);
+      if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${i + 1}: area ${r.areaFt2} is not a positive number`);
+      if (!Number.isFinite(r.level0)) throw new Error(`Routed lake ${i + 1}: starting level ${r.level0} is not a number`);
+      return { lake: r.lake, area: r.areaFt2, level: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0 };
+    });
+    if (routed.length) {
+      const byLake = new Map(routed.map((r) => [r.lake, r]));
+      for (let k = 0; k < N; k++) {
+        if ((g.aux[4 * k + 2] & 3) !== 2) continue; const r = byLake.get((g.aux[4 * k + 2] >> 4) & 255); if (!r) continue;
+        const rr = (k / g.nx) | 0, cc = k % g.nx;
+        const nb = [cc > 0 ? k - 1 : -1, cc < g.nx - 1 ? k + 1 : -1, rr > 0 ? k - g.nx : -1, rr < g.ny - 1 ? k + g.nx : -1];
+        if (nb.some((m) => m >= 0 && (g.aux[4 * m + 2] & 3) === 0)) r.cells.push(k);
+      }
+      for (const r of routed) r.prev = new Float64Array(r.cells.length);
+    }
+    const lakeStages = (s) => { if (!routed.length) return s; const out = Array.from(s); for (const r of routed) out[r.lake] = r.level; return out; };
+    const lakeSeries = [];
+    const s0 = lakeStages(checkStages(o.stageAt(o.t0), o.t0));
     for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 2) st0[4 * k] = Math.max(s0[(g.aux[4 * k + 2] >> 4) & 255] - g.aux[4 * k], 0);
     if (o.init) { if (o.init.length !== 4 * N) throw new Error("Initial state has the wrong size"); st0.set(o.init); }
     // init alone is an initial condition (for example a lake at rest): the depth and velocity maxima both start at this moment.
@@ -514,7 +536,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       L.err = L.v1 - L.v0 - (L.rain + L.inflow - L.captured - L.inf - L.drain - L.edge - L.pipe - L.toLakes + L.clamp);
       L.errPct = 100 * L.err / Math.max(L.rain + L.inflow + L.captured + Math.abs(L.toLakes) + Math.abs(L.pipe) + L.v0, 1e-9);
       const wall = (now() - t0wall) / 1000;
-      const fr = { tHours: t / 3600, st: r.st, ledger: Object.assign({}, L), steps, chunks, wall, dtLast: o._dt, hmFace: hm, final: !!final };
+      const fr = { tHours: t / 3600, st: r.st, ledger: Object.assign({}, L), steps, chunks, wall, dtLast: o._dt, hmFace: hm, final: !!final, lakeLevels: routed.map((x) => ({ lake: x.lake, level: x.level })) };
       if (o.onRead) await o.onRead(fr);
       return fr;
     };
@@ -527,7 +549,7 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       if (!(Number.isFinite(rainInHr) && rainInHr >= 0)) throw new Error(`Rainfall missing or invalid at hour ${hr} (${rainInHr})`);
       const rain = rainInHr / 12 / 3600, drainInHr = o.drainInHr || 0;
       if (!(Number.isFinite(drainInHr) && drainInHr >= 0)) throw new Error(`Invalid drain allowance ${drainInHr}`);
-      const stages = checkStages(o.stageAt(th), th);
+      const stages = lakeStages(checkStages(o.stageAt(th), th));
       let sources = null, qSrc = 0, qSink = 0, hSrc = 0;
       if (srcs.length) {
         // sourceAt may be async (two-way coupling reads depths and advances SWMM); a negative rate is a withdrawal, allowed only for sources marked sink
@@ -556,16 +578,30 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       } else hmC = await solver.chunk(co);
       L.rain += rain * dt * done * g.multSum * A; L.inflow += qSrc * dt * done; L.captured += qSink * dt * done;
       if (o.afterChunk) await o.afterChunk(t / 3600, (t + dt * done) / 3600, solver);
+      if (routed.length) {
+        // the depth each edge cell had to be given (+) or lost (-) to hold the lake level over this chunk, since the last reading reset the tallies
+        const ext = o.lakeInflow ? await o.lakeInflow(t / 3600, (t + dt * done) / 3600, routed.map((r) => r.level)) : null;
+        for (const [i, r] of routed.entries()) {
+          const cur = r.cells.length ? (solver.kind === "cpu" ? Float64Array.from(r.cells, (k) => solver.acc[4 * k + 3]) : Float64Array.from(await solver.cellsOf(solver.bAcc, r.cells, 3))) : new Float64Array(0);
+          let dv = 0; for (let m = 0; m < cur.length; m++) dv += cur[m] - r.prev[m]; r.prev = cur;
+          const v2d = dv * A, vr = rain * dt * done * r.area, ve = ext ? +ext[i] || 0 : 0;
+          if (!Number.isFinite(ve)) throw new Error(`Inflow to ${r.name} is not a number at hour ${(t / 3600).toFixed(2)}`);
+          r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.level += (v2d + vr + ve) / r.area;
+        }
+        lakeSeries.push({ tHours: (t + dt * done) / 3600, levels: routed.map((r) => r.level) });
+      }
       // next chunk: allow for the depth to grow by a quarter before the next reading
       hm = Math.max(hmC * 1.25, 0.05); o._dt = dt;
       t += span; steps += done; chunks++;
       if (stopped) break;
-      if (t >= nextRead - 1e-6 || t >= tEnd - 1e-6) { nextRead = t + readSec; frames.push(await doRead(t >= tEnd - 1e-6)); }
+      if (t >= nextRead - 1e-6 || t >= tEnd - 1e-6) { nextRead = t + readSec; frames.push(await doRead(t >= tEnd - 1e-6)); for (const r of routed) r.prev.fill(0); }
       if (now() - lastYield > 50) { await yieldTask(); lastYield = now(); }
     }
     if (stopped && (!frames.length || frames[frames.length - 1].tHours < t / 3600 - 1e-9)) frames.push(await doRead(true));
     const vel = solver.readVel ? await solver.readVel() : null;
-    return { ledger: L, steps, chunks, frames, stopped, vmax: vel && vel.vmax, dvmax: vel && vel.dvmax, froude: vel && vel.froude };
+    const lakes = routed.length ? { names: routed.map((r) => r.name), lake: routed.map((r) => r.lake), area: routed.map((r) => r.area), start: (o.routedLakes || []).map((r) => r.level0),
+      end: routed.map((r) => r.level), peak: routed.map((r, i) => lakeSeries.reduce((m, x) => Math.max(m, x.levels[i]), Math.max(r.level, (o.routedLakes || [])[i].level0))), from2d: routed.map((r) => r.gain2d), rain: routed.map((r) => r.gainRain), outside: routed.map((r) => r.gainExt), series: lakeSeries } : null;
+    return { ledger: L, steps, chunks, frames, stopped, vmax: vel && vel.vmax, dvmax: vel && vel.dvmax, froude: vel && vel.froude, lakes };
   }
 
   // ------------------------------------------------------------------ lake-level spill (steady state of the 2D model with no rain)

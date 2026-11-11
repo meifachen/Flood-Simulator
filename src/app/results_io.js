@@ -65,4 +65,29 @@ const RIO = {
     if (h.swmm2) final.swmm2 = Object.assign({}, h.swmm2, { out: A["swmm2.out"] ? A["swmm2.out"].buffer : null });
     return { h, grid: Object.assign({}, h.grid, { z: A["grid.z"], type: A["grid.type"] }), frames: h.frames.map((sum, i) => ({ sum, q: A[`frame.${i}.q`] })), final };
   },
+  /* Compare two runs on the same grid: this run (a) minus the other (b), in maximum depth.
+   * Cells counted: open ground in both runs. Wet = maximum depth at least wetFt; "deeper" and "shallower" need a change of at least tolFt.
+   * Returns the difference per cell (NaN where neither run is wet or the cell is not open ground in both) and areas in acres. */
+  compare(ga, fa, gb, fb, wetFt, tolFt = 0.1) {
+    const A = ga.G, B = gb.G, same = (x, y) => Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(x));
+    for (const [k, what] of [["nx", "columns"], ["ny", "rows"], ["cs", "cell size"], ["x0", "west edge"], ["y1", "north edge"]])
+      if (!same(A[k], B[k])) throw new Error(`The runs are on different grids (${what}: ${A[k]} vs ${B[k]}); compare runs made with the same DEM and cell size`);
+    if (!(wetFt > 0) || !(tolFt >= 0)) throw new Error(`Invalid thresholds (wet ${wetFt} ft, change ${tolFt} ft)`);
+    const N = A.nx * A.ny, ac = A.dxFt * A.dxFt / 43560, diff = new Float32Array(N).fill(NaN);
+    const st = { onlyA: 0, onlyB: 0, both: 0, deeper: 0, shallower: 0, maxRise: 0, maxDrop: 0, kRise: -1, kDrop: -1, cells: 0, typeDiffers: 0 };
+    for (let k = 0; k < N; k++) {
+      if (ga.type[k] !== gb.type[k]) st.typeDiffers++;
+      if (ga.type[k] !== 0 || gb.type[k] !== 0) continue;
+      st.cells++;
+      const ha = fa.hmax[k] || 0, hb = fb.hmax[k] || 0, wa = ha >= wetFt, wb = hb >= wetFt;
+      if (!wa && !wb) continue;
+      const d = ha - hb; diff[k] = d;
+      if (wa && wb) st.both++; else if (wa) st.onlyA++; else st.onlyB++;
+      if (d >= tolFt) st.deeper++; else if (d <= -tolFt) st.shallower++;
+      if (d > st.maxRise) { st.maxRise = d; st.kRise = k; } if (d < st.maxDrop) { st.maxDrop = d; st.kDrop = k; }
+    }
+    const bA = fa.bReached ?? null, bB = fb.bReached ?? null;
+    return { diff, wetFt, tolFt, acres: { onlyThis: st.onlyA * ac, onlyOther: st.onlyB * ac, both: st.both * ac, deeper: st.deeper * ac, shallower: st.shallower * ac, compared: st.cells * ac },
+      maxRise: st.maxRise, maxDrop: st.maxDrop, kRise: st.kRise, kDrop: st.kDrop, buildings: { this: bA, other: bB }, typeDiffers: st.typeDiffers };
+  },
 };

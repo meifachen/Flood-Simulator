@@ -89,7 +89,14 @@ async function load(a) {
         if (!pts) { skipped.push(fi); return; }
         const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
         if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
-        const props = { node, lw: num(fi, "weir_length_ft", p.weir_length_ft, true), area: num(fi, "orifice_area_sqft", p.orifice_area_sqft, true), cw: num(fi, "cw", p.cw, true), co: num(fi, "co", p.co, true), rimFt: num(fi, "rim_ft", p.rim_ft, false) };
+        const type = p.type === undefined || p.type === null || p.type === "" ? undefined : String(p.type).trim().toLowerCase();
+        if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: type ${JSON.stringify(p.type)} is not generic, grate, curb or combination`);
+        const both = (k1, k2) => { const a1 = num(fi, k1, p[k1], true), a2 = num(fi, k2, p[k2], true); return a1 !== undefined ? a1 : a2; };   // grate names, or the generic ones
+        const clog = num(fi, "clog", p.clog, false); if (clog !== undefined && !(clog >= 0 && clog < 1)) errs.push(`inlet ${fi}: clog ${JSON.stringify(p.clog)} is not a fraction from 0 to below 1`);
+        const dw = num(fi, "depression_width_ft", p.depression_width_ft, false); if (dw !== undefined && !(dw >= 0)) errs.push(`inlet ${fi}: depression_width_ft ${JSON.stringify(p.depression_width_ft)} is negative`);
+        const props = { node, type, lw: both("perimeter_ft", "weir_length_ft"), area: both("open_area_sqft", "orifice_area_sqft"), cw: num(fi, "cw", p.cw, true), co: num(fi, "co", p.co, true),
+          curbLength: num(fi, "curb_length_ft", p.curb_length_ft, true), curbHeight: num(fi, "curb_height_ft", p.curb_height_ft, true), depressionWidth: dw, clog, rimFt: num(fi, "rim_ft", p.rim_ft, false) };
+        for (const k of Object.keys(props)) if (props[k] === undefined) delete props[k];
         for (const c0 of pts) { const xy = fwd ? fwd.forward([c0[0], c0[1]]) : c0; list.push(Object.assign({ x: xy[0], y: xy[1], feature: fi }, props)); }
       });
       if (errs.length) throw new Error(`Inlets: ${errs.slice(0, 5).join("; ")}${errs.length > 5 ? `; and ${errs.length - 5} more` : ""}`);
@@ -168,13 +175,24 @@ async function run(o, id) {
   STOP = false;
   const g = B.g, N = g.N, A = g.dx * g.dx, thr = o.wetFt ?? 0.1, bthr = o.buildingFt ?? 0.5;
   let cpl = { sources: [], sourceAt: null, stageAt: () => [], rain: null, t1: o.t1 }, two = null;
-  const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.node || null, level: b.level }));
+  const bspec = (o.boundaries || []).map((b) => ({ key: b.key, node: b.routed ? null : b.node || null, level: b.level, routed: !!b.routed, areaAc: b.areaAc }));
+  // routed lakes: a level pool that starts at the level given and rises with what it gains; its area is the one given, else the part inside the grid
+  const routedLakes = [];
+  bspec.forEach((b, i) => {
+    if (!b.routed) return;
+    if (!Number.isFinite(b.level)) throw new Error(`Routed lake ${b.key} needs a starting level`);
+    let cells = 0; for (let k = 0; k < N; k++) if ((g.aux[4 * k + 2] & 3) === 2 && ((g.aux[4 * k + 2] >> 4) & 255) === i) cells++;
+    if (b.areaAc !== undefined && b.areaAc !== null && b.areaAc !== "" && !(b.areaAc > 0)) throw new Error(`Routed lake ${b.key}: area ${b.areaAc} ac is not a positive number`);
+    const areaFt2 = b.areaAc > 0 ? b.areaAc * 43560 : cells * A;
+    if (!(areaFt2 > 0)) throw new Error(`Routed lake ${b.key} has no cells in the grid; give its area`);
+    routedLakes.push({ lake: i, areaFt2, level0: b.level, name: b.key, areaFrom: b.areaAc > 0 ? "given" : "inside the grid", gridAc: cells * A / 43560 });
+  });
   if (o.coupling === "two") {
     // two-way: SWMM runs here in step with the 2D; boundary levels from SWMM nodes are the live heads
     if (!MODEL || !INP) throw new Error("Two-way coupling needs the SWMM .inp");
     if (o.t0 > (MODEL.end && MODEL.start ? (MODEL.end - MODEL.start) / 3600000 : Infinity)) throw new Error("The start is after the end of the SWMM run");
     post({ id, progress: { phase: "note", text: "Starting SWMM 5.2.4 (WebAssembly) for two-way coupling" } });
-    two = await Couple2.makeCoupler(B, createSWMM, INP, MODEL, { cw: o.cw, lw: o.lw, co: o.co, area: o.inletArea, searchFt: o.searchFt ?? 30, inlets: INLETS || [], defaultInlets: o.defaultInlets !== false });
+    two = await Couple2.makeCoupler(B, createSWMM, INP, MODEL, { cw: o.cw, lw: o.lw, co: o.co, area: o.inletArea, clog: o.clog ?? 0, searchFt: o.searchFt ?? 30, inlets: INLETS || [], defaultInlets: o.defaultInlets !== false });
     cpl.sources = two.sources; cpl.sourceAt = two.sourceAt; cpl.warnings = two.warnings; cpl.nodeMap = two.nodeMap;
     for (const b of bspec) if (!b.node && !Number.isFinite(b.level)) throw new Error(`Level boundary ${b.key} needs a level or a SWMM node`);
     cpl.stageAt = () => bspec.map((b) => (b.node ? two.headFt(b.node) : b.level));
@@ -205,7 +223,7 @@ async function run(o, id) {
   const t0w = Date.now(), simLen = (o.t1 - o.t0) * 3600;
   const isOpen = (k) => (g.aux[4 * k + 2] & 3) === 0;
   const r = await Flood2D.simulate(g, solver, {
-    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
+    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, routedLakes, lakeInflow: two && routedLakes.length ? two.lakeInflowFor(routedLakes) : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
     shouldStop: () => STOP,
     onRead: async (fr) => {
       const st = fr.st, q = new Uint8Array(N); let wet = 0, vol = 0, dmax = 0, bNow = 0;
@@ -216,7 +234,7 @@ async function run(o, id) {
       for (let i = 0; i < nb; i++) { let d = 0; for (let j = B.ringStart[i]; j < B.ringStart[i + 1]; j++) d = Math.max(d, st[4 * B.ring[j]]); if (d > bMax[i]) bMax[i] = d; if (d > bthr) bNow++; }
       const rates = sources.length ? (two ? two.rates() : cpl.sourceAt(fr.tHours, fr.tHours)) : [];
       const qin = rates.reduce((s, v) => s + v, 0);
-      const stages = cpl.stageAt(fr.tHours);
+      const stages = Array.from(cpl.stageAt(fr.tHours)); for (const x of fr.lakeLevels || []) stages[x.lake] = x.level;
       const sum = { tHours: fr.tHours, wetAc: wet * A / 43560, volCf: vol * A, depthMax: dmax, buildings: bNow, inflowCfs: qin, rates: Array.from(rates), stages, ledger: fr.ledger };
       post({ id, frame: { q: q.buffer, sum } }, [q.buffer]);
       const done = (fr.tHours - o.t0) * 3600, wall = (Date.now() - t0w) / 1000;
@@ -233,7 +251,9 @@ async function run(o, id) {
   const bReached = bMax.reduce((s, v) => s + (v > bthr ? 1 : 0), 0);
   const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N), froude = r.froude || new Uint8Array(N);
   let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; } froudeCells += froude[k]; }
-  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, froudeCells, ledger: r.ledger, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
+  const lakes = r.lakes ? Object.assign({}, r.lakes, { areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
+    seriesT: r.lakes.series.map((x) => x.tHours), seriesL: r.lakes.series.map((x) => x.levels) }) : null;
+  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, froudeCells, ledger: r.ledger, lakes, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }
 
 self.onmessage = async (e) => {

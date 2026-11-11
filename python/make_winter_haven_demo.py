@@ -143,11 +143,12 @@ def main(a):
         city = float(cand[0]["properties"]["WaterLevel"]) if cand and cand[0]["properties"].get("WaterLevel") is not None else None
         use = city if (a.lake_levels == "city" and city is not None) else lvl
         if a.lake_levels == "city" and city is None: note(f"{name}: no City SAIP water level; held at the lidar level {lvl:.2f} ft")
-        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city}, "geometry": mapping(g)})
+        full_ac = round(shape(f["geometry"]).area / 43560, 1)   # the whole lake, for a routed lake's area (the grid holds only part of it)
+        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city, "area_ac": full_ac}, "geometry": mapping(g)})
         rep["checks"].setdefault("lakes", []).append({"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city,
             "city_minus_lidar_ft": None if city is None else round(city - lvl, 2),
             "city_minus_lidar_if_city_is_ngvd29_ft": None if city is None else round(city + ngvd_to_navd_ft - lvl, 2),
-            "surface_spread_ft": round(spread, 2), "acres_in_domain": round(g.area / 43560, 1)})
+            "surface_spread_ft": round(spread, 2), "acres_in_domain": round(g.area / 43560, 1), "acres_whole_lake_nhd": full_ac})
         print(f"lake {name}: lidar {lvl:.2f} ft (surface spread {spread:.2f} ft); City SAIP {city} ft; using {use:.2f} ft")
     if a.lake_levels == "city": note("Lake levels are the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are level boundaries in the 2D")
     else: note("Lake levels are fixed at the lidar water surface (2018 survey), not a flood stage; lakes are level boundaries in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")

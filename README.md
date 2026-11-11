@@ -9,11 +9,11 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
   - land cover, such as NLCD (GeoTIFF of class codes), for Manning n and imperviousness per cell;
   - soils (GeoJSON with `hsg`, or a GeoTIFF of groups 1–4) for Green-Ampt per cell;
   - a SWMM5 model (`.inp`), with its results (`.out`) for one-way coupling;
-  - inlets (GeoJSON points) for two-way coupling.
+  - inlets (GeoJSON points) for two-way coupling: generic, grate, curb or combination (HEC-22 sag equations), with clogging.
 - **Water sources:**
   - SWMM node flooding, added at each node;
   - rain on the grid, from a SWMM rain gauge or uniform;
-  - water levels held at lakes, ponds or tidal boundaries, either from a SWMM node's head or a fixed level.
+  - water levels held at lakes, ponds or tidal boundaries: from a SWMM node's head, a fixed level, or routed (the lake rises with the water it gains, including SWMM outfalls into it).
 - **Engine:** local-inertial shallow-water equations (Bates et al. 2010; de Almeida et al. 2012), with Green-Ampt infiltration. It runs on the GPU (WebGPU) or the CPU, and keeps a water balance at every output step.
 - **Results:**
   - animated depth map over a hillshade or basemap;
@@ -22,7 +22,9 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
   - charts of flooded area, SWMM exchange, boundary levels and the depth at any point;
   - water-balance table;
   - exports: a 6-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity, critical-flow cap flag), buildings CSV and SWMM exchange CSV;
-  - save a run to a `.fsim.gz` file and open it later without the inputs.
+  - save a run to a `.fsim.gz` file and open it later without the inputs;
+  - compare two saved runs on the same grid: change in maximum depth, areas newly flooded and no longer flooded, buildings reached.
+- **Help in the page:** a workflow map of the five steps (it shows what is done and jumps to any setting), tooltips on every control (units, default, range), a searchable User Guide, and a first-run tour.
 
 ![screenshot](docs/screenshot.png)
 

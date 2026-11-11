@@ -1,43 +1,198 @@
-<h2 style="margin:0 0 6px;font-size:17px">How to use the Flood Simulator</h2>
-<p>The simulator spreads water over the ground in two dimensions. The water can come from SWMM node flooding, rain on the grid, or lakes and other water bodies held at a level. Everything runs in this page: no files leave your computer, and nothing is installed.</p>
-<h3>1. Data</h3>
+<div class="guide-head">
+<h2 style="margin:0;font-size:18px">User Guide</h2>
+<input type="search" id="g-search" placeholder="Search the guide" aria-label="Search the guide">
+<button id="g-close">Close</button>
+</div>
+<p id="g-hits" class="note" aria-live="polite"></p>
+<nav class="guide-toc" aria-label="Guide contents">
+<a href="#g-start">1. Quick start</a><a href="#g-map">2. Workflow map, tooltips and tour</a><a href="#g-data">3. Data</a><a href="#g-grid">4. Grid and surface</a>
+<a href="#g-water">5. Water sources</a><a href="#g-inlets">6. Inlets</a><a href="#g-lakes">7. Level boundaries and lakes</a><a href="#g-run">8. Run</a>
+<a href="#g-results">9. Results</a><a href="#g-balance">10. Water balance</a><a href="#g-export">11. Save, export and compare</a><a href="#g-trouble">12. Troubleshooting</a>
+<a href="#g-method">13. Method</a><a href="#g-limits">14. Limits</a><a href="#g-terms">15. Terms</a>
+</nav>
+
+<section id="g-start" class="gsec"><h3>1. Quick start</h3>
+<p>The simulator spreads water over the ground in two dimensions. The water can come from SWMM node flooding, rain on the grid, or lakes and other water bodies held at a level. Everything runs in this page: no files leave your computer, and nothing is installed. It works offline; only the OpenStreetMap and USGS basemaps need the internet.</p>
+<ol>
+<li><b>Load the example.</b> Under <i>1. Data</i>, pick an example and press <b>Load</b>. The example fills in the DEM, buildings, the pond, the SWMM model and its own run settings.</li>
+<li><b>Check the grid.</b> Under <i>2. Grid and surface</i>, the cell size is set (12 ft for the US example). A smaller cell is more detailed and slower: halving the cell size takes about eight times as long.</li>
+<li><b>Check the water.</b> Under <i>3. Water sources</i>, the example uses SWMM node flooding from its .out file (one way) between 0.5 and 1.5 hours.</li>
+<li><b>Run.</b> Under <i>4. Run</i>, press <b>Run</b>. The bar and the message show progress; <b>Stop</b> keeps the maps made so far.</li>
+<li><b>Read the results.</b> Move the time slider or press <b>Play</b>; choose <i>Maximum depth</i> under <b>Show</b>; click the map for the depth over time at a point; read the water balance under the charts.</li>
+</ol>
+<p>For your own site, load a DEM first (it sets the coordinate system and the grid), then the optional layers in any order, choose the water sources and run.</p>
+</section>
+
+<section id="g-map" class="gsec"><h3>2. Workflow map, tooltips and tour</h3>
 <ul>
-<li><b>Ground (DEM)</b>: a single-band GeoTIFF in a projected coordinate system (feet or meters), north up. Clip and resample large lidar rasters first with <code>python/prep_dem.py</code>; the page accepts up to 40 million DEM cells and builds a grid of up to 8 million cells. If the file has no EPSG code, type it in.</li>
-<li><b>Buildings</b>: GeoJSON polygons. Cells whose centre falls inside a footprint become walls. Rain on a roof runs to the nearest ground cell. Longitude/latitude files are reprojected to the DEM's coordinate system.</li>
-<li><b>Level boundaries</b>: GeoJSON polygons for lakes, ponds or tidal water. Their level comes either from a SWMM storage or outfall node's head in the .out file, or from a fixed level you type (ft). A <code>node</code> or <code>level_ft</code> property fills this in automatically.</li>
-<li><b>Land cover</b>: a GeoTIFF of class codes (for example NLCD). Each cell takes the class at its centre. The Grid section lists the classes found, with editable Manning n and impervious %. NLCD starting values: n from Kalyanapu et al. (2009) Table 2 for the classes it lists; open water (11) 0.035 from Chow (1959) and cultivated crops (82) 0.06 from the SWMM manual's overland-flow table, since that paper gives none; impervious % from the midpoints of the NLCD developed classes. Check them for your site. The build reports a land cover or soils layer that covers none or only part of the grid.</li>
-<li><b>Soils</b>: GeoJSON polygons with an <code>hsg</code> property (A–D; a dual group such as B/D uses D), or a GeoTIFF of groups 1–4. Green-Ampt Ks, suction and initial moisture deficit (IMD) by group are editable. Ks and suction are the Rawls et al. (1983) texture values in the SWMM manual (A loamy sand, B silt loam, C sandy clay loam, D clay loam); the IMD is that table's porosity − field capacity, the deficit of a drained soil (A 0.332, B 0.217, C 0.154, D 0.154). An IMD drier than porosity − wilting point is flagged.</li>
-<li><b>Inlets</b> (two-way coupling): GeoJSON points with a <code>node</code> property naming the junction each inlet drains to, and optionally <code>weir_length_ft</code>, <code>orifice_area_sqft</code>, <code>cw</code>, <code>co</code> and <code>rim_ft</code> (sizes must be positive numbers). Each inlet takes water from the cell it sits in. Without <code>rim_ft</code> an inlet's crest is the SWMM rim of its node, the same crest a default inlet has; a crest more than 0.5 ft from the cell's ground, and an inlet more than 300 ft from its node, are reported. Points without a <code>crs</code> member are read as longitude/latitude when every coordinate fits in degrees (GeoJSON's standard), and reprojected.</li>
-<li><b>SWMM5 .inp and .out</b>: node coordinates must be in the DEM's coordinate system. Each node that floods in the .out file adds its flooding rate (cfs) to the ground cell at that node. A node on a building is moved to the nearest open cell within 30 ft.</li>
+<li><b>Workflow map</b> (at the top of the page): the five steps from data to results, each with the items that belong to it. A step turns green when it is done, and the next step to do is outlined. Click a step to open its panel; click an item to jump to that setting; click <i>Guide</i> to read about it here.</li>
+<li><b>Tooltips</b>: hover over, or tab to, any setting, button or result figure for what it is, its units, its default and its allowed range. On a phone, tap the field; the tip closes by itself.</li>
+<li><b>Tour</b>: the <b>Tour</b> button in the header loads the example and walks through one run in eight short steps. It offers itself once, on the first visit in a browser; it can be skipped at any step.</li>
 </ul>
-<h3>2. Grid and surface</h3>
-<p>The cell size is a whole multiple of the DEM resolution; ground levels are block averages. Each cell is part impervious (no infiltration) and part pervious. Roughness and imperviousness come from the land cover, and Green-Ampt values from the soils, where those are loaded; the global values apply elsewhere. Loading a new DEM clears the other layers, so nothing from an earlier site is used by mistake.</p>
-<h3>3. Water sources</h3>
-<p><b>SWMM node flooding</b> is the usual choice for a SWMM study: SWMM routes the subcatchment runoff through the pipes, and the water that leaves the system at surcharged nodes spreads on the ground. <b>Rain on the grid</b> adds rain to every cell; together with SWMM flooding it counts runoff twice wherever the grid overlaps SWMM subcatchments. Times are hours from the SWMM start date and time.</p>
-<p><b>SWMM coupling</b>:</p>
+</section>
+
+<section id="g-data" class="gsec"><h3>3. Data</h3>
+<table class="t"><thead><tr><th>Layer</th><th>Format</th><th>What it needs</th></tr></thead><tbody>
+<tr><td>Ground (DEM), required</td><td>Single-band GeoTIFF</td><td>A projected coordinate system in feet or meters, north up, square cells. Clip and resample large lidar rasters first with <code>python/prep_dem.py</code>; the page accepts up to 40 million DEM cells and builds a grid of up to 8 million cells. If the file has no EPSG code, type it in. Set the elevation units if they differ from the horizontal units.</td></tr>
+<tr><td>Buildings</td><td>GeoJSON polygons</td><td>Cells whose centre falls inside a footprint become walls. An optional <code>height</code> property sets the 3D height.</td></tr>
+<tr><td>Level boundaries</td><td>GeoJSON polygons</td><td>Lakes, ponds or tidal water. Optional properties: <code>name</code>, <code>level_ft</code>, <code>node</code>, <code>routed</code>, <code>area_ac</code> (section 7).</td></tr>
+<tr><td>Land cover</td><td>GeoTIFF of class codes (e.g. NLCD)</td><td>Any coordinate system; each cell takes the class at its centre.</td></tr>
+<tr><td>Soils</td><td>GeoJSON with <code>hsg</code>, or a GeoTIFF of 1–4</td><td>Hydrologic soil group A–D; a dual group such as B/D uses D.</td></tr>
+<tr><td>SWMM5 input</td><td>.inp (US or SI units)</td><td>Node coordinates in the DEM's coordinate system. Needed for SWMM coupling, rain from a gauge and boundary levels from nodes.</td></tr>
+<tr><td>SWMM5 results</td><td>.out</td><td>Needed for one-way coupling and for boundary levels from nodes without two-way coupling.</td></tr>
+<tr><td>Inlets</td><td>GeoJSON points</td><td>Two-way coupling only; section 6.</td></tr>
+</tbody></table>
 <ul>
-<li><b>One way</b> reads the node flooding from your .out file. Water on the ground never drains back, so street ponding is an upper bound.</li>
-<li><b>Two way</b> runs EPA SWMM 5.2.4 inside the page and exchanges water every coupling interval (30 s by default):
-<ul>
-<li>overflow at a node spreads on the ground;</li>
-<li>water standing over a junction goes back in through its inlet: the smaller of a weir flow on the depth over the crest and an orifice flow, whose head is that depth while the node is below the crest and the 2D level minus the node head when it is surcharged (so the two meet at the crest);</li>
-<li>an inlet asks for the rate those equations give at the start of the interval; each engine step it takes that rate, or the water left in its cell if that is less, and SWMM is sent the volume actually taken. Capture therefore does not depend on the cell size. Node overflow from one interval is spread on the ground during the next;</li>
-<li>each inlet in the inlets file takes water from its own cell; junctions without a listed inlet get the default inlet at the manhole, or none, as you choose; a junction whose listed inlets were all rejected gets none;</li>
-<li>when the 2D run ends before SWMM's, the inlet inflow is set back to zero and SWMM runs on to its end, so its report holds only the water the inlets took;</li>
-<li><code>ALLOW_PONDING</code> is set to NO in the copy SWMM runs;</li>
-<li>the SWMM report and results of the coupled run can be downloaded after the run.</li>
-</ul></li>
+<li><b>Coordinates:</b> GeoJSON files in longitude/latitude, or with an EPSG code in their <code>crs</code> member, are reprojected to the DEM's system. A file without a <code>crs</code> member is read as longitude/latitude when every coordinate fits in degrees (GeoJSON's standard), otherwise as already in the DEM's system.</li>
+<li><b>A new DEM is a new site:</b> loading one clears the other layers, so nothing from an earlier site is used by mistake. A DEM that fails to load changes nothing.</li>
+<li><b>Refusals:</b> a file with a bad value is refused with a message that names the item and the value; the layer loaded before stays in use.</li>
+<li><b>Land cover starting values (NLCD):</b> Manning n from Kalyanapu et al. (2009) Table 2 for the classes it lists; open water (11) 0.035 from Chow (1959) and cultivated crops (82) 0.06 from the SWMM manual's overland-flow table; impervious % from the midpoints of the NLCD developed classes. Check them for your site.</li>
+<li><b>Soils starting values:</b> Ks and suction are the Rawls et al. (1983) texture values in the SWMM manual (A loamy sand, B silt loam, C sandy clay loam, D clay loam); the initial moisture deficit (IMD) is that table's porosity − field capacity, a drained soil (A 0.332, B 0.217, C 0.154, D 0.154). An IMD drier than porosity − wilting point is flagged.</li>
+<li><b>SWMM nodes on buildings</b> move to the nearest open cell within 30 ft.</li>
 </ul>
-<h3>4. Run and results</h3>
-<p>The engine uses the GPU (WebGPU) when the browser offers it, and the CPU otherwise. Stop ends a run and keeps the maps computed so far. The map and 3D views show the depth at the selected time or the maximum over the run. Two more views show the maximum velocity and the maximum depth × velocity. They are recorded where the water is deeper than 0.05 ft, and their color classes are for display, not a hazard standard. The solver caps every face at critical flow (Froude 1); where that cap acted, the cells are hatched in these views, counted in the KPI and marked in band 6 of the GeoTIFF: the speed there is a lower bound (on steep, smooth streets it can be 20–50% low), while depth × velocity is not affected. Click the map to see the ground level, the depth over time and the velocity maxima at a point.</p>
-<p>Exports: a six-band GeoTIFF in the DEM's coordinate system (maximum depth, maximum water level, time of the maximum, maximum velocity, maximum depth × velocity, 1 where the speed was capped at critical flow), building maxima (CSV) and the SWMM exchange (CSV). <b>Save results</b> writes a .fsim.gz file with every map; <b>Open saved results</b> shows it again, with the same maps, charts, exports and panel settings, without the input files. Results cannot be opened while a run is going, and Run stays off until a DEM or an example is loaded.</p>
-<h3>Method</h3>
+</section>
+
+<section id="g-grid" class="gsec"><h3>4. Grid and surface</h3>
+<p>The cell size is a whole multiple of the DEM resolution; ground levels are block averages. Each cell is part impervious (no infiltration) and part pervious. Roughness and imperviousness come from the land cover, and Green-Ampt values from the soils, where those are loaded; the global values below apply elsewhere.</p>
+<table class="t"><thead><tr><th>Setting</th><th>Default</th><th>Range</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Cell size</td><td>the smallest multiple of the DEM cell that gives at most 1.2 million cells</td><td>a multiple of the DEM cell</td><td>Run time grows about eightfold when the cell size halves.</td></tr>
+<tr><td>Buildings act as walls</td><td>Yes</td><td></td><td>No: footprints are ignored (ground only).</td></tr>
+<tr><td>Rain on roofs</td><td>Runs to the nearest ground cell</td><td></td><td>Roof rain goes to open ground that drains; a courtyard closed in by buildings keeps only its own rain, and such pockets are reported.</td></tr>
+<tr><td>Grid edges</td><td>Open</td><td></td><td>Open edges let water leave at normal depth; closed edges are walls.</td></tr>
+<tr><td>Impervious fraction</td><td>40%</td><td>0–100</td><td>Where there is no land cover.</td></tr>
+<tr><td>Manning n, impervious / pervious</td><td>0.015 / 0.10</td><td>0.005–0.5 / 0.005–1</td><td>Area-weighted per cell.</td></tr>
+<tr><td>Green-Ampt Ks</td><td>0.5 in/hr</td><td>0–50</td><td>Saturated hydraulic conductivity.</td></tr>
+<tr><td>Suction head</td><td>4 in</td><td>0–50</td><td>Wetting-front suction.</td></tr>
+<tr><td>Initial moisture deficit</td><td>0.3</td><td>0–0.6</td><td>Porosity minus initial moisture content.</td></tr>
+</tbody></table>
+</section>
+
+<section id="g-water" class="gsec"><h3>5. Water sources</h3>
+<p>Use at least one: SWMM coupling, rain on the grid or a level boundary. Times are hours from the SWMM start date and time (or from 0 without SWMM).</p>
+<ul>
+<li><b>Off:</b> no SWMM water.</li>
+<li><b>One way:</b> reads each node's flooding from your .out file and adds it to the ground cell at that node. Water on the ground never drains back, so street ponding is an upper bound. This is the usual choice when SWMM already routes the subcatchment runoff.</li>
+<li><b>Two way:</b> runs EPA SWMM 5.2.4 inside the page and exchanges water every coupling interval (30 s by default). Overflow at a node spreads on the ground; water over an inlet goes back into SWMM (section 6). <code>ALLOW_PONDING</code> is set to NO in the copy SWMM runs. When the 2D run ends before SWMM's, the inlet inflow is set back to zero and SWMM runs on to its end, so its report holds only the water the inlets took. The SWMM report and results of the coupled run can be downloaded.</li>
+<li><b>Rain on the grid:</b> from a SWMM rain gauge (intensity, volume or cumulative) or uniform. Together with SWMM subcatchments it counts the runoff twice wherever the grid overlaps them; the page warns when the SWMM model has subcatchments on that gauge. A two-way run with no rain on the grid is refused when the SWMM model has no subcatchments or inflows of its own, since it would have no water.</li>
+<li><b>Map every:</b> how often a map is kept (minutes). More maps make smoother playback and a larger results file.</li>
+</ul>
+</section>
+
+<section id="g-inlets" class="gsec"><h3>6. Inlets (two-way coupling)</h3>
+<p>An inlet takes water from the cell it sits in and passes it to its SWMM junction. Before each coupling interval it asks for the rate its equations give at the depth there; each engine step it takes that rate, or the water left in its cell if that is less, and SWMM is sent the volume actually taken. Capture therefore does not depend on the cell size. Node overflow from one interval spreads on the ground in the next.</p>
+<p>Junctions without a listed inlet get the default inlet below at the manhole, or take no water, as you choose. A junction whose listed inlets were all rejected gets none. The crest of an inlet is its <code>rim_ft</code>, else its node's SWMM rim; a crest more than 0.5 ft from the cell's ground, and an inlet more than 300 ft from its node, are reported.</p>
+<p><b>Equations</b> (inlets in sag, FHWA HEC-22 and the TxDOT Hydraulic Design Manual, ch. 10; d = depth over the crest, ft):</p>
+<table class="t"><thead><tr><th>Type</th><th>Weir</th><th>Orifice</th><th>Capacity</th></tr></thead><tbody>
+<tr><td>generic (default)</td><td>Cw L d<sup>1.5</sup> (Cw 3.0, L 3 ft)</td><td>Co A √(2gd) (Co 0.6, A 4 sq ft)</td><td>the lesser</td></tr>
+<tr><td>grate</td><td>3.0 P d<sup>1.5</sup>, P = perimeter</td><td>0.67 A √(2gd), A = clear opening</td><td>the lesser</td></tr>
+<tr><td>curb</td><td>2.3 (L + 1.8 W) d<sup>1.5</sup> with a gutter depression of width W; 3.0 L d<sup>1.5</sup> without</td><td>above the opening height h: 0.67 h L √(2g (d − h/2))</td><td>the weir up to h; above it the lesser</td></tr>
+<tr><td>combination</td><td>the grate alone</td><td>grate orifice + curb orifice (the curb part once d &gt; h)</td><td>the lesser</td></tr>
+</tbody></table>
+<p>When the node is surcharged, the orifice head is limited to the 2D level minus the node head, so capture stops when the node reaches the water surface; the weir and orifice regimes meet at the crest, so the exchange does not jump. <b>Clogging</b> c (a fraction) scales the grate perimeter and opening area (for a curb-only inlet, its opening length) by 1 − c; TxDOT suggests about 0.5 for grates in sag. All inlets use the sag equations at the local depth; flow past an inlet on a grade is carried by the 2D model itself.</p>
+<p><b>Inlets file properties</b> (GeoJSON points; MultiPoint gives several inlets with the same properties):</p>
+<table class="t"><thead><tr><th>Property</th><th>Meaning</th><th>Default</th></tr></thead><tbody>
+<tr><td><code>node</code></td><td>the SWMM junction it drains to (required)</td><td></td></tr>
+<tr><td><code>type</code></td><td>generic, grate, curb or combination</td><td>generic</td></tr>
+<tr><td><code>perimeter_ft</code> (or <code>weir_length_ft</code>)</td><td>grate perimeter, or generic weir length</td><td>required for grate and combination; generic: the panel value</td></tr>
+<tr><td><code>open_area_sqft</code> (or <code>orifice_area_sqft</code>)</td><td>grate clear opening, or generic orifice area</td><td>as above</td></tr>
+<tr><td><code>curb_length_ft</code>, <code>curb_height_ft</code></td><td>curb opening length L and height h</td><td>required for curb and combination</td></tr>
+<tr><td><code>depression_width_ft</code></td><td>gutter depression width W</td><td>0</td></tr>
+<tr><td><code>cw</code>, <code>co</code></td><td>grate or generic weir and orifice coefficients</td><td>grate 3.0, 0.67; generic: the panel values</td></tr>
+<tr><td><code>clog</code></td><td>clogging fraction, 0 to below 1</td><td>the panel value (0)</td></tr>
+<tr><td><code>rim_ft</code></td><td>crest elevation</td><td>the node's SWMM rim</td></tr>
+</tbody></table>
+</section>
+
+<section id="g-lakes" class="gsec"><h3>7. Level boundaries and lakes</h3>
+<p>Cells inside a level-boundary polygon hold water at the boundary's level. Water that runs into them leaves the 2D surface, and they can spill onto land below their level. The table under the boundaries file sets, for each polygon, where its level comes from:</p>
+<ul>
+<li><b>Fixed level</b> (ft), typed in or from the polygon's <code>level_ft</code>.</li>
+<li><b>A SWMM storage or outfall node:</b> its head from the .out file, or live in two-way coupling.</li>
+<li><b>Routed:</b> the lake starts at the level given and rises and falls with the water it gains: the water the 2D sends into it, rain on its whole area and, in two-way coupling, the inflow of SWMM outfalls that discharge into it. Those outfalls take the lake level as their stage. The lake is a level pool with a constant area and no outlet. Give its whole surface area in <i>Lake area</i> (or an <code>area_ac</code> property) when the grid holds only part of it; blank uses the part inside the grid. A <code>routed</code> property of true selects this when the file loads. The results show each routed lake's start, peak and end level and where its water came from.</li>
+</ul>
+</section>
+
+<section id="g-run" class="gsec"><h3>8. Run</h3>
+<table class="t"><thead><tr><th>Setting</th><th>Default</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Engine</td><td>GPU if available</td><td>WebGPU and the CPU do the same arithmetic; the GPU is usually 10–30 times faster on a laptop.</td></tr>
+<tr><td>Courant number</td><td>0.7</td><td>0.1–1. Lower is more stable and slower.</td></tr>
+<tr><td>Wet when deeper than</td><td>0.1 ft</td><td>For flooded areas, the map and the comparison.</td></tr>
+<tr><td>Building reached at</td><td>0.5 ft</td><td>Water this deep next to a footprint counts the building as reached.</td></tr>
+</tbody></table>
+<p>Run is off until a DEM or an example is loaded. Opening saved results, loading data or an example is refused during a run.</p>
+</section>
+
+<section id="g-results" class="gsec"><h3>9. Results</h3>
+<ul>
+<li><b>Map views</b> (Show): depth at the selected time, maximum depth, maximum velocity, maximum depth × velocity, and, after a comparison, the change in maximum depth. Velocities are recorded where the water is deeper than 0.05 ft; their color classes are for display, not a hazard standard.</li>
+<li><b>Critical-speed hatching:</b> the solver caps every face at critical flow (Froude 1). Where that cap acted, cells are hatched in the velocity views, counted in the KPI and marked in band 6 of the GeoTIFF: the speed there is a lower bound (on steep, smooth streets it can be 20–50% low), while depth × velocity is not affected.</li>
+<li><b>3D:</b> ground, buildings, water and SWMM nodes; drag to rotate, right-drag to pan, scroll to zoom; the vertical exaggeration can be set.</li>
+<li><b>Charts:</b> flooded area over time, the SWMM exchange at nodes (the seven largest, the rest as Other), level-boundary levels, and the depth at the clicked point.</li>
+<li><b>Map click:</b> ground level, depth over time and the velocity maxima at that point.</li>
+<li><b>KPIs:</b> the figures above the map; hover for their definitions.</li>
+</ul>
+</section>
+
+<section id="g-balance" class="gsec"><h3>10. Water balance</h3>
+<p>Every map closes a balance of the water on the surface. Positive terms add water.</p>
+<ul>
+<li><b>Rain on the grid</b>, <b>SWMM node flooding</b>: water added.</li>
+<li><b>Taken by SWMM inlets</b>: what the inlets took (demand the cells could not supply is not counted).</li>
+<li><b>Infiltration</b>, <b>Out at the grid edges</b>, <b>Into level boundaries</b>: water removed (a negative level-boundary term means water spilled out of a lake).</li>
+<li><b>Change in water on the surface</b>; <b>Depth clamped at zero</b>: a numerical correction, normally tiny.</li>
+<li><b>Closure</b> should be about 0; the note gives it as a share of the water moved.</li>
+</ul>
+<p>In two-way runs a second table gives the SWMM side: overflow onto the 2D, water into inlets, overflow at uncoupled nodes (lost), inlet demand the surface could not supply, overflow made in the last interval (after the 2D ended) and SWMM's own continuity error.</p>
+</section>
+
+<section id="g-export" class="gsec"><h3>11. Save, export and compare</h3>
+<ul>
+<li><b>GeoTIFF:</b> six bands in the DEM's coordinate system: maximum depth, maximum water level, time of the maximum, maximum velocity, maximum depth × velocity, and 1 where the speed was capped at critical flow.</li>
+<li><b>Buildings (CSV):</b> the deepest water next to each footprint. <b>SWMM inflows (CSV):</b> the exchange at each node over time.</li>
+<li><b>Save results:</b> a .fsim.gz file with every map. <b>Open saved results</b> (under Data) shows it again, with the same maps, charts, exports and panel settings, without the input files.</li>
+<li><b>Compare with saved results:</b> opens another saved run on the same grid (same DEM and cell size) and maps the change in maximum depth, this run minus that one: newly flooded, no longer flooded, deeper and shallower (by 0.1 ft or more), and buildings reached in each. Runs on different grids are refused. Use it for before and after a project, or for two lake-level assumptions.</li>
+</ul>
+</section>
+
+<section id="g-trouble" class="gsec"><h3>12. Troubleshooting</h3>
+<table class="t"><thead><tr><th>Message or symptom</th><th>What to do</th></tr></thead><tbody>
+<tr><td>The DEM is in geographic coordinates</td><td>Project it to a CRS in feet or meters (<code>python/prep_dem.py</code>).</td></tr>
+<tr><td>The file has no usable CRS</td><td>Type the EPSG code of the DEM.</td></tr>
+<tr><td>Land cover or soils cover none or part of the grid</td><td>Check that the layer covers the DEM; outside it the global values apply.</td></tr>
+<tr><td>Inlet … is not a coupled SWMM junction</td><td>Check the <code>node</code> name against the .inp; outfalls, storage nodes and nodes inside a level boundary take no inlet.</td></tr>
+<tr><td>Crest … ft above the ground of its cell</td><td>Check <code>rim_ft</code> or the SWMM rim (invert + max depth) against the DEM, and the vertical datum.</td></tr>
+<tr><td>Choose at least one water source</td><td>Turn on SWMM coupling, rain or a level boundary.</td></tr>
+<tr><td>GPU not used</td><td>The browser has no WebGPU; the run continues on the CPU. Chrome and Edge offer WebGPU.</td></tr>
+<tr><td>The runs are on different grids</td><td>Compare runs made with the same DEM and cell size.</td></tr>
+<tr><td>The basemap is blank</td><td>OpenStreetMap and USGS imagery need the internet; the hillshade works offline.</td></tr>
+</tbody></table>
+</section>
+
+<section id="g-method" class="gsec"><h3>13. Method</h3>
 <p>Local-inertial shallow-water equations on a square grid (Bates et al. 2010; de Almeida et al. 2012, θ = 0.8). Friction is semi-implicit (Manning). Flow per unit width is capped at the critical (Froude 1) value, and an outflow limiter keeps depths non-negative. The time step follows the Courant condition, sized for the deepest water expected in each interval, including what a point inflow or rain can add before the next reading. Green-Ampt infiltration uses the SWMM integrated form with ponded depth in the suction term. Open grid edges let water leave at normal depth. A water balance is kept at every map, and its closure is shown.</p>
-<h3>Limits</h3>
+</section>
+
+<section id="g-limits" class="gsec"><h3>14. Limits</h3>
 <ul>
 <li>Two-way coupling is explicit (one coupling interval of lag).</li>
+<li>Inlets use sag equations at the local depth; on-grade interception curves are not used.</li>
+<li>A routed lake is a level pool with a constant area and no outlet.</li>
 <li>Cell velocity is the mean of the two face flows in each direction divided by the depth; it is a cell-average value.</li>
 <li>The local-inertial method is for subcritical flow: speeds above critical are capped (see the hatched cells).</li>
 <li>Building heights in 3D are assumed from footprint area unless the file has a <code>height</code> property.</li>
 <li>Coordinates are converted with proj4 without datum grid shifts, so the basemap can be off by a meter or so; the model itself is unaffected.</li>
 </ul>
+</section>
+
+<section id="g-terms" class="gsec"><h3>15. Terms</h3>
+<ul>
+<li><b>DEM:</b> digital elevation model, a raster of ground levels.</li>
+<li><b>Level boundary:</b> cells held at a water level (lake, pond, tide).</li>
+<li><b>Coupling interval:</b> how often SWMM and the 2D model exchange water in two-way runs.</li>
+<li><b>Crest:</b> the level above which water enters an inlet.</li>
+<li><b>Surcharged:</b> a node whose head is above its crest.</li>
+<li><b>Courant number:</b> the time step as a share of the time a shallow-water wave takes to cross a cell.</li>
+<li><b>Froude number:</b> speed divided by the shallow-water wave speed; 1 is critical flow.</li>
+<li><b>HSG:</b> hydrologic soil group (A drains fastest, D slowest).</li>
+</ul>
+</section>

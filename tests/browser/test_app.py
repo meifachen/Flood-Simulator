@@ -29,6 +29,38 @@ with sync_playwright() as p:
     pg.on("console", lambda m: errs.append("CONSOLE " + m.text) if m.type == "error" and "ERR_FAILED" not in m.text and "Failed to load resource" not in m.text else None)
     pg.goto("file://" + APP); pg.wait_for_selector("#ex-load")
 
+    # ---- B18 first visit: the tour is offered; taking it loads the example and makes one run, step by step
+    pg.wait_for_selector("#tour-offer", timeout=5000); offered = pg.is_visible("#tour-yes")
+    flow0 = pg.inner_text("#flow-state")
+    pg.select_option("#engine", "cpu")   # SwiftShader's software GPU is slower than the CPU here; the tour runs on whatever engine is chosen
+    pg.click("#tour-yes"); steps = []
+    for i in range(8):
+        pg.wait_for_function("!document.querySelector('.tour-next').disabled", timeout=600000)
+        steps.append(pg.inner_text(".tour-n")); pg.click(".tour-next")
+    pg.wait_for_timeout(300)
+    ok("B18 the tour is offered on the first visit and walks through 8 steps to a finished run", offered and steps[0] == "1 of 8" and steps[-1] == "8 of 8" and pg.evaluate("!!S.final") and not pg.is_visible(".tour"),
+       f"{steps[0]} .. {steps[-1]}; {pg.inner_text('#msg')[:60]}")
+    ok("B18 the workflow map follows the work (nothing done, then all five steps)", flow0.startswith("0 of 5") and pg.inner_text("#flow-state") == "all steps done" and pg.locator(".fstep.done").count() == 5, f"{flow0} -> {pg.inner_text('#flow-state')}")
+    pg.reload(); pg.wait_for_selector("#ex-load"); pg.wait_for_timeout(1000)
+    ok("B18 the tour is not offered again in this browser", pg.locator("#tour-offer").count() == 0, "")
+
+    # ---- B19 tooltips on every control, the workflow map jumps to settings, the guide opens, searches and links
+    pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
+    untipped = pg.evaluate("""[...document.querySelectorAll('main input, main select, main button, header button')].filter(e => !e.closest('[hidden]') && !(e.type === 'file' && e.hidden) && !e.closest('[data-tip]')).map(e => e.id || e.className || e.textContent.trim()).slice(0, 20)""")
+    ncontrols = pg.evaluate("document.querySelectorAll('main input, main select, main button, header button').length")
+    ok("B19 every visible input, setting and button has a tooltip", not untipped and ncontrols > 60, f"{ncontrols} controls; without a tip: {untipped}")
+    pg.focus("#cfl"); pg.wait_for_timeout(200)
+    ok("B19 a tooltip shows on keyboard focus with the units, default and range", pg.is_visible("#tip") and "Default 0.7; 0.1–1" in pg.inner_text("#tip") and pg.get_attribute("#cfl", "aria-describedby") == "tip", pg.inner_text("#tip")[:90])
+    pg.click('.fstep[data-step="run"] .leaf[data-go="#wet"]'); pg.wait_for_timeout(700)
+    ok("B19 a workflow item opens its panel and focuses that setting", pg.evaluate("document.activeElement.id") == "wet" and pg.evaluate("document.querySelector('#s-run').open"), pg.evaluate("document.activeElement.id"))
+    pg.click('.fstep[data-step="water"] .leaf.gd'); pg.wait_for_timeout(400)
+    ok("B19 a workflow Guide link opens the guide at that section", pg.is_visible("#help") and pg.evaluate("Math.abs(document.querySelector('#g-water').getBoundingClientRect().top - document.querySelector('#help').getBoundingClientRect().top) < 120"), "")
+    pg.fill("#g-search", "clogging"); pg.wait_for_timeout(200)
+    vis = pg.evaluate("[...document.querySelectorAll('#help .gsec')].filter(s => !s.hidden).map(s => s.id)")
+    ok("B19 the guide search shows only the sections that mention the word", vis and all(pg.evaluate(f"document.getElementById('{v}').textContent.toLowerCase().includes('clogging')") for v in vis) and len(vis) < 15, f"{vis}; {pg.inner_text('#g-hits')}")
+    pg.fill("#g-search", ""); pg.keyboard.press("Escape"); pg.wait_for_timeout(200)
+    ok("B19 Esc closes the guide", not pg.is_visible("#help"), "")
+
     # ---- B1 example loads with SWMM results and the pond tied to the SWMM storage node; its run settings are filled in
     pg.fill("#t0", "3"); pg.fill("#t1", "4"); pg.fill("#outmin", "30")
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load")
@@ -239,6 +271,33 @@ with sync_playwright() as p:
         ok("B13 two-way on the GPU matches the CPU (max depth within 0.01 ft)", "on the GPU" in msg and np.abs(gpu2 - cpu2).max() < 0.01, f"max diff {np.abs(gpu2 - cpu2).max():.2e} ft; {msg[:60]}")
     pg.select_option("#coupling", "one")
 
+    # ---- B20 a routed pond: the level rises with what it gains; CPU and GPU agree; the lakes table shows the budget
+    pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
+    pg.select_option(".b-src", "__routed__"); pg.fill(".b-lvl", "54.8")
+    pg.select_option("#rain", "uniform"); pg.evaluate("waterNotes()"); pg.fill("#rain-ih", "2"); pg.fill("#rain-h", "1")   # rain falls on the pond and runs into it
+    settings(pg, t0="0", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)
+    lk = pg.evaluate("S.final.lakes")
+    area_ok = lk and abs((lk["end"][0] - 54.8) * lk["area"][0] - (lk["from2d"][0] + lk["rain"][0] + lk["outside"][0])) < 1e-3 * max(1, lk["from2d"][0])
+    ok("B20 a routed pond rises by (water from the 2D + rain) / its area, and the lakes table shows it", msg.startswith("Done") and lk and lk["peak"][0] > 54.8 and lk["rain"][0] > 0 and lk["from2d"][0] > 0 and area_ok and "Routed lakes" in pg.inner_text("#ledger") and "(routed)" in pg.evaluate("JSON.stringify(document.getElementById('c-lvl').data.map(d => d.name))"),
+       f"54.8 -> peak {lk and lk['peak'][0]:.3f} ft; from the 2D {lk and lk['from2d'][0]:.0f} cf over {lk and lk['area'][0]:.0f} sq ft")
+    with pg.expect_download() as d: pg.click("#x-save")
+    routed_res = os.path.join(TMP, "routed.fsim.gz"); d.value.save_as(routed_res)
+    cpu_lk = lk
+    if has_gpu:
+        settings(pg, t0="0", engine="gpu"); pg.click("#b-run"); msg = wait_done(pg); glk = pg.evaluate("S.final.lakes")
+        ok("B20 the routed pond on the GPU matches the CPU (peak level within 0.001 ft)", "on the GPU" in msg and glk and abs(glk["peak"][0] - cpu_lk["peak"][0]) < 1e-3, f"CPU {cpu_lk['peak'][0]:.4f}, GPU {glk and glk['peak'][0]:.4f} ft")
+
+    # ---- B21 compare two saved runs: the fixed-level pond against the routed one
+    pg.select_option(".b-src", "POND"); settings(pg, t0="0", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)
+    pg.set_input_files("#f-cmp", routed_res); pg.wait_for_timeout(800)
+    kp = pg.inner_text("#kpis")
+    ok("B21 comparing with a saved run maps the change in maximum depth with areas gained and lost", pg.evaluate("S.view") == "diff" and pg.is_visible("#b-cmp-clear") and "Newly flooded" in kp and "Shallower" in kp and "deeper" in pg.inner_text("#legend"),
+       kp.replace("\n", " | ")[:200])
+    c = pg.evaluate("S.cmp.c.acres")
+    ok("B21 the comparison counts what changed (both runs are on the same grid)", c["compared"] > 0 and c["both"] > 0, json.dumps(c)[:200])
+    pg.click("#b-cmp-clear"); pg.wait_for_timeout(200)
+    ok("B21 clearing the comparison removes the change view", pg.evaluate("S.cmp") is None and pg.evaluate("S.view") != "diff" and not pg.is_visible("#b-cmp-clear"), pg.evaluate("S.view"))
+
     # ---- B9 Stop ends a long run and keeps the maps so far
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
     settings(pg, cell_index=0, t0="0", t1="6", outmin="2", engine="cpu"); pg.click("#b-run")
@@ -247,6 +306,8 @@ with sync_playwright() as p:
     ok("B9 saved results cannot be opened while a run is going", "Stop the run first" in pg.inner_text("#msg") and pg.evaluate("S.running") and pg.evaluate("S.grid.G.nx") == nx_run, pg.inner_text("#msg")[:80])
     t = time.time(); pg.click("#b-stop"); pg.wait_for_function("/^Stopped/.test(document.querySelector('#msg').textContent)", timeout=60000); msg = pg.inner_text("#msg"); dt = time.time() - t
     ok("B9 Stop ends the run within 5 s and keeps the maps", msg.startswith("Stopped") and dt < 5 and pg.evaluate("S.frames.length") >= 2, f"{dt:.1f} s; {msg[:90]}")
+    pg.set_input_files("#f-cmp", routed_res); pg.wait_for_timeout(800)
+    ok("B21 a saved run on another grid is refused, naming the difference", "different grids" in pg.inner_text("#msg") and pg.evaluate("S.cmp") is None, pg.inner_text("#msg")[:120])
 
     # ---- B10 phone width and dark theme
     pg.set_viewport_size({"width": 390, "height": 844}); pg.wait_for_timeout(500)

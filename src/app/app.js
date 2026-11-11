@@ -118,16 +118,20 @@ function boundaryTable() {
   const el = $("#bnd-table"); if (!S.bnd) { el.innerHTML = ""; S.bspec = []; return; }
   const nodes = S.swmm ? S.swmm.nodes.filter((n) => n.type === "STORAGE" || n.type === "OUTFALL").concat(S.swmm.nodes.filter((n) => n.type !== "STORAGE" && n.type !== "OUTFALL")) : [];
   const prev = S.bspecTouched ? S.bspec || [] : [];   // until the user changes a row, defaults follow the files (a node named in the polygon once the SWMM files arrive)
-  el.innerHTML = `<table class="t"><thead><tr><th>Polygon</th><th>Water level from</th><th class="n">Level (ft)</th></tr></thead><tbody>` + S.bnd.props.map((p, i) => {
+  const ROUTED = "__routed__";
+  el.innerHTML = `<table class="t"><thead><tr><th>Polygon</th><th>Water level from</th><th class="n">Level (ft)</th><th class="n">Lake area (ac)</th></tr></thead><tbody>` + S.bnd.props.map((p, i) => {
     const name = p.name || p.node || `Boundary ${i + 1}`, pv = prev[i] || {};
-    const node = pv.node !== undefined ? pv.node : (p.node && nodes.some((n) => n.name === p.node) ? p.node : "");
-    const lvl = pv.level !== undefined ? pv.level : (p.level_ft ?? p.level ?? "");
-    return `<tr><td>${esc(name)}</td><td><select data-b="${i}" class="b-src" aria-label="Level source for ${esc(name)}"><option value="">Fixed level</option>${nodes.map((n) => `<option value="${esc(n.name)}" ${n.name === node ? "selected" : ""}>SWMM ${esc(n.type.toLowerCase())} ${esc(n.name)}</option>`).join("")}</select></td>
-      <td class="n"><input type="number" step="0.01" data-b="${i}" class="b-lvl" value="${esc(lvl)}" ${node ? "disabled" : ""} aria-label="Fixed level for ${esc(name)}"></td></tr>`;
+    const routed = pv.routed !== undefined ? pv.routed : /^(yes|true|1|routed)$/i.test(String(p.routed ?? ""));
+    const node = routed ? ROUTED : pv.node !== undefined ? pv.node || "" : (p.node && nodes.some((n) => n.name === p.node) ? p.node : "");
+    const lvl = pv.level !== undefined ? pv.level : (p.level_ft ?? p.level ?? ""), area = pv.areaAc !== undefined ? pv.areaAc : (p.area_ac ?? "");
+    return `<tr><td>${esc(name)}</td><td><select data-b="${i}" class="b-src" aria-label="Level source for ${esc(name)}"><option value="">Fixed level</option><option value="${ROUTED}" ${routed ? "selected" : ""}>Routed: rises with the water it gains</option>${nodes.map((n) => `<option value="${esc(n.name)}" ${n.name === node ? "selected" : ""}>SWMM ${esc(n.type.toLowerCase())} ${esc(n.name)}</option>`).join("")}</select></td>
+      <td class="n"><input type="number" step="0.01" data-b="${i}" class="b-lvl" value="${esc(lvl)}" ${node && node !== ROUTED ? "disabled" : ""} aria-label="Level (fixed, or the starting level if routed) for ${esc(name)}"></td>
+      <td class="n"><input type="number" step="0.1" min="0" data-b="${i}" class="b-area" value="${esc(area)}" placeholder="in grid" ${routed ? "" : "disabled"} aria-label="Lake surface area for ${esc(name)} (blank: the part inside the grid)"></td></tr>`;
   }).join("") + "</tbody></table>";
-  const read = () => { S.bspec = S.bnd.props.map((p, i) => ({ index: i, key: p.name || p.node || `Boundary ${i + 1}`, node: el.querySelector(`.b-src[data-b="${i}"]`).value || null, level: parseFloat(el.querySelector(`.b-lvl[data-b="${i}"]`).value) })); };
-  el.querySelectorAll(".b-src").forEach((s) => s.onchange = () => { el.querySelector(`.b-lvl[data-b="${s.dataset.b}"]`).disabled = !!s.value; S.bspecTouched = true; read(); });
-  el.querySelectorAll(".b-lvl").forEach((s) => s.oninput = () => { S.bspecTouched = true; read(); });
+  const read = () => { S.bspec = S.bnd.props.map((p, i) => { const src = el.querySelector(`.b-src[data-b="${i}"]`).value, a = el.querySelector(`.b-area[data-b="${i}"]`).value;
+    return { index: i, key: p.name || p.node || `Boundary ${i + 1}`, node: src && src !== ROUTED ? src : null, routed: src === ROUTED, areaAc: a === "" ? undefined : parseFloat(a), level: parseFloat(el.querySelector(`.b-lvl[data-b="${i}"]`).value) }; }); };
+  el.querySelectorAll(".b-src").forEach((s) => s.onchange = () => { const b = s.dataset.b; el.querySelector(`.b-lvl[data-b="${b}"]`).disabled = !!s.value && s.value !== ROUTED; el.querySelector(`.b-area[data-b="${b}"]`).disabled = s.value !== ROUTED; S.bspecTouched = true; read(); });
+  el.querySelectorAll(".b-lvl, .b-area").forEach((s) => s.oninput = () => { S.bspecTouched = true; read(); });
   read();
 }
 function waterNotes() {
@@ -209,7 +213,7 @@ function runOptions() {
   o.ksInHr = numIn("#ks", "Ks"); o.suctionIn = numIn("#psi", "Suction head"); o.imd = numIn("#imd", "Initial moisture deficit");
   o.coupling = $("#coupling").value; o.useSwmmFlooding = o.coupling === "one"; o.rainSource = $("#rain").value; o.gauge = $("#gauge").value;
   if (o.coupling === "one" && !(S.swmm && S.swmm.hasOut)) throw new Error("One-way coupling needs the SWMM .out file");
-  if (o.coupling === "two") { o.lw = numIn("#lw", "Inlet weir length"); o.cw = numIn("#cw", "Weir coefficient"); o.inletArea = numIn("#ia", "Inlet orifice area"); o.co = numIn("#co", "Orifice coefficient"); o.couplingSec = numIn("#csec", "Coupling interval"); o.defaultInlets = $("#def-inl").value === "1"; }
+  if (o.coupling === "two") { o.lw = numIn("#lw", "Inlet weir length"); o.cw = numIn("#cw", "Weir coefficient"); o.inletArea = numIn("#ia", "Inlet orifice area"); o.co = numIn("#co", "Orifice coefficient"); o.clog = numIn("#clog", "Clogging") / 100; o.couplingSec = numIn("#csec", "Coupling interval"); o.defaultInlets = $("#def-inl").value === "1"; }
   if (o.rainSource === "uniform") { o.rainInHr = numIn("#rain-ih", "Rain intensity"); o.rainHours = numIn("#rain-h", "Rain duration"); }
   if (o.rainSource === "gauge" && !S.swmm) throw new Error("Rain from a gauge needs the SWMM .inp");
   o.t0 = numIn("#t0", "Start"); o.t1 = numIn("#t1", "End"); if (!(o.t1 > o.t0)) throw new Error("The end must be after the start");
@@ -250,11 +254,26 @@ async function run() {
     S.final = res; $("#pbar").style.width = "100%";
     msg(`${res.stopped ? "<b>Stopped early.</b> " : "Done: "}${res.steps.toLocaleString()} time steps in ${fmt(res.wall, 1)} s on the ${res.kind === "gpu" ? "GPU" : "CPU"}; water balance closes within ${fmt(Math.abs(res.ledger.errPct), 4)}%.`, res.stopped ? "warn" : "note");
     S.view = $("#view").value; renderAll();
-    ["#x-tif", "#x-csv", "#x-nodes", "#x-save"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
+    ["#x-tif", "#x-csv", "#x-nodes", "#x-save", "#b-cmp"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
   } catch (e) { msg(`Run failed: ${esc(e.message)}`, "err"); }
   finally { S.running = false; $("#b-run").disabled = false; $("#b-stop").disabled = true; }
 }
-function clearResults() { S.frames = []; S.final = null; S.frame = 0; S.sel = -1; $("#slider").max = 0; $("#slider").disabled = true; $("#b-play").disabled = true; ["#x-tif", "#x-csv", "#x-nodes", "#x-save"].forEach((s) => ($(s).disabled = true)); $("#kpis").innerHTML = ""; $("#ledger").textContent = "Run the model to see where the water went."; }
+function clearCompare() { S.cmp = null; $("#view-diff").disabled = true; $("#view-diff").hidden = true; $("#b-cmp-clear").hidden = true; $("#cmp-note").hidden = true; if (S.view === "diff") { S.view = "max"; $("#view").value = "max"; } }
+async function compareWith(file) {
+  if (!S.final || !S.grid) { msg("Run the model or open saved results first, then compare.", "err"); return; }
+  try {
+    const r = await RIO.unpack(await file.arrayBuffer());
+    const c = RIO.compare(S.grid, S.final, r.grid, r.final, S.grid.opts.wetFt, 0.1);
+    S.cmp = { name: file.name, c, saved: r.h.saved };
+    $("#view-diff").disabled = false; $("#view-diff").hidden = false; $("#b-cmp-clear").hidden = false;
+    $("#cmp-note").hidden = false;
+    $("#cmp-note").innerHTML = `Compared with <b>${esc(file.name)}</b> (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}): ${fmt(c.acres.compared, 1)} ac of open ground in both runs.` +
+      (c.typeDiffers ? ` <span class="warn">${c.typeDiffers.toLocaleString()} cells are ground in one run and a building, wall or lake in the other; they are left out.</span>` : "");
+    S.view = "diff"; $("#view").value = "diff"; paint();
+    msg(`Comparing with ${esc(file.name)}. Choose “Change in maximum depth” under Show to see it again.`);
+  } catch (e) { msg(`Could not compare: ${esc(e.message)}`, "err"); }
+}
+function clearResults() { clearCompare(); $("#b-cmp").disabled = true; S.frames = []; S.final = null; S.frame = 0; S.sel = -1; $("#slider").max = 0; $("#slider").disabled = true; $("#b-play").disabled = true; ["#x-tif", "#x-csv", "#x-nodes", "#x-save"].forEach((s) => ($(s).disabled = true)); $("#kpis").innerHTML = ""; $("#ledger").textContent = "Run the model to see where the water went."; }
 let lastPaint = 0;
 function onFrame() {
   const n = S.frames.length; $("#slider").max = n - 1; $("#slider").disabled = false; $("#b-play").disabled = false;
@@ -379,6 +398,9 @@ const VIEWS = {
   now: { title: "Water depth (ft)", cl: DCL, L: RAMP_L, D: RAMP_D },
   max: { title: "Maximum water depth (ft)", cl: DCL, L: RAMP_L, D: RAMP_D },
   vmax: { title: "Maximum velocity (ft/s)", cl: [0.5, 1, 2, 4, 6, 8], L: ["#e6dcf2", "#cbb6e3", "#ab8dd1", "#8a66bd", "#6a45a0", "#4a2b78"], D: ["#d9c9ef", "#bba2e0", "#9c7ccd", "#7f5ab8", "#63409b", "#472b72"] },
+  diff: { title: "Change in maximum depth, this run − compared run (ft)", cl: [-Infinity, -1, -0.5, -0.25, -0.1, 0.1, 0.25, 0.5, 1],
+    labels: ["1 or more shallower", "0.5–1 shallower", "0.25–0.5 shallower", "0.1–0.25 shallower", "within 0.1", "0.1–0.25 deeper", "0.25–0.5 deeper", "0.5–1 deeper", "1 or more deeper"],
+    L: ["#2c5f8a", "#4f86b5", "#86b0d6", "#bcd4ea", "#d6d5d0", "#f4cfa6", "#eba468", "#d6713a", "#a5471c"], D: ["#5b97cf", "#4d84b8", "#3d6d99", "#2f5677", "#4a4f55", "#7d5434", "#a8653a", "#cf7d43", "#ef9b5c"] },
   dv: { title: "Maximum depth × velocity (ft²/s)", cl: [0.5, 1, 2, 4, 8, 16], L: ["#fde3c8", "#f9c08d", "#f39a52", "#e0702a", "#b4501a", "#7a330f"], D: ["#f6c69b", "#f0a465", "#e5853a", "#cc6624", "#a24c1b", "#73330f"] },
 };
 function valueAt(k) { const v = S.view; if ((v === "vmax" || v === "dv") && S.final) return (v === "vmax" ? S.final.vmax : S.final.dvmax)[k]; return depthAt(k); }
@@ -389,10 +411,12 @@ function paint() {
   const m = ensureMap(), rp = ramp(), t = S.grid.type, lake = css("--water"), lc = [parseInt(lake.slice(1, 3), 16), parseInt(lake.slice(3, 5), 16), parseInt(lake.slice(5, 7), 16)];
   const wet = S.grid.opts.wetFt;
   if ((S.view === "vmax" || S.view === "dv") && !S.final) { S.view = "now"; $("#view").value = "now"; }
+  if (S.view === "diff" && !S.cmp) { S.view = "max"; $("#view").value = "max"; }
   const V = VIEWS[S.view], vr = (dark() ? V.D : V.L).map(hex3), depthView = S.view === "now" || S.view === "max", hatch = hex3(css("--ink") || "#1b1f24");
   const url = imageFrom((k, px, o) => {
     if (t[k] === 1) return;
     if (t[k] === 2) { px[o] = lc[0]; px[o + 1] = lc[1]; px[o + 2] = lc[2]; px[o + 3] = 200; return; }   // a level boundary is always water
+    if (S.view === "diff") { const d = S.cmp ? S.cmp.c.diff[k] : NaN; if (Number.isNaN(d)) return; const c = vr[vclass(d, V.cl)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 230; return; }
     if (depthView) { const d = depthAt(k); if (!(d >= wet)) return; const c = rp[dclass(d)]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 220; return; }
     if (!(S.final.hmax[k] >= wet)) return; const ci = vclass(valueAt(k), V.cl); if (ci < 0) return; const c = vr[ci]; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 225;
     // hatch where the flow reached critical speed and the solver capped it (the speed shown there is a lower bound)
@@ -408,6 +432,7 @@ function paint() {
 function clock(h) { const sw = S.swmm; if (sw && sw.start) { const d = new Date(Date.parse(sw.start) + h * 3600000); return d.toISOString().slice(0, 16).replace("T", " "); } return `${fmt(h, 2)} h`; }
 function legend() {
   const V = VIEWS[S.view] || VIEWS.now, cl = V.cl, rpl = dark() ? V.D : V.L;
+  if (S.view === "diff") { $("#legend").innerHTML = `${esc(V.title)}: ` + V.labels.map((l, i) => `<span><span class="sw" style="background:${rpl[i]}"></span>${esc(l)}</span>`).join("") + `<span>Shown where either run has water deeper than ${fmt(S.cmp.c.wetFt, 2)} ft.</span>`; return; }
   $("#legend").innerHTML = `${esc(V.title)}: ` + cl.map((d, i) => `<span><span class="sw" style="background:${rpl[i]}"></span>${i < cl.length - 1 ? `${d}–${cl[i + 1]}` : `over ${d}`}</span>`).join("") +
     (S.view === "vmax" || S.view === "dv" ? `<span>Velocities are recorded where the water is deeper than ${Flood2D.VEL_H} ft; classes are for display, not a hazard standard.</span>` +
       (S.final && S.final.froudeCells ? `<span><span class="sw hatch"></span>flow reached critical speed, where the solver caps it: the speed there is a lower bound (depth × velocity is not affected)</span>` : "") : "") +
@@ -415,6 +440,13 @@ function legend() {
 }
 function kpis() {
   const fr = S.frames, f = fr[S.frame], fin = S.final; if (!f) return;
+  if (S.view === "diff" && S.cmp) {
+    const c = S.cmp.c, a = c.acres;
+    const k2 = [["Newly flooded", fmt(a.onlyThis, 2) + " ac", "wet in this run only"], ["No longer flooded", fmt(a.onlyOther, 2) + " ac", "wet in the compared run only"],
+      ["Deeper", fmt(a.deeper, 2) + " ac", `by ${fmt(c.tolFt, 2)} ft or more; largest rise ${fmt(c.maxRise, 2)} ft`], ["Shallower", fmt(a.shallower, 2) + " ac", `by ${fmt(c.tolFt, 2)} ft or more; largest drop ${fmt(-c.maxDrop, 2)} ft`],
+      ["Buildings reached", `${c.buildings.this ?? "–"} vs ${c.buildings.other ?? "–"}`, "this run vs compared run"]];
+    $("#kpis").innerHTML = k2.map(([l, v, n]) => `<div class="kpi"><div class="l">${esc(l)}</div><div class="v">${v}</div><div class="l">${esc(n)}</div></div>`).join(""); return;
+  }
   const peakArea = Math.max(...fr.map((x) => x.sum.wetAc)), peakB = fin ? fin.bReached : Math.max(...fr.map((x) => x.sum.buildings));
   const dmax = fin ? Math.max(...fr.map((x) => x.sum.depthMax)) : f.sum.depthMax;
   const L0 = (fin || {}).ledger || f.sum.ledger;
@@ -450,7 +482,7 @@ function charts() {
   if (rest.length) tr.push({ x: t, y: fr.map((f) => rest.reduce((a, n) => a + ((f.sum.rates || [])[n.i] || 0), 0)), name: `Other (${rest.length})`, mode: "lines", line: { color: SERIES[7], width: 2 } });
   Plotly.react("c-in", tr.length ? tr : [{ x: [], y: [] }], Object.assign(layout(two ? "SWMM exchange at nodes (+ out of SWMM, − into inlets)" : "SWMM node flooding into the 2D", "Flow (cfs)"), { shapes: tr.length ? [vline(fr[S.frame].sum.tHours)] : [], annotations: tr.length ? [] : [{ text: "No SWMM flooding in this run", showarrow: false, xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: css("--muted") } }] }), CFG);
   const bs = S.grid.opts.boundaries || [];
-  Plotly.react("c-lvl", bs.length ? bs.map((b, i) => ({ x: t, y: fr.map((f) => f.sum.stages[i]), name: b.key + (b.node ? ` (SWMM ${b.node})` : " (fixed)"), mode: "lines", line: { color: SERIES[i % 8], width: 2 } })) : [{ x: [], y: [] }],
+  Plotly.react("c-lvl", bs.length ? bs.map((b, i) => ({ x: t, y: fr.map((f) => f.sum.stages[i]), name: b.key + (b.routed ? " (routed)" : b.node ? ` (SWMM ${b.node})` : " (fixed)"), mode: "lines", line: { color: SERIES[i % 8], width: 2 } })) : [{ x: [], y: [] }],
     Object.assign(layout("Level boundaries", "Water level (ft)"), { yaxis: { title: { text: "Water level (ft)" }, gridcolor: css("--line") }, shapes: bs.length ? [vline(fr[S.frame].sum.tHours)] : [], annotations: bs.length ? [] : [{ text: "No level boundaries", showarrow: false, xref: "paper", yref: "paper", x: 0.5, y: 0.5, font: { color: css("--muted") } }] }), CFG);
   pointChart();
 }
@@ -465,9 +497,16 @@ function ledger() {
   const sf = (S.final.swmm2 && S.final.swmm2.tally && S.final.swmm2.tally.shortfall) || 0;
   const rows = [["Rain on the grid", L0.rain], ["SWMM node flooding (into the 2D)", L0.inflow], ["Taken by SWMM inlets", -((L0.captured || 0) - sf)], ["Infiltration", -L0.inf], ["Out at the grid edges", -L0.edge], ["Into level boundaries (– means out of them)", -L0.toLakes], ["Change in water on the surface", -(L0.v1 - L0.v0)], ["Depth clamped at zero (numerical)", L0.clamp - sf], ["Closure (should be about 0)", -L0.err]];
   $("#ledger").innerHTML = `<table class="t"><thead><tr><th>Term</th><th class="n">ac-ft</th><th class="n">cubic feet</th></tr></thead><tbody>${rows.map(([l, v]) => `<tr><td>${esc(l)}</td><td class="n">${ac(v)}</td><td class="n">${fmt(v, 0)}</td></tr>`).join("")}</tbody></table>
-    <p class="note">Positive terms add water to the surface. Closure is ${fmt(Math.abs(L0.errPct), 5)}% of the water moved.</p>` + swmm2Html();
+    <p class="note">Positive terms add water to the surface. Closure is ${fmt(Math.abs(L0.errPct), 5)}% of the water moved.</p>` + lakesHtml() + swmm2Html();
   const r2 = S.final.swmm2;
   if (r2) { $("#dl-rpt").onclick = () => download(`${stem()}_coupled.rpt`, r2.rpt, "text/plain"); $("#dl-out").onclick = () => download(`${stem()}_coupled.out`, new Uint8Array(r2.out), "application/octet-stream"); }
+}
+function lakesHtml() {
+  const lk = S.final && S.final.lakes; if (!lk) return "";
+  const ac = (v) => fmt(v / 43560, 3);
+  return `<h3 style="margin:12px 0 6px;font-size:15px">Routed lakes</h3><table class="t"><thead><tr><th>Lake</th><th class="n">Start (ft)</th><th class="n">Peak (ft)</th><th class="n">End (ft)</th><th class="n">Area (ac)</th><th class="n">From the 2D (ac-ft)</th><th class="n">Rain on the lake (ac-ft)</th><th class="n">SWMM outfalls (ac-ft)</th></tr></thead><tbody>` +
+    lk.names.map((n, i) => `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td></tr>`).join("") +
+    `</tbody></table><p class="note">A routed lake is a level pool with a constant area and no outlet: its level changes by (water from the 2D + rain on its area + SWMM outfall inflow) ÷ area.</p>`;
 }
 function swmm2Html() {
   const r2 = S.final && S.final.swmm2; if (!r2) return "";
@@ -537,7 +576,7 @@ function applyOptions(o) {
   set("#imp", o.imperv !== undefined ? +(o.imperv * 100).toFixed(4) : undefined); set("#n-imp", o.nImp); set("#n-perv", o.nPerv); set("#ks", o.ksInHr); set("#psi", o.suctionIn); set("#imd", o.imd);
   set("#edges", o.closedEdges ? "closed" : "open"); set("#roof", o.roofToGround ? "1" : "0"); set("#use-bld", o.useBuildings ? "1" : "0");
   set("#coupling", o.coupling); set("#rain", o.rainSource); set("#rain-ih", o.rainInHr); set("#rain-h", o.rainHours); set("#gauge", o.gauge);
-  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
+  set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#clog", o.clog === undefined ? undefined : Math.round(o.clog * 100)); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
   set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? o.outputSec / 60 : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
   S.lcTable = o.lcTable || null; S.soilTable = o.soilTable || null; S.bspec = o.boundaries || []; S.bspecTouched = true; S._tSet = true;
 }
@@ -551,8 +590,8 @@ async function openResults(file) {
     $("#slider").max = S.frames.length - 1; $("#slider").value = S.frame; $("#slider").disabled = false; $("#b-play").disabled = false;
     S.resultsOnly = true; applyOptions(r.grid.opts);
     refreshInputs(); if (r.grid.opts && r.grid.opts.cellSize) { $("#cell").value = r.grid.opts.cellSize; cellNote(); } waterNotes(); boundaryTable(); surfaceTables();
-    mapInputs(); mapGrid(); S.view = "max"; $("#view").value = "max"; renderAll();
-    ["#x-tif", "#x-csv", "#x-nodes", "#x-save"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
+    clearCompare(); mapInputs(); mapGrid(); S.view = "max"; $("#view").value = "max"; renderAll();
+    ["#x-tif", "#x-csv", "#x-nodes", "#x-save", "#b-cmp"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
     ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
     msg(`Opened ${esc(file.name)} (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}). The panel shows the settings of that run. To run again, load a DEM or an example.`);
   } catch (e) { msg(`Could not open the file: ${esc(e.message)}`, "err"); }
@@ -576,6 +615,8 @@ function init() {
     PLAY = setInterval(() => { S.frame = (S.frame + 1) % S.frames.length; $("#slider").value = S.frame; paint(); }, 450);
   };
   $("#t-map").onclick = () => setTab("map"); $("#t-3d").onclick = () => setTab("3d");
+  $("#b-cmp").onclick = () => $("#f-cmp").click(); $("#f-cmp").onchange = (e) => { if (e.target.files[0]) compareWith(e.target.files[0]); e.target.value = ""; };
+  $("#b-cmp-clear").onclick = () => { clearCompare(); paint(); };
   $("#x-save").onclick = saveResults; $("#f-res").onchange = (e) => { if (e.target.files[0]) openResults(e.target.files[0]); e.target.value = ""; };
   $("#x-tif").onclick = exportTif; $("#x-csv").onclick = exportCsv; $("#x-nodes").onclick = exportNodes;
   $("#b-help").onclick = () => { $("#help").hidden = !$("#help").hidden; if (!$("#help").hidden) $("#help").scrollIntoView({ behavior: "smooth" }); };

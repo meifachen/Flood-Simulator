@@ -136,6 +136,52 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const a = await run(12), b = await run(6);
     ok("C9 an inlet takes the same water at 12 ft and 6 ft cells", Math.abs(a / b - 1) < 1e-6 && a > 0, `taken in 10 min at ${depth} ft: 12 ft ${a.toFixed(0)} cf, 6 ft ${b.toFixed(0)} cf (ratio ${(a / b).toFixed(3)})`);
   }
+  // C10 HEC-22 sag inlet types and clogging (hand-computed: g = 32.174 ft/s2)
+  {
+    const cap = C2.inletCapacity, g2 = 2 * 32.174, I = Infinity, near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+    const grate = { kind: "grate", lw: 6, area: 2, cw: 3.0, co: 0.67 }, curb = { kind: "curb", cl: 5, ch: 0.5, dw: 0, ccw: 3.0, cco: 0.67 };
+    const curbD = Object.assign({}, curb, { dw: 2, ccw: 2.3 }), combo = Object.assign({}, grate, { kind: "combination", cl: 5, ch: 0.5, dw: 0, ccw: 3.0, cco: 0.67 });
+    const cases = [
+      ["grate, weir regime (0.3 ft)", cap(grate, 0.3, I), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.3))],
+      ["grate, orifice regime (1.5 ft)", cap(grate, 1.5, I), 0.67 * 2 * Math.sqrt(g2 * 1.5)],
+      ["grate, 50% clogged (0.3 ft)", cap(Object.assign({ clog: 0.5 }, grate), 0.3, I), 0.5 * 3 * 6 * 0.3 ** 1.5],
+      ["curb, weir below the opening height (0.3 ft)", cap(curb, 0.3, I), 3 * 5 * 0.3 ** 1.5],
+      ["curb, above the opening (1.5 ft): lesser of weir and orifice at the centroid", cap(curb, 1.5, I), Math.min(3 * 5 * 1.5 ** 1.5, 0.67 * 0.5 * 5 * Math.sqrt(g2 * (1.5 - 0.25)))],
+      ["curb with a 2 ft gutter depression (0.3 ft)", cap(curbD, 0.3, I), 2.3 * (5 + 1.8 * 2) * 0.3 ** 1.5],
+      ["combination, shallow (0.3 ft): the grate alone", cap(combo, 0.3, I), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.3))],
+      ["combination, deep (1.5 ft): grate orifice + curb orifice", cap(combo, 1.5, I), Math.min(3 * 6 * 1.5 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 1.5) + 0.67 * 0.5 * 5 * Math.sqrt(g2 * 1.25))],
+      ["surcharged node: grate orifice on the head left (0.1 ft)", cap(grate, 0.3, 0.1), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.1))],
+      ["node level with the water: nothing", cap(curb, 0.3, 0), 0],
+    ];
+    const bad = cases.filter(([, a, b]) => !near(a, b));
+    ok("C10 HEC-22 sag inlets: grate, curb (with and without depression), combination, clogging and surcharge match hand calculations", bad.length === 0,
+      bad.length ? bad.map(([n, a, b]) => `${n}: ${a} vs ${b}`).join("; ") : cases.map(([n, a]) => `${n} ${a.toFixed(3)} cfs`).join("; "));
+    // the regimes meet: no jump in a curb inlet's capacity at the opening height or as the node rises past the crest
+    const below = cap(curb, 0.5 - 1e-9, I), above = cap(curb, 0.5 + 1e-9, I), sur = cap(curb, 0.3, 0.3 + 1e-12), free = cap(curb, 0.3, I);
+    ok("C10 curb capacity is continuous at the opening height and at the crest", Math.abs(above - below) < 1e-6 && Math.abs(sur - free) < 1e-6, `${below.toFixed(6)} / ${above.toFixed(6)} cfs; ${free.toFixed(6)} / ${sur.toFixed(6)} cfs`);
+    const iJ4 = model.nodes.findIndex((n) => n.name === "J4"), j4 = model.nodes[iJ4], refused = [];
+    for (const [k, extra] of [["slot type", { type: "slot" }], ["curb without height", { type: "curb", curbLength: 5 }], ["grate without area", { type: "grate", lw: 6 }], ["clog 1.2", { clog: 1.2 }], ["negative depression", { type: "curb", curbLength: 5, curbHeight: 0.5, depressionWidth: -1 }]]) {
+      try { await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [Object.assign({ x: j4.x, y: j4.y, node: "J4" }, extra)] }); refused.push(`${k} accepted`); } catch (e) { refused.push(e.message); }
+    }
+    ok("C10 an unknown type, missing curb or grate sizes and a clog of 1 or more are refused, naming the inlet", refused.every((m) => /^Inlet 1 \(J4\): /.test(m)), refused.join(" | "));
+    // typed inlets run through the coupler: a 50% clogged grate takes half of the same clean grate's water in the weir regime
+    const takeT = async (extra) => { const c = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [Object.assign({ x: j4.x, y: j4.y, node: "J4", rimFt: 0 }, extra)], defaultInlets: false }); await sweep(c, 1, 1 + 60 / 3600, 0.2); return c.tally.perInlet[0]; };
+    const clean = await takeT({ type: "grate", lw: 6, area: 20 }), half = await takeT({ type: "grate", lw: 6, area: 20, clog: 0.5 });
+    ok("C10 a 50% clogged grate takes half the water of a clean one (weir regime, through the coupler)", clean > 0 && Math.abs(half / clean - 0.5) < 1e-9, `clean ${clean.toFixed(1)} cf, clogged ${half.toFixed(1)} cf`);
+  }
+  // C11 an outfall on a routed lake: its inflow raises the lake, and it takes the lake's level as its stage
+  {
+    const pond = model.nodes.find((n) => n.name === "POND");
+    const inpL = inp.replace(/^(C7\s+J7\s+)POND/m, "$1LK").replace(/\[OUTFALLS\][^\n]*\n[^\n]*\n/, (m) => m + "LK               46.142 FIXED 50.0 NO\n").replace(/\[COORDINATES\][^\n]*\n[^\n]*\n/, (m) => m + `LK               ${pond.x} ${pond.y}\n`);
+    const modelL = S.parseInp(inpL), B = build(), c = await C2.makeCoupler(B, createSWMM, inpL, modelL, {});
+    const routed = [{ lake: 0, areaFt2: 200000, level0: 50 }], lakeInflow = c.lakeInflowFor(routed);
+    const r = await F.simulate(B.g, new F.CpuSolver(B.g), { t0: 0, t1: 1.5, rainAt: () => 0, stageAt: () => [50], sources: c.sources, sourceAt: c.sourceAt, afterChunk: c.afterChunk, routedLakes: routed, lakeInflow, chunkSec: 30, readSec: 1800 });
+    const lk = r.lakes, i = c.engine.names.indexOf("LK"), head = c.engine.get(C2.P.NODE_HEAD, i);
+    ok("C11 the outfall on a routed lake is found and its inflow raises the lake", c.lakeOutfalls.length === 1 && c.lakeOutfalls[0].name === "LK" && lk.outside[0] > 1000 && Math.abs(lk.outside[0] - c.tally.toLakes[0]) < 1e-6 &&
+      Math.abs((lk.end[0] - 50) * 200000 - (lk.from2d[0] + lk.outside[0])) < 1e-3 * lk.outside[0], `outfall inflow ${lk.outside[0].toFixed(0)} cf, from the 2D ${lk.from2d[0].toFixed(0)} cf; lake 50 -> ${lk.end[0].toFixed(3)} ft`);
+    ok("C11 the outfall's stage follows the routed lake level", Math.abs(head - lk.series[lk.series.length - 2].levels[0]) < 1e-3 || Math.abs(head - lk.end[0]) < 1e-3, `outfall head ${head.toFixed(3)} ft; lake ${lk.end[0].toFixed(3)} ft`);
+    c.finish();
+  }
   // C3 prepareInp forces ALLOW_PONDING NO
   {
     const p = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\nALLOW_PONDING YES\n[JUNCTIONS]\nJ 1 2\n");

@@ -11,6 +11,7 @@
 :root[data-theme="light"]{color-scheme:light}
 :root[data-theme="dark"]{color-scheme:dark;--bg:#11161c;--surface:#19212a;--ink:#e6eaef;--muted:#9aa5b1;--line:#2c3743;--chip:#232d38;--accent:#5b97df;--accent-ink:#0b1117;--warn:#e0a24a;--bad:#e0574f;--good:#5fb383;--water:#5aa6e6;--node:#e0574f;--link:#8792a0;--bnd:#7fb3ea;--shadow:none}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1000}
 header h1{font-size:17px;margin:0;font-weight:650}
@@ -79,16 +80,48 @@ table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
 #help h3{margin:14px 0 4px;font-size:15px}
 #help p,#help li{max-width:80ch}
 .vis{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.tip{position:fixed;z-index:3000;background:var(--ink);color:var(--surface);font-size:12.5px;line-height:1.4;padding:7px 9px;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.25);pointer-events:none}
+.flash{outline:3px solid var(--accent)!important;outline-offset:2px;transition:outline-color .3s}
+#flow{grid-column:1/-1}
+#bnd-table{overflow-x:auto}#bnd-table select{min-width:110px}#bnd-table input{width:64px}
+.guide{background:var(--surface);position:fixed;top:52px;right:0;bottom:0;width:min(760px,100vw);overflow:auto;z-index:2000;padding:14px 18px 40px;border-radius:8px 0 0 0;box-shadow:-4px 0 18px rgba(0,0,0,.18)}
+.guide-head{display:flex;gap:8px;align-items:center;position:sticky;top:-14px;background:var(--surface);padding:6px 0;z-index:1}
+.guide-head input{flex:1;min-width:0}
+.guide-toc{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;margin:6px 0 10px}
+.guide-toc a{color:var(--accent)}
+.guide h3{margin:16px 0 6px;font-size:15px}
+.guide p,.guide li{max-width:80ch}
+.guide table.t{margin:6px 0;display:block;overflow-x:auto}
+#flow-body{margin-top:8px}
+.flow-root{display:none}
+ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+@media (max-width:1100px){ol.flow{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}}
+.fstep{border:1px solid var(--line);border-radius:8px;padding:6px;background:var(--bg);position:relative}
+.fstep:not(:last-child)::after{content:"→";position:absolute;right:-9px;top:10px;color:var(--muted);font-size:13px}
+@media (max-width:1100px){.fstep::after{display:none}}
+.fstep.done{border-color:var(--good)}
+.fstep.next{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.fhead{display:flex;gap:6px;align-items:center;width:100%;border:none;background:none;padding:2px;font-weight:600;text-align:left}
+.fdot{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--chip);font-size:12px;flex:none}
+.fstep.done .fdot{background:var(--good);color:var(--surface)}
+.fstep.next .fdot{background:var(--accent);color:var(--accent-ink)}
+.fleaves{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.leaf{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface)}
+.leaf.gd{color:var(--accent);border-color:var(--accent)}
+.tour{position:fixed;z-index:2500;left:50%;bottom:16px;transform:translateX(-50%);width:min(520px,calc(100vw - 32px));background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px;box-shadow:0 6px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:10px}
+.tour-on{outline:3px solid var(--accent)!important;outline-offset:3px;border-radius:6px}
 </style>
 </head>
 <body>
 <header>
   <h1>Flood Simulator</h1><span class="sub">2D overland flooding from SWMM5 and rain</span>
   <span class="sp"></span>
-  <button id="b-help" aria-controls="help">Help</button>
-  <button id="b-theme" title="Switch light and dark">Theme</button>
+  <button id="b-tour">Tour</button>
+  <button id="b-help" aria-controls="help" aria-expanded="false">Guide</button>
+  <button id="b-theme">Theme</button>
 </header>
 <main>
+  <div class="card" id="flow"><div class="row" style="justify-content:space-between"><h3 style="margin:0;font-size:15px">Workflow <span class="note" id="flow-state"></span></h3><button id="flow-toggle" aria-controls="flow-body" aria-expanded="true">Hide</button></div><div id="flow-body"></div></div>
 <aside>
   <details class="card" open id="s-data"><summary>1. Data <span class="state" id="st-data">nothing loaded</span></summary><div class="body">
     <div class="row" style="margin:6px 0"><span class="note">Try an example:</span><select id="ex-pick" aria-label="Example"></select><button id="ex-load">Load</button></div>
@@ -102,7 +135,7 @@ table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
     <div class="file"><b>Soils — GeoJSON with an hsg property, or a GeoTIFF of groups 1–4 (A–D), optional</b><input type="file" id="f-soil" accept=".geojson,.json,.tif,.tiff"><div class="st" id="st-soil"></div></div>
     <div class="file"><b>SWMM5 input (.inp), optional</b><input type="file" id="f-inp" accept=".inp,.txt"><div class="st" id="st-inp"></div></div>
     <div class="file"><b>SWMM5 results (.out), optional</b><input type="file" id="f-out" accept=".out"><div class="st" id="st-out"></div></div>
-    <div class="file"><b>Inlets for two-way coupling — GeoJSON points, optional</b><span class="note">Property <code>node</code> (the junction it drains to); optional <code>weir_length_ft</code>, <code>orifice_area_sqft</code>, <code>cw</code>, <code>co</code>, <code>rim_ft</code>.</span><input type="file" id="f-inl" accept=".geojson,.json"><div class="st" id="st-inl"></div></div>
+    <div class="file"><b>Inlets for two-way coupling — GeoJSON points, optional</b><span class="note">Property <code>node</code> (the junction it drains to); optional <code>type</code> (generic, grate, curb, combination), sizes, <code>clog</code> and <code>rim_ft</code>. See the guide.</span><input type="file" id="f-inl" accept=".geojson,.json"><div class="st" id="st-inl"></div></div>
   </div></details>
   <details class="card" open id="s-grid"><summary>2. Grid and surface <span class="state" id="st-grid"></span></summary><div class="body">
     <label class="f"><span>Cell size<small id="cell-note"></small></span><select id="cell"></select></label>
@@ -126,6 +159,7 @@ table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
       <label class="f"><span>Weir coefficient (US)</span><input type="number" id="cw" min="0" max="4" step="0.05" value="3.0"></label>
       <label class="f"><span>Inlet orifice area (sq ft)</span><input type="number" id="ia" min="0" max="100" step="0.5" value="4"></label>
       <label class="f"><span>Orifice coefficient</span><input type="number" id="co" min="0" max="1" step="0.05" value="0.6"></label>
+      <label class="f"><span>Clogging (%)<small>all inlets without their own clog</small></span><input type="number" id="clog" min="0" max="90" step="5" value="0"></label>
       <label class="f"><span>Junctions with no listed inlet</span><select id="def-inl"><option value="1">Get the inlet above at the manhole</option><option value="0">Take no water (overflow only)</option></select></label>
       <label class="f"><span>Coupling interval (s)</span><input type="number" id="csec" min="2" max="300" step="1" value="30"></label>
     </div>
@@ -153,13 +187,14 @@ table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
   <div class="card">
     <div class="tabs" role="tablist"><button role="tab" id="t-map" aria-selected="true">Map</button><button role="tab" id="t-3d" aria-selected="false">3D</button>
       <span style="flex:1"></span>
-      <label class="note" style="display:flex;gap:6px;align-items:center">Show <select id="view"><option value="now">Depth at the selected time</option><option value="max">Maximum depth</option><option value="vmax">Maximum velocity</option><option value="dv">Maximum depth × velocity</option></select></label>
+      <label class="note" style="display:flex;gap:6px;align-items:center">Show <select id="view"><option value="now">Depth at the selected time</option><option value="max">Maximum depth</option><option value="vmax">Maximum velocity</option><option value="dv">Maximum depth × velocity</option><option value="diff" id="view-diff" disabled hidden>Change in maximum depth (vs. compared run)</option></select></label>
       <label class="note" style="display:flex;gap:6px;align-items:center" id="bm-wrap">Basemap <select id="basemap"><option value="none">Hillshade only (offline)</option><option value="osm">OpenStreetMap</option><option value="usgs">USGS imagery</option></select></label></div>
     <div id="map"><div class="empty">The map appears when a DEM is loaded.</div></div>
     <div id="v3d" hidden><div class="badge" id="b3d"></div></div>
     <div class="timebar"><button id="b-play" disabled>Play</button><input type="range" id="slider" min="0" max="0" value="0" disabled aria-label="Time"><span id="tlabel" class="note">–</span></div>
     <div class="legend" id="legend"></div>
-    <div class="row" style="margin-top:8px"><button id="x-tif" disabled>Export GeoTIFF (max depth, water level, time, velocity, depth × velocity, critical-flow cap)</button><button id="x-csv" disabled>Export buildings (CSV)</button><button id="x-nodes" disabled>Export SWMM inflows (CSV)</button><button id="x-save" disabled>Save results (.fsim.gz)</button></div>
+    <div class="row" style="margin-top:8px"><button id="x-tif" disabled>Export GeoTIFF (max depth, water level, time, velocity, depth × velocity, critical-flow cap)</button><button id="x-csv" disabled>Export buildings (CSV)</button><button id="x-nodes" disabled>Export SWMM inflows (CSV)</button><button id="x-save" disabled>Save results (.fsim.gz)</button><button id="b-cmp" disabled>Compare with saved results…</button><input type="file" id="f-cmp" accept=".gz,.fsim" hidden aria-label="Saved results to compare with"><button id="b-cmp-clear" hidden>Clear comparison</button></div>
+    <div id="cmp-note" class="note" hidden></div>
   </div>
   <div class="charts">
     <div class="card"><div class="chart" id="c-area"></div></div>
@@ -168,9 +203,9 @@ table.t td.n,table.t th.n{text-align:right;font-variant-numeric:tabular-nums}
     <div class="card"><div class="chart" id="c-pt"></div></div>
   </div>
   <div class="card"><h3 style="margin:0 0 6px;font-size:15px">Water balance</h3><div id="ledger" class="note">Run the model to see where the water went.</div></div>
-  <div class="card" id="help" hidden>/*__HELP__*/</div>
 </section>
 </main>
+<aside class="guide card" id="help" hidden tabindex="-1" aria-label="User Guide">/*__HELP__*/</aside>
 <script>/*__LIBS__*/</script>
 <script id="workersrc" type="text/plain">/*__WORKER__*/</script>
 <script id="catalog" type="text/plain">/*__CATALOG__*/</script>

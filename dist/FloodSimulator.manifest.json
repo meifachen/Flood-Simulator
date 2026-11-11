@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.3.3",
- "bytes": 5629790,
- "sha256": "ce74b200c98c808fa69d9df7bb0fa843e191ec6a4f56459638adf0c1de4c2ca2",
+ "version": "0.4.0",
+ "bytes": 5694465,
+ "sha256": "1e5c62a6023dc3a211ddbd86d10a142c6877592d6d2954305aede668d5267ffb",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -98,19 +98,23 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "dea5fbe8c4e2a564b781e74d8591bb3ef36c34272c852d00f23d6f7de0184fb1"
+   "sha256": "875806a7bebca316073fe0d305385285a7ffd382bc2033ea41e4652ff1ce918e"
   },
   {
    "file": "src/app/help.html",
-   "sha256": "0ec9c68b454ff2112e2f45dc43f386cba33f689b620695080673e8e481b3e3f9"
+   "sha256": "d756f6461f8cc2ccc4d4b9ab226746810bbe77fa40ed09c36551e3e66b5ab9ac"
   },
   {
    "file": "src/app/index.html",
-   "sha256": "a7695c3cd9bec2703965f44505e16b73214c5086810fe7c85d835ced73af1d9a"
+   "sha256": "2ec7cb48cb8c2ec37ff03ac8d40d80b235a62348181082cc5850dea421ac457c"
   },
   {
    "file": "src/app/results_io.js",
-   "sha256": "dd756d00c2948f36174cf543d402e3450f18b0b0269cdbfdf94092c9ac129528"
+   "sha256": "4c06cf52eddcd431ad21b4136660954cf953b8b7ac16beeabfdffd0df240d42d"
+  },
+  {
+   "file": "src/app/ui.js",
+   "sha256": "a9010912489a7902be94cbb17a2821d843a36ce35f89552f84585578428b2d70"
   },
   {
    "file": "src/app/view3d.js",
@@ -118,11 +122,11 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "32f552672b7c2001c7c9e581fb217c192fa2af7f5481dbe81447ee6c3d981ab3"
+   "sha256": "dec4491eefd818a55b40bcae631795dd4ae37483fd5f307ec7a5504e35350c76"
   },
   {
    "file": "src/core/couple2way.js",
-   "sha256": "872feee8649afc7022b63ad8b7d3483d650e3ea2cd9d1672f0fca0fa1cb54f41"
+   "sha256": "2fd55e1e960a37c89fb1ab6c6048e1590bf1e59024d5dc865339118941d3f821"
   },
   {
    "file": "src/core/model.js",
@@ -130,7 +134,7 @@
   },
   {
    "file": "src/engine/flood2d.js",
-   "sha256": "214da8b2a7d0ab2ff4005244d3a6f16429ef60e0940d40433c5d90fdc217b2da"
+   "sha256": "d7ddb4a6a012b4d05649561326a6bdb54328e63235552fdd6fb05352ebd86fe6"
   },
   {
    "file": "src/io/swmm.js",

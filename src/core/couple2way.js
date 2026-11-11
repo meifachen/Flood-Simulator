@@ -17,7 +17,7 @@
   "use strict";
   const isNode = typeof module !== "undefined" && module.exports;
   const Model = isNode ? require("./model.js") : root.FloodModel;
-  const P = { NODE_TYPE: 300, NODE_ELEV: 301, NODE_MAXDEPTH: 302, NODE_DEPTH: 303, NODE_HEAD: 304, NODE_LATFLOW: 306, NODE_OVERFLOW: 308, FLOWUNITS: 8 };
+  const P = { NODE_TYPE: 300, NODE_ELEV: 301, NODE_MAXDEPTH: 302, NODE_DEPTH: 303, NODE_HEAD: 304, NODE_VOLUME: 305, NODE_INFLOW: 307, NODE_LATFLOW: 306, NODE_OVERFLOW: 308, FLOWUNITS: 8 };
   const QF = [1, 1 / 448.831, 1.547229, 35.3146667, 0.0353146667, 0.408734569];   // cfs per CFS, GPM, MGD, CMS, LPS, MLD
   const G = 32.174;
 
@@ -62,6 +62,7 @@
         if (el === 0) { this.done = true; break; }   // end of the SWMM simulation
         this.tSec = el * 86400; const dt = this.tSec - last; last = this.tSec;
         for (let i = 0; i < n; i++) acc[i] += this.get(P.NODE_OVERFLOW, nodes[i]) * this.qf * dt;
+        if (this.watchIn) for (let m = 0; m < this.watchIn.length; m++) this.inVol[m] += this.get(P.NODE_INFLOW, this.watchIn[m]) * this.qf * dt;   // outfalls on routed lakes
       }
       const span = Math.max(last - t0, 1e-9); for (let i = 0; i < n; i++) acc[i] /= span;
       return acc;
@@ -78,8 +79,30 @@
     }
   }
 
-  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), capFrac (none), searchFt (30),
-   *   inlets: [{x, y, node, lw, area, cw, co, rimFt}] (optional; inlet points in the grid CRS, each tied to a SWMM junction;
+  /* Inlet capacity at a depth hw over the crest (ft), with lim = the head left for an orifice when the node is surcharged
+   * (Infinity while the node head is at or below the crest, else 2D level - node head). Sag-inlet equations as in FHWA HEC-22
+   * (3rd ed., inlets in sag locations) and the TxDOT Hydraulic Design Manual, ch. 10, sec. 6 (US units, g = 32.174 ft/s2):
+   *   generic / grate:  min(Cw P hw^1.5, Co A sqrt(2 g min(hw, lim)))   grate: Cw 3.0, Co 0.67 (P perimeter, A clear opening)
+   *   curb opening:     weir Cw (L + 1.8 W) hw^1.5 (Cw 2.3 with a gutter depression W > 0, else 3.0 on L);
+   *                     above the opening height h also orifice Co h L sqrt(2 g do), do = hw - h/2, Co 0.67; capacity = the lesser
+   *   combination:      weir = the grate alone; orifice = grate orifice + curb orifice (the curb part once hw > h); capacity = the lesser
+   * Clogging c (0 <= c < 1) scales the grate perimeter and area (a curb-only inlet: its opening length) by 1 - c. */
+  function inletCapacity(it, hw, lim) {
+    if (!(hw > 0) || !(lim > 0)) return 0;
+    const f = 1 - (it.clog || 0), hg = Math.min(hw, lim), r15 = Math.pow(hw, 1.5);
+    const grateW = () => it.cw * it.lw * f * r15, grateO = () => it.co * it.area * f * Math.sqrt(2 * G * hg);
+    if (it.kind === "generic" || it.kind === "grate") return Math.min(grateW(), grateO());
+    const L = it.cl * (it.kind === "curb" ? f : 1), h = it.ch;
+    const curbO = () => { const hc = Math.min(hw > h ? hw - h / 2 : Infinity, lim); return hc === Infinity ? Infinity : it.cco * h * L * Math.sqrt(2 * G * hc); };
+    if (it.kind === "curb") return Math.min(it.ccw * (L + 1.8 * it.dw) * r15, curbO());
+    return Math.min(grateW(), grateO() + (hw > h ? curbO() : 0));   // combination
+  }
+  const KINDS = ["generic", "grate", "curb", "combination"];
+
+  /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), clog (0), capFrac (none), searchFt (30),
+   *   inlets: [{x, y, node, type, lw, area, cw, co, curbLength, curbHeight, depressionWidth, ccw, cco, clog, rimFt}] (optional; inlet points
+   *     in the grid CRS, each tied to a SWMM junction; type generic (default: lw, area, cw, co as given or the defaults), grate (lw = perimeter,
+   *     area = clear opening; Cw 3.0, Co 0.67 unless given), curb (curbLength, curbHeight, depressionWidth 0) or combination (both);
    *     rimFt, the inlet crest, defaults to the SWMM rim of its node, the same crest a default inlet has),
    *   defaultInlets: true (junctions with no inlet in the list get one at the node with the default size; a junction whose listed inlets
    *     were all rejected gets none), maxLeadFt: 300 (an inlet farther than this from its node is reported), crestTolFt: 0.5}
@@ -88,15 +111,24 @@
   async function makeCoupler(B, createSWMM, inpText, model, o = {}) {
     const sw = await SwmmEngine.open(createSWMM, inpText);
     const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = Math.max(1, Math.ceil(searchFt / Gd.dxFt));
-    const def = { cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0 }, capFrac = o.capFrac ?? Infinity;   // capFrac: optional extra limit (fraction of the cell's water per interval)
-    const links = [], nodeMap = [], byName = {};
+    const def = { kind: "generic", cw: o.cw ?? 3.0, lw: o.lw ?? 3.0, co: o.co ?? 0.6, area: o.area ?? 4.0, clog: o.clog ?? 0 }, capFrac = o.capFrac ?? Infinity;   // capFrac: optional extra limit (fraction of the cell's water per interval)
+    const links = [], nodeMap = [], byName = {}, lakeOutfalls = [];
+    const lakeOf = (k0) => {   // the level boundary an outfall discharges into: its own cell, or the nearest lake cell within the search distance
+      if (B.type[k0] === 2) return (B.g.aux[4 * k0 + 2] >> 4) & 255;
+      const r0 = (k0 / Gd.nx) | 0, c0 = k0 % Gd.nx; let best = -1, bd = Infinity;
+      for (let dr = -maxCells; dr <= maxCells; dr++) for (let dc = -maxCells; dc <= maxCells; dc++) {
+        const r = r0 + dr, c = c0 + dc; if (r < 0 || c < 0 || r >= Gd.ny || c >= Gd.nx) continue; const k = r * Gd.nx + c, d = dr * dr + dc * dc;
+        if (B.type[k] === 2 && d < bd) { bd = d; best = (B.g.aux[4 * k + 2] >> 4) & 255; }
+      }
+      return best;
+    };
     for (let i = 0; i < sw.nNodes; i++) {
       const name = sw.names[i], nd = model.nodes[model.nodeIndex[name]], type = Math.round(sw.get(P.NODE_TYPE, i));
       const rec = { name, type: ["JUNCTION", "OUTFALL", "STORAGE", "DIVIDER"][type], status: "", inlets: 0 }; nodeMap.push(rec);
       if (!nd || !Number.isFinite(nd.x)) { rec.status = "no coordinates: not coupled"; continue; }
       const k0 = Model.cellOf(Gd, nd.x, nd.y); if (k0 < 0) { rec.status = "outside the grid: not coupled"; continue; }
+      if (type === 1) { const lk = lakeOf(k0); if (lk >= 0) lakeOutfalls.push({ i, lake: lk, name }); rec.status = lk >= 0 ? "outfall to a level boundary" : "outfall: not coupled"; rec.lake = lk; continue; }
       if (B.type[k0] === 2) { rec.status = "inside a level boundary: not coupled"; continue; }
-      if (type === 1) { rec.status = "outfall: not coupled"; continue; }
       const k = Model.nearestOpen(B.type, Gd, k0, maxCells); if (k < 0) { rec.status = `no open cell within ${searchFt} ft: not coupled`; continue; }
       const rim = (sw.get(P.NODE_ELEV, i) + sw.get(P.NODE_MAXDEPTH, i)) * sw.lf;
       rec.status = type === 0 ? "two-way" : "overflow only"; rec.cell = k; rec.rimFt = rim;
@@ -104,13 +136,30 @@
     }
     // inlets: from the list, else one default inlet at each coupled junction
     const inlets = [], given = new Set(), maxLeadFt = o.maxLeadFt ?? 300, crestTol = o.crestTolFt ?? 0.5;
-    const NAMES = { lw: "weir length", area: "grate area", cw: "weir coefficient", co: "orifice coefficient" };
+    if (!(typeof def.clog === "number" && def.clog >= 0 && def.clog < 1)) throw new Error(`Clogging ${def.clog} is not a fraction from 0 to below 1`);
+    const NAMES = { lw: "weir length", area: "grate area", cw: "weir coefficient", co: "orifice coefficient", cl: "curb opening length", ch: "curb opening height",
+      ccw: "curb weir coefficient", cco: "curb orifice coefficient" };
     const show = (v) => (typeof v === "string" ? JSON.stringify(v) : String(v));
     const crestNote = (label, rim, z) => { if (Math.abs(rim - z) > crestTol) W.push(`${label}: crest ${rim.toFixed(2)} ft is ${Math.abs(rim - z).toFixed(2)} ft ${rim > z ? "above" : "below"} the ground of its cell (${z.toFixed(2)} ft)`); };
     for (const [n, it] of (o.inlets || []).entries()) {
       const label = `Inlet ${n + 1} (${it.node})`;
-      const p = { lw: it.lw ?? def.lw, area: it.area ?? def.area, cw: it.cw ?? def.cw, co: it.co ?? def.co };
-      for (const [key, v] of Object.entries(p)) if (!(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: ${NAMES[key]} ${show(v)} is not a positive number`);
+      const kind = it.type === undefined || it.type === null || it.type === "" ? "generic" : String(it.type).trim().toLowerCase();
+      if (!KINDS.includes(kind)) throw new Error(`${label}: inlet type ${show(it.type)} is not one of ${KINDS.join(", ")}`);
+      const hasGrate = kind !== "curb", hasCurb = kind === "curb" || kind === "combination";
+      if (kind !== "generic") {
+        if (hasGrate && (it.lw === undefined || it.area === undefined)) throw new Error(`${label}: a ${kind} inlet needs the grate perimeter (perimeter_ft) and clear opening area (open_area_sqft)`);
+        if (hasCurb && (it.curbLength === undefined || it.curbHeight === undefined)) throw new Error(`${label}: a ${kind} inlet needs curb_length_ft and curb_height_ft`);
+      }
+      const p = { kind };
+      if (hasGrate) Object.assign(p, { lw: it.lw ?? def.lw, area: it.area ?? def.area, cw: it.cw ?? (kind === "generic" ? def.cw : 3.0), co: it.co ?? (kind === "generic" ? def.co : 0.67) });
+      if (hasCurb) {
+        const dw = it.depressionWidth ?? 0;
+        if (!(typeof dw === "number" && Number.isFinite(dw) && dw >= 0)) throw new Error(`${label}: gutter depression width ${show(dw)} is not zero or a positive number`);
+        Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw, ccw: it.ccw ?? (dw > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });
+      }
+      for (const [key, v] of Object.entries(p)) if (key !== "kind" && key !== "dw" && !(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: ${NAMES[key]} ${show(v)} is not a positive number`);
+      p.clog = it.clog ?? def.clog;
+      if (!(typeof p.clog === "number" && Number.isFinite(p.clog) && p.clog >= 0 && p.clog < 1)) throw new Error(`${label}: clogging ${show(p.clog)} is not a fraction from 0 to below 1`);
       if (it.rimFt !== undefined && it.rimFt !== null && !(typeof it.rimFt === "number" && Number.isFinite(it.rimFt))) throw new Error(`${label}: crest elevation ${show(it.rimFt)} is not a number`);
       const j = byName[it.node];
       if (j === undefined) { W.push(`Inlet ${n + 1}: node ${it.node} is not a coupled SWMM junction; inlet ignored`); continue; }
@@ -138,15 +187,13 @@
     /* before an interval: inlet demands from the depths now, and last interval's overflow volume as this interval's source */
     async function sourceAt(h0, h1, solver) {
       const dt = (h1 - h0) * 3600; if (!(dt > 0)) return sources.map(() => 0);
-      if (sw.tSec < h0 * 3600 - 1e-6) sw.advance(h0 * 3600, []);   // a run that starts later than SWMM: SWMM catches up without exchange
+      if (sw.tSec < h0 * 3600 - 1e-6) { sw.advance(h0 * 3600, []); if (sw.inVol) sw.inVol.fill(0); }   // a run that starts later than SWMM: SWMM catches up without exchange
       const h = await solver.readCells(inletCells);
       const qin = inlets.map((it, m) => {
         if (sw.done) return 0;   // after the SWMM run ends nothing can be passed to it
         const d = Math.max(h[m], 0); if (!(d > 1e-3)) return 0;
         const l = links[it.j], H2 = it.z + d, Hn = sw.get(P.NODE_HEAD, l.i) * sw.lf, rim = it.rim;
-        const hw = Math.min(d, Math.max(H2 - rim, 0)), ho = Hn <= rim ? hw : Math.min(hw, H2 - Hn);
-        let q = 0;
-        if (hw > 0 && ho > 0) q = Math.min(it.cw * it.lw * Math.pow(hw, 1.5), it.co * it.area * Math.sqrt(2 * G * ho));
+        const hw = Math.min(d, Math.max(H2 - rim, 0)), q = inletCapacity(it, hw, Hn <= rim ? Infinity : H2 - Hn);
         return Math.min(q, capFrac * d * A / dt / perCell[it.k]);
       });
       const over = pendV.map((v) => v / dt); pendV = links.map(() => 0);
@@ -183,10 +230,21 @@
     const stop = () => { if (!sw.done) sw.clearInflow(junctionIdx); };
     /* stop the exchange, run SWMM to the end of its simulation and close it */
     const finish = () => { stop(); sw.advance(1e12, []); return sw.finish(); };
-    return { sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, lw: it.lw, area: it.area, rimFt: it.rim })),
+    /* routed lakes [{lake}]: the outfalls on each lake hand it their inflow (volume since the last call), and take the lake's level as their stage */
+    function lakeInflowFor(routedLakes) {
+      const ri = new Map(routedLakes.map((r, m) => [r.lake, m])), outs = lakeOutfalls.filter((x) => ri.has(x.lake));
+      sw.watchIn = outs.map((x) => x.i); sw.inVol = new Float64Array(outs.length);
+      tally.toLakes = routedLakes.map(() => 0);
+      return (h0, h1, levels) => {
+        const v = routedLakes.map(() => 0);
+        outs.forEach((x, m) => { const j = ri.get(x.lake); v[j] += sw.inVol[m]; tally.toLakes[j] += sw.inVol[m]; if (!sw.done) sw.set(P.NODE_HEAD, x.i, levels[j] / sw.lf); });
+        sw.inVol.fill(0); return v;
+      };
+    }
+    return { lakeOutfalls, lakeInflowFor, sources, nodes: links.map((l) => ({ name: l.name, cell: l.k })), inlets: inlets.map((it) => ({ name: it.name, cell: it.k, node: links[it.j].name, type: it.kind, lw: it.lw, area: it.area, curbLength: it.cl, curbHeight: it.ch, clog: it.clog, rimFt: it.rim })),
       sourceAt, afterChunk, tally, nodeMap, warnings: W, engine: sw, headFt, rates: () => lastRates.slice(), stop, finish };
   }
 
-  const api = { makeCoupler, prepareInp, SwmmEngine, P };
+  const api = { makeCoupler, prepareInp, SwmmEngine, P, inletCapacity };
   if (isNode) module.exports = api; else root.Couple2 = api;
 })(typeof self !== "undefined" ? self : this);
