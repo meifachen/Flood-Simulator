@@ -796,7 +796,7 @@ ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:re
     <div class="file"><b>Soils — GeoJSON with an hsg property, or a GeoTIFF of groups 1–4 (A–D), optional</b><input type="file" id="f-soil" accept=".geojson,.json,.tif,.tiff"><div class="st" id="st-soil"></div></div>
     <div class="file"><b>SWMM5 input (.inp), optional</b><input type="file" id="f-inp" accept=".inp,.txt"><div class="st" id="st-inp"></div></div>
     <div class="file"><b>SWMM5 results (.out), optional</b><input type="file" id="f-out" accept=".out"><div class="st" id="st-out"></div></div>
-    <div class="file"><b>Inlets for two-way coupling — GeoJSON points, optional</b><span class="note">Property <code>node</code> (the junction it drains to); optional <code>type</code> (generic, grate, curb, combination), sizes, <code>clog</code> and <code>rim_ft</code>. See the guide.</span><input type="file" id="f-inl" accept=".geojson,.json"><div class="st" id="st-inl"></div></div>
+    <div class="file"><b>Inlets for two-way coupling — GeoJSON points, optional</b><span class="note">Property <code>node</code> (the junction it drains to); optional <code>inlet_type</code> (generic, grate, curb, combination), sizes, <code>clog</code> and <code>rim_ft</code>. See the guide.</span><input type="file" id="f-inl" accept=".geojson,.json"><div class="st" id="st-inl"></div></div>
   </div></details>
   <details class="card" open id="s-grid"><summary>2. Grid and surface <span class="state" id="st-grid"></span></summary><div class="body">
     <label class="f"><span>Cell size<small id="cell-note"></small></span><select id="cell"></select></label>
@@ -960,7 +960,7 @@ ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:re
 <p><b>Inlets file properties</b> (GeoJSON points; MultiPoint gives several inlets with the same properties):</p>
 <table class="t"><thead><tr><th>Property</th><th>Meaning</th><th>Default</th></tr></thead><tbody>
 <tr><td><code>node</code></td><td>the SWMM junction it drains to (required)</td><td></td></tr>
-<tr><td><code>type</code></td><td>generic, grate, curb or combination</td><td>generic</td></tr>
+<tr><td><code>inlet_type</code></td><td>generic, grate, curb or combination (a <code>type</code> field from an inventory is ignored)</td><td>generic</td></tr>
 <tr><td><code>perimeter_ft</code> (or <code>weir_length_ft</code>)</td><td>grate perimeter, or generic weir length</td><td>required for grate and combination; generic: the panel value</td></tr>
 <tr><td><code>open_area_sqft</code> (or <code>orifice_area_sqft</code>)</td><td>grate clear opening, or generic orifice area</td><td>as above</td></tr>
 <tr><td><code>curb_length_ft</code>, <code>curb_height_ft</code></td><td>curb opening length L and height h</td><td>required for curb and combination</td></tr>
@@ -4736,8 +4736,9 @@ async function load(a) {
         if (!pts) { skipped.push(fi); return; }
         const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
         if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
-        const type = p.type === undefined || p.type === null || p.type === "" ? undefined : String(p.type).trim().toLowerCase();
-        if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: type ${JSON.stringify(p.type)} is not generic, grate, curb or combination`);
+        // inlet_type, not type: GIS inventories often carry their own "type" field (CURB_INLET, MANHOLE ...), which is left alone
+        const it0 = p.inlet_type, type = it0 === undefined || it0 === null || it0 === "" ? undefined : String(it0).trim().toLowerCase();
+        if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: inlet_type ${JSON.stringify(it0)} is not generic, grate, curb or combination`);
         const both = (k1, k2) => { const a1 = num(fi, k1, p[k1], true), a2 = num(fi, k2, p[k2], true); return a1 !== undefined ? a1 : a2; };   // grate names, or the generic ones
         const clog = num(fi, "clog", p.clog, false); if (clog !== undefined && !(clog >= 0 && clog < 1)) errs.push(`inlet ${fi}: clog ${JSON.stringify(p.clog)} is not a fraction from 0 to below 1`);
         const dw = num(fi, "depression_width_ft", p.depression_width_ft, false); if (dw !== undefined && !(dw >= 0)) errs.push(`inlet ${fi}: depression_width_ft ${JSON.stringify(p.depression_width_ft)} is negative`);
@@ -5775,7 +5776,7 @@ const UI = (() => {
     "#f-soil": "Optional. GeoJSON polygons with an hsg property (A–D; B/D uses D) or a GeoTIFF of groups 1–4. Sets Green-Ampt Ks, suction and moisture deficit per cell.",
     "#f-inp": "Optional. SWMM5 input file (US or SI units). Needed for SWMM coupling, rain from a gauge and boundary levels from nodes. Node coordinates must be in the DEM's CRS.",
     "#f-out": "Optional. SWMM5 results file of the same model. Needed for one-way coupling (node flooding) and for boundary levels from nodes without two-way coupling.",
-    "#f-inl": "Optional, two-way only. GeoJSON points with node (the junction), and optionally type (generic, grate, curb, combination), sizes, clog and rim_ft. See the guide, section 6.",
+    "#f-inl": "Optional, two-way only. GeoJSON points with node (the junction), and optionally inlet_type (generic, grate, curb, combination), sizes, clog and rim_ft. See the guide, section 6.",
     "#cell": "Grid cell size, a whole multiple of the DEM cell; ground is the block average. Halving it takes about eight times as long. Default: the finest size with at most 1.2 million cells.",
     "#use-bld": "Yes: building footprints are walls water flows around (default). No: they are ignored.",
     "#roof": "Where rain on roofs goes: to the nearest open ground that drains (default), or nowhere.",

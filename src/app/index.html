@@ -135,7 +135,7 @@ ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:re
     <div class="file"><b>Soils — GeoJSON with an hsg property, or a GeoTIFF of groups 1–4 (A–D), optional</b><input type="file" id="f-soil" accept=".geojson,.json,.tif,.tiff"><div class="st" id="st-soil"></div></div>
     <div class="file"><b>SWMM5 input (.inp), optional</b><input type="file" id="f-inp" accept=".inp,.txt"><div class="st" id="st-inp"></div></div>
     <div class="file"><b>SWMM5 results (.out), optional</b><input type="file" id="f-out" accept=".out"><div class="st" id="st-out"></div></div>
-    <div class="file"><b>Inlets for two-way coupling — GeoJSON points, optional</b><span class="note">Property <code>node</code> (the junction it drains to); optional <code>type</code> (generic, grate, curb, combination), sizes, <code>clog</code> and <code>rim_ft</code>. See the guide.</span><input type="file" id="f-inl" accept=".geojson,.json"><div class="st" id="st-inl"></div></div>
+    <div class="file"><b>Inlets for two-way coupling — GeoJSON points, optional</b><span class="note">Property <code>node</code> (the junction it drains to); optional <code>inlet_type</code> (generic, grate, curb, combination), sizes, <code>clog</code> and <code>rim_ft</code>. See the guide.</span><input type="file" id="f-inl" accept=".geojson,.json"><div class="st" id="st-inl"></div></div>
   </div></details>
   <details class="card" open id="s-grid"><summary>2. Grid and surface <span class="state" id="st-grid"></span></summary><div class="body">
     <label class="f"><span>Cell size<small id="cell-note"></small></span><select id="cell"></select></label>

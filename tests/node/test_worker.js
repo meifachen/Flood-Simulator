@@ -59,11 +59,11 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
     const r2 = await w.load({ inlets: fc([pt({ node: 7, weir_length_ft: "4" }), { type: "Feature", properties: { node: "J4" }, geometry: { type: "MultiPoint", coordinates: [[500000, 1599000], [500010, 1599000]] } }]) });
     ok("W8 a numeric node name, a numeric string size and MultiPoint inlets are read", r2.inlets.count === 3 && w.peek("INLETS[0].node") === "7" && w.peek("INLETS[0].lw") === 4, `${r2.inlets.count} inlets; node ${w.peek("INLETS[0].node")}, weir ${w.peek("INLETS[0].lw")}`);
     // W10 inlet types: the HEC-22 sizes and clogging are read; a bad type, clog or depression is refused at load
-    await w.load({ inlets: fc([pt({ node: "J3", type: "Combination", perimeter_ft: 6, open_area_sqft: "2.5", curb_length_ft: 5, curb_height_ft: 0.5, depression_width_ft: 2, clog: 0.5 })]) });
+    await w.load({ inlets: fc([pt({ node: "J3", type: "CURB_INLET", inlet_type: "Combination", perimeter_ft: 6, open_area_sqft: "2.5", curb_length_ft: 5, curb_height_ft: 0.5, depression_width_ft: 2, clog: 0.5 })]) });
     const t = w.peek("INLETS[0]");
-    const m10 = [await refused(w.load({ inlets: fc([pt({ node: "J3", type: "slot" })]) })), await refused(w.load({ inlets: fc([pt({ node: "J3", clog: 1 })]) })), await refused(w.load({ inlets: fc([pt({ node: "J3", depression_width_ft: -2 })]) }))];
-    ok("W10 inlet type, grate and curb sizes and clogging are read from the inlets file; bad values are refused", t.type === "combination" && t.lw === 6 && t.area === 2.5 && t.curbLength === 5 && t.curbHeight === 0.5 && t.depressionWidth === 2 && t.clog === 0.5 &&
-      /inlet 1: type "slot"/.test(m10[0]) && /inlet 1: clog 1 /.test(m10[1]) && /inlet 1: depression_width_ft -2/.test(m10[2]), `${JSON.stringify(t)} | ${m10.join(" | ")}`);
+    const m10 = [await refused(w.load({ inlets: fc([pt({ node: "J3", inlet_type: "slot" })]) })), await refused(w.load({ inlets: fc([pt({ node: "J3", clog: 1 })]) })), await refused(w.load({ inlets: fc([pt({ node: "J3", depression_width_ft: -2 })]) }))];
+    ok("W10 inlet_type, grate and curb sizes and clogging are read from the inlets file (an inventory type field is ignored); bad values are refused", t.type === "combination" && t.lw === 6 && t.area === 2.5 && t.curbLength === 5 && t.curbHeight === 0.5 && t.depressionWidth === 2 && t.clog === 0.5 &&
+      /inlet 1: inlet_type "slot"/.test(m10[0]) && /inlet 1: clog 1 /.test(m10[1]) && /inlet 1: depression_width_ft -2/.test(m10[2]), `${JSON.stringify(t)} | ${m10.join(" | ")}`);
   }
   // W5 a new DEM is a new site; W4 land cover that misses the grid is reported; W6 soil raster codes outside 1-4; W7 cell size check
   {

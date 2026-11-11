@@ -92,7 +92,7 @@
 <p><b>Inlets file properties</b> (GeoJSON points; MultiPoint gives several inlets with the same properties):</p>
 <table class="t"><thead><tr><th>Property</th><th>Meaning</th><th>Default</th></tr></thead><tbody>
 <tr><td><code>node</code></td><td>the SWMM junction it drains to (required)</td><td></td></tr>
-<tr><td><code>type</code></td><td>generic, grate, curb or combination</td><td>generic</td></tr>
+<tr><td><code>inlet_type</code></td><td>generic, grate, curb or combination (a <code>type</code> field from an inventory is ignored)</td><td>generic</td></tr>
 <tr><td><code>perimeter_ft</code> (or <code>weir_length_ft</code>)</td><td>grate perimeter, or generic weir length</td><td>required for grate and combination; generic: the panel value</td></tr>
 <tr><td><code>open_area_sqft</code> (or <code>orifice_area_sqft</code>)</td><td>grate clear opening, or generic orifice area</td><td>as above</td></tr>
 <tr><td><code>curb_length_ft</code>, <code>curb_height_ft</code></td><td>curb opening length L and height h</td><td>required for curb and combination</td></tr>

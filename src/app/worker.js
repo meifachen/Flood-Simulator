@@ -89,8 +89,9 @@ async function load(a) {
         if (!pts) { skipped.push(fi); return; }
         const node = p.node === undefined || p.node === null ? "" : String(p.node).trim();
         if (!node) errs.push(`inlet ${fi}: no "node" property (the SWMM junction it drains to)`);
-        const type = p.type === undefined || p.type === null || p.type === "" ? undefined : String(p.type).trim().toLowerCase();
-        if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: type ${JSON.stringify(p.type)} is not generic, grate, curb or combination`);
+        // inlet_type, not type: GIS inventories often carry their own "type" field (CURB_INLET, MANHOLE ...), which is left alone
+        const it0 = p.inlet_type, type = it0 === undefined || it0 === null || it0 === "" ? undefined : String(it0).trim().toLowerCase();
+        if (type !== undefined && !["generic", "grate", "curb", "combination"].includes(type)) errs.push(`inlet ${fi}: inlet_type ${JSON.stringify(it0)} is not generic, grate, curb or combination`);
         const both = (k1, k2) => { const a1 = num(fi, k1, p[k1], true), a2 = num(fi, k2, p[k2], true); return a1 !== undefined ? a1 : a2; };   // grate names, or the generic ones
         const clog = num(fi, "clog", p.clog, false); if (clog !== undefined && !(clog >= 0 && clog < 1)) errs.push(`inlet ${fi}: clog ${JSON.stringify(p.clog)} is not a fraction from 0 to below 1`);
         const dw = num(fi, "depression_width_ft", p.depression_width_ft, false); if (dw !== undefined && !(dw >= 0)) errs.push(`inlet ${fi}: depression_width_ft ${JSON.stringify(p.depression_width_ft)} is negative`);

@@ -18,7 +18,7 @@ const UI = (() => {
     "#f-soil": "Optional. GeoJSON polygons with an hsg property (A–D; B/D uses D) or a GeoTIFF of groups 1–4. Sets Green-Ampt Ks, suction and moisture deficit per cell.",
     "#f-inp": "Optional. SWMM5 input file (US or SI units). Needed for SWMM coupling, rain from a gauge and boundary levels from nodes. Node coordinates must be in the DEM's CRS.",
     "#f-out": "Optional. SWMM5 results file of the same model. Needed for one-way coupling (node flooding) and for boundary levels from nodes without two-way coupling.",
-    "#f-inl": "Optional, two-way only. GeoJSON points with node (the junction), and optionally type (generic, grate, curb, combination), sizes, clog and rim_ft. See the guide, section 6.",
+    "#f-inl": "Optional, two-way only. GeoJSON points with node (the junction), and optionally inlet_type (generic, grate, curb, combination), sizes, clog and rim_ft. See the guide, section 6.",
     "#cell": "Grid cell size, a whole multiple of the DEM cell; ground is the block average. Halving it takes about eight times as long. Default: the finest size with at most 1.2 million cells.",
     "#use-bld": "Yes: building footprints are walls water flows around (default). No: they are ignored.",
     "#roof": "Where rain on roofs goes: to the nearest open ground that drains (default), or nowhere.",

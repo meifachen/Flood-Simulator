@@ -1,6 +1,6 @@
 # STATUS: Flood Simulator
 
-Updated 2026-11-10. Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
+Updated 2026-11-10. Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
 
 ## What works
 - **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
@@ -33,6 +33,15 @@ Updated 2026-11-10. Version 0.3.3: grid-independent inlet capture, a comparison 
   - **Closed edges:** an option to wall the grid edge; the outer ring of cells becomes a wall with no rain, so the balance stays closed.
   - Loading a new DEM clears the other layers and says so.
 
+- **New in 0.4.0:**
+  - **Inlet types (HEC-22 sag equations):** generic, grate, curb (with or without a gutter depression) and combination, read from the inlets file (`inlet_type`; an inventory `type` field such as CURB_INLET is ignored, `perimeter_ft`, `open_area_sqft`, `curb_length_ft`, `curb_height_ft`, `depression_width_ft`). A clogging fraction can be set per inlet (`clog`) or for all inlets in the panel.
+  - **Routed lakes:** a level boundary can rise and fall with what it gains: the water the 2D sends into it, rain on its whole area (`area_ac`, else the part in the grid) and, in two-way runs, SWMM outfalls that discharge into it. Those outfalls take the lake level as their stage. The results show each lake's start, peak and end level and its water budget. A routed lake is a level pool with a constant area and no outlet.
+  - **Compare two saved runs** on the same grid: the change in maximum depth, the area newly flooded, no longer flooded, deeper and shallower, and buildings reached. Runs on different grids are refused.
+  - **Help in the page:**
+    - a workflow map of the five steps, which shows what is done and jumps to any setting;
+    - tooltips on all 126 controls (what each is, its units, default and range), on hover, focus or tap;
+    - the User Guide, a searchable drawer with 15 sections;
+    - a first-run tour that loads the example and makes one run.
 - **New in 0.3.3:**
   - **Inlet capture no longer depends on cell size:**
     - each engine step, an inlet takes the rate the weir and orifice equations ask, or the water left in its cell if that is less;
@@ -120,6 +129,19 @@ Updated 2026-11-10. Version 0.3.3: grid-independent inlet capture, a comparison 
 - New and strengthened in 0.3.1:
   - `tests/node/test_couple2way.js` C5–C8: SWMM report after the exchange stops; listed inlet crest; US = SI exchange with the cap lifted; rejected inlet gets no default; far inlet reported; zero, text and NaN values refused; three inlets in one cell share the cap.
   - `tests/node/test_couple2way.js` C9 (0.3.3): the same depth over the same inlet takes the same water on 12 ft and 6 ft grids. It fails before 0.3.3 (ratio 4.000) and passes now (1.000). C1, C2 and C4 now check the exchange with the overflow delay and the unsupplied demand: net 2D = net SWMM to 0.1 cf. Browser B12 checks the same in the app.
+  - 0.4.0, new checks:
+    - `test_couple2way.js` C10: grate, curb and combination capacities against hand calculations; continuity at the opening height and the crest; refusals; a 50% clogged grate takes half the water. C11: an outfall on a routed lake raises it and takes its level.
+    - `test_lakes.js` L1–L5 (new): a routed lake's rise equals the volume the 2D sent in; rain on its area; outside inflow; spilling lowers it; refusals.
+    - `test_results_io.js` R-C1: run comparison by hand on a 2 × 2 grid; a different grid is refused.
+    - `test_worker.js` W10: inlet types and clogging read from the file.
+    - Browser:
+      - B18: the tour is offered once and runs the example in 8 steps; the workflow map goes from 0 to 5 steps done.
+      - B19: every one of 126 controls has a tooltip; the focus tooltip; the map focuses a setting; guide links, search and Esc.
+      - B20: routed pond, rise = budget ÷ area; GPU = CPU, 55.5367 ft.
+      - B21: comparison view and areas; clear; a different grid refused.
+    - Fail-first status:
+      - C10's refusal and clogging checks and W10 fail on 0.3.3, because the old code ignores type and clog.
+      - `inletCapacity`, routed lakes, run comparison and the page help are new functions, so their checks crash or are absent at 0.3.3.
   - `tests/node/test_worker.js` (new): the worker in node with W1–W9 above, including a two-way run whose SWMM report equals the inlet tally (13,678 vs 13,692 cf).
   - `tests/node/test_results_io.js` (new): round trip with flags and NaN; six malformed headers and extra bytes refused.
   - `tests/node/test_landcover.js`: expected values written out from the published tables (not read from the code); Green-Ampt infiltration against EPA SWMM 5.2.4 for groups A and D (1.919 vs 1.920 in; 0.358 vs 0.358 in); default IMD = porosity − field capacity; refusals, coverage, codes, NoData and out-of-raster sampling.
@@ -177,7 +199,8 @@ Updated 2026-11-10. Version 0.3.3: grid-independent inlet capture, a comparison 
 - The browser checks were not run against 0.3.0 (its page lacks the new inputs), so their fail-first status is not established.
 
 ## Open items
+- Routed lakes have no outlet and a constant area; a stage-area curve and an outlet rating would let them drain.
 - Inlet sizes at Winter Haven: capture now follows the inlet equations, so the default sizes matter more; the inventory has no sizes.
-- Inlet clogging factors and inlet types (curb, grate, combination) with HEC-22 curves.
+- On-grade inlet interception (HEC-22 curves for inlets on a grade). Inlets use the sag equations at the local depth.
 - Time series of velocity (only maxima are kept).
 - Velocity and hazard checked against a benchmark (e.g. UK EA test 6A); only Manning flow is checked now.
