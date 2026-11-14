@@ -1,0 +1,15 @@
+EPA SWMM (Storm Water Management Model), computational engine
+
+The SWMM engine is a work of the United States Environmental Protection Agency
+(EPA). Works authored by US federal government employees are not subject to
+copyright in the United States (17 USC 105); EPA distributes the SWMM engine as
+public domain software. See https://www.epa.gov/water-research/storm-water-management-model-swmm
+
+What is in this folder:
+- swmm5.js / swmm5.wasm: the SWMM 5.2.4 engine compiled to WebAssembly with
+  Emscripten 3.1.64, built from EPA's source at tag v5.2.4 by
+  tools/build_swmm_wasm.sh in this repository. The binary reports version
+  52004 (5.2.4) through its API; the node test C0 checks that.
+- SWMM_Readme.txt: the readme from EPA's SWMM 5.2.2 engine source archive,
+  kept for provenance. It does not describe the shipped binary (see the note
+  at the top of that file).

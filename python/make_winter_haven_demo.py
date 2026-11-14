@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-site example: downtown Winter Haven, Florida, around Lake Martha, built only from public data.
 
-    python python/make_winter_haven_demo.py examples/winter_haven [--cell 3] [--margin 400] [--ari 25] [--lake-levels lidar|city] [--routed]
+    python python/make_winter_haven_demo.py examples/winter_haven [--cell 3] [--margin 400] [--ari 25] [--lake-levels lidar|city] [--routed] [--outlets outlets.csv]
 
 Downloads, in NAD83 / Florida West (ftUS), EPSG 2237:
   - storm sewer: City of Winter Haven stormwater inventory (ArcGIS Online, public view): pipes with inverts, sizes and from/to structures,
@@ -14,6 +14,10 @@ Downloads, in NAD83 / Florida West (ftUS), EPSG 2237:
   - buildings: FEMA USA Structures footprints;
   - land cover: NLCD 2021 (MRLC); soils: USDA SSURGO hydrologic soil groups (Soil Data Access);
   - rain: NOAA Atlas 14 depth-duration values at the site, arranged as a nested (balanced) 24-hour storm in 5-minute steps.
+  - lake outlets (optional, --outlets a CSV the user supplies): the City's outlet structures are not in the public layers, so no
+    outlet data is downloaded or invented; a CSV with a 'lake' column (matching the lake names) and outlet columns
+    (outlet_type, outlet_crest_ft, outlet_length_ft, outlet_cw, outlet_rating, outlet_diameter_ft, outlet_width_ft,
+    outlet_opening_ft, outlet_cd, outlet_node) is written into lakes.geojson, where a routed lake's outlet uses it.
 Builds a SWMM5 .inp from the sewer: junction rims from the lidar at each structure, inverts from the pipes, pipe ends that leave the
 network or reach a lake as outfalls (a lake outfall is FIXED at the lake level). No subcatchments: rain falls on the 2D grid and enters
 the sewer through the inlets (two-way coupling). Every assumption is written to build_report.json.
@@ -130,6 +134,21 @@ def main(a):
                                              "where": "ftype=390", "outFields": "gnis_name,ftype,areasqkm", "outSR": EPSG, "f": "geojson"}, timeout=120).json()
     saip = arcgis(f"{CITY}/{SAIP_LAKES}", bbox, fields="Waterbody,WaterLevel,Modeled")
     rep["sources"]["lake_levels_city"] = "City of Winter Haven SAIP Preliminary Results (ICPR v4), LakePolygons layer, WaterLevel field; datum not stated"
+    # lake outlets from a user-supplied CSV (see the header): keyed by lake name, written into lakes.geojson verbatim
+    outlets = {}
+    if a.outlets:
+        import csv as _csv
+        keys = {"outlet_type", "outlet_crest_ft", "outlet_length_ft", "outlet_cw", "outlet_rating", "outlet_diameter_ft", "outlet_width_ft", "outlet_opening_ft", "outlet_cd", "outlet_node", "stage_area"}
+        for row in _csv.DictReader(open(a.outlets)):
+            nm = (row.get("lake") or "").strip()
+            if not nm: continue
+            d = {}
+            for k, v in row.items():
+                if k and k.strip().lower() in keys and v is not None and str(v).strip() != "":
+                    try: d[k.strip().lower()] = float(v)
+                    except ValueError: d[k.strip().lower()] = str(v).strip()
+            if d: outlets[nm] = d
+        rep["sources"]["lake_outlets"] = f"user-supplied {a.outlets} (the City's outlet structures are not in the public layers)"
     lakes = []
     for f in r["features"]:
         g = shape(f["geometry"]).intersection(dom); name = f["properties"].get("gnis_name") or f["properties"].get("GNIS_NAME") or "Lake"
@@ -145,7 +164,7 @@ def main(a):
         use = city if (a.lake_levels == "city" and city is not None) else lvl
         if a.lake_levels == "city" and city is None: note(f"{name}: no City SAIP water level; held at the lidar level {lvl:.2f} ft")
         full_ac = round(shape(f["geometry"]).area / 43560, 1)   # the whole lake, for a routed lake's area (the grid holds only part of it)
-        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city, "area_ac": full_ac, **({"routed": True} if a.routed else {})}, "geometry": mapping(g)})
+        lakes.append({"type": "Feature", "properties": {"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city, "area_ac": full_ac, **({"routed": True} if a.routed else {}), **outlets.get(name, {})}, "geometry": mapping(g)})
         rep["checks"].setdefault("lakes", []).append({"name": name, "level_ft": round(use, 2), "level_lidar_ft": round(lvl, 2), "level_city_ft": city,
             "city_minus_lidar_ft": None if city is None else round(city - lvl, 2),
             "city_minus_lidar_if_city_is_ngvd29_ft": None if city is None else round(city + ngvd_to_navd_ft - lvl, 2),
@@ -156,6 +175,11 @@ def main(a):
     if a.lake_levels == "city": note(f"Lake levels {start} the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are {kind} in the 2D")
     else: note(f"Lake levels {start} the lidar water surface (2018 survey), not a flood stage; lakes are {kind} in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
     if a.routed: note("Lakes are routed: each is a level pool over its whole NHD area (area_ac) that rises with the rain on it, the water the 2D spills into it and the SWMM outfalls on it (two-way runs); it has no outlet, so its rise is an upper bound")
+    if outlets:
+        used = [f["properties"]["name"] for f in lakes if f["properties"]["name"] in outlets]
+        for nm in outlets: 
+            if nm not in used: note(f"--outlets names a lake that is not in the domain: {nm} (ignored)")
+        if used: note(f"Lake outlets from {a.outlets} written for: {', '.join(used)}")
     json.dump(fc(lakes), open(os.path.join(a.out, "lakes.geojson"), "w"))
     lake_geoms = [(shape(f["geometry"]), f["properties"]) for f in lakes]
 
@@ -310,5 +334,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("out"); ap.add_argument("--cell", type=float, default=3); ap.add_argument("--margin", type=float, default=400)
     ap.add_argument("--ari", type=int, default=25); ap.add_argument("--lake-levels", choices=["lidar", "city"], default="lidar")
     ap.add_argument("--routed", action="store_true", help="mark the lakes as routed (their level rises with what they gain; area_ac is the whole NHD lake)")
+    ap.add_argument("--outlets", help="CSV of lake outlet structures (a 'lake' column plus outlet_* columns) written into lakes.geojson; the public layers carry none")
     ap.add_argument("--cache", default=os.path.join(os.path.expanduser("~"), ".cache", "fsim"))
     main(ap.parse_args())

@@ -1,4 +1,4 @@
-# Real-site test: Winter Haven, Florida (Lake Martha), November 2026 (updated for 0.4.1)
+# Real-site test: Winter Haven, Florida (Lake Martha), November 2026 (updated for 0.4.3)
 
 ## Why this site
 
@@ -14,7 +14,7 @@ It has a real storm sewer in a public inventory: the City of Winter Haven's ArcG
 
 | Input | Source | Notes |
 |---|---|---|
-| Storm sewer | City of Winter Haven inventory (pipes, inlets, manholes, outlets) | 145 pipes, 162 nodes, 84 curb and grate inlets, 15 outfalls to lakes, 6 free outfalls. 2 pipes without inverts were skipped |
+| Storm sewer | City of Winter Haven inventory (pipes, inlets, manholes, outlets) | 145 pipes (the count after skipping; 2 pipes without inverts were skipped), 162 nodes in the SWMM model, 84 curb and grate inlets, 15 outfalls to lakes, 6 free outfalls. 154 of the 162 nodes fall on the DEM; the other 8 lie outside its data area |
 | Rims | USGS 3DEP 1 m lidar at each structure | The inventory has no rim elevations. 3 nodes had lidar ground within 0.5 ft of the invert, or below it, and their depth was set to 0.5 ft |
 | Ground | 3DEP 1 m lidar (FL Peninsular FDEM 2018) | Resampled to 3 ft in EPSG 2237; NAVD88 ft |
 | Lakes | USGS NHD | Held at the 2018 lidar water surface (Martha 139.19 ft, Silver 142.73 ft, Maude 139.17 ft), or with `--lake-levels city` at the City's SAIP levels (141.3, 145.2, 139.6 ft) |
@@ -29,9 +29,9 @@ The SWMM model has no subcatchments. Rain falls on the 2D grid and reaches the s
 
 ### 1. Roof rain was piling up in courtyards (fixed in 0.3.2)
 
-The first whole-storm run at 6 ft gave a deepest water of 66.4 ft and needed 700,903 time steps.
+The first whole-storm run at 6 ft gave a deepest water of 66.4 ft (measured in the run) and needed 700,903 time steps.
 
-- **Cause:** roof rain goes to the nearest open cell. At 6 ft, a one-cell gap closed in by buildings was the nearest open cell for 104 roof cells, so 7.69 in of rain became 66.6 ft of water.
+- **Cause:** roof rain goes to the nearest open cell. At 6 ft, a one-cell gap closed in by buildings was the nearest open cell for 104 roof cells, so 7.69 in of rain became 66.6 ft of water by the volume arithmetic (104 roof cells' rain landing on one cell) — the computed expectation, against the 66.4 ft measured above.
 - **Fix:** open ground cut off from the edge, the lakes and the main area now keeps only its own rain. Roof rain goes to open ground that drains, and the build reports such pockets.
 - **Test:** `test_model.js` checks a courtyard against a hand-computed answer. It fails on 0.3.1 (11 times the rain) and passes now.
 - **After the fix:** the whole storm at 6 ft gives a deepest water of 5.51 ft in 224,896 steps (249.8 s on the GPU, down from 703.5 s), and the 8-hour window takes 71,835 steps.
@@ -114,7 +114,7 @@ The builder now records both levels. `--lake-levels city` uses the City's levels
 |---|---|---|---|---|
 | Martha | 139.19 ft | 141.3 ft | +2.11 ft | +1.18 ft |
 | Silver | 142.73 ft | 145.2 ft | +2.47 ft | +1.54 ft |
-| Maude | 139.17 ft | 139.6 ft | +0.43 ft | −0.51 ft |
+| Maude | 139.17 ft | 139.6 ft | +0.43 ft | −0.50 ft |
 
 - **What the City's levels are:** the layer gives the field name `WaterLevel` and no explanation. It may be a starting or control level in ICPR rather than a flood stage.
 - **Effect on the 25-year whole storm:**
@@ -127,7 +127,7 @@ The builder now records both levels. `--lake-levels city` uses the City's levels
 - **Ground:** the lidar is NAVD 88.
 - **The City's layers:** neither the inventory nor the SAIP layers state a datum. The builder takes them as NAVD 88, with no shift, and says so in `build_report.json`.
 - **If they are NGVD 29:** at the site, NAVD 88 = NGVD 29 − 0.93 ft (NGS NCAT, VERTCON 3.0, σ 0.08 ft). The City's elevations would then be 0.93 ft lower in NAVD 88.
-- **Inverts above the lidar ground:** the builder now lists every structure whose inventory invert is above the lidar ground. 9 of the 154 structures on the DEM are, by 0.04 to 3.17 ft.
+- **Inverts above the lidar ground:** the builder now lists every structure whose inventory invert is above the lidar ground. 9 of the 154 structures on the DEM (of 162 nodes in the model; the two counts are reconciled under "How it was built" above) are, by 0.04 to 3.17 ft.
   - **Seven are outfalls on a lake** (0.04 to 1.61 ft). At a lake, the lidar is the flattened water surface, so an invert above it is expected.
   - **Two are inside the network:**
     - **STRUCTURE-4059, a grate inlet, 3.17 ft:** it sits on Lake Silver, 0.9 ft from the NHD shoreline and inside the City's lake polygon. Its "ground" is the lake's flattened lidar water surface (142.73 ft), not land. The builder flags it. At 12 ft its node falls in a lake cell, so the 2D does not couple it. At 6 ft it falls in an open cell at the shore and is coupled. Its rim is 146.40 ft (invert plus the 0.5 ft depth). In the lidar-level and routed 6 ft runs the water there peaks at 142.88 and 143.38 ft, below the rim, so it takes nothing. In the City-level 6 ft run the water there peaks near 148.0 ft, above the rim, so it can take water; the saved peak-depth maps do not show whether it did. Its invert (145.90 ft) is also above the City's own Silver level (145.2 ft); its location or invert in the inventory should be checked.

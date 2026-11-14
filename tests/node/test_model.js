@@ -101,6 +101,32 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
     const o = im.getOrigin(), rs = im.getResolution();
     ok("GeoTIFF export reads back", w === 0 && o[0] === b.G.x0 && o[1] === b.G.y1 && rs[0] === b.G.cs && im.getGeoKeys().ProjectedCSTypeGeoKey === 2236 && r[0][0] === -9999, `max difference ${w}, origin ${o}, res ${rs[0]}, NoData ${r[0][0]}`);
   }
+  // prep_dem --zunits round trip (review F-11): the GDAL UNITTYPE tag it writes is read back as the vertical-unit hint.
+  // Fixtures made by python/prep_dem.py on the synthetic DEM (--epsg 2236 --cell 120), with and without --zunits ft;
+  // the shipped SI example carries UNITTYPE m the same way, and an empty tag must keep hinting nothing.
+  {
+    const tagged = await M.readDEM(ab(path.join(__dirname, "../fixtures/dem_zunits_ft.tif")), GeoTIFF, catalog);
+    const si = await M.readDEM(ab(ex("synthetic_si", "dem.tif")), GeoTIFF, catalog);
+    const plain = await M.readDEM(ab(path.join(__dirname, "../fixtures/dem_no_zunits.tif")), GeoTIFF, catalog);
+    ok("a DEM written by prep_dem --zunits ft reads back with a feet vertical-unit hint (F-11)", tagged.vUnitHint === "ft" && si.vUnitHint === "m" && plain.vUnitHint === null,
+      `tagged ft: ${tagged.vUnitHint}; SI example: ${si.vUnitHint}; no tag: ${plain.vUnitHint}`);
+  }
+  // nearestOpen measures true (Euclidean) distance in cells (review F-09): a diagonal 3 cells over and 3 up is 4.24 cells away,
+  // outside a 3-cell radius; and a nearer axial cell beats a farther diagonal at the same ring
+  {
+    const G = { nx: 11, ny: 11 }, k0 = 5 * 11 + 5;
+    const only = new Uint8Array(121).fill(1); only[2 * 11 + 8] = 0;                       // the only open cell is the (3,3) diagonal
+    const two = new Uint8Array(121).fill(1); two[2 * 11 + 8] = 0; two[5 * 11 + 9] = 0;     // plus an axial cell 4 cells away (dd 16 < 18)
+    ok("nearest open cell uses true distance: a diagonal beyond the radius is not accepted, and the nearer axial cell wins",
+      M.nearestOpen(only, G, k0, 3) === -1 && M.nearestOpen(two, G, k0, 4) === 5 * 11 + 9,
+      `diagonal-only within 3: ${M.nearestOpen(only, G, k0, 3)}; two candidates within 4: ${M.nearestOpen(two, G, k0, 4)} (axial ${5 * 11 + 9})`);
+  }
+  // a non-empty buildings file that covers no cell warns, like a boundary that covers none (review F-12)
+  {
+    const { dem } = B.synthetic_us, far = [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] } }];
+    const b = M.buildGrid(dem, { cellSize: dem.res, hUnitFt: dem.hUnitFt, vUnitFt: 1, buildings: far });
+    ok("buildings covering no cell of the grid warn (F-12)", b.warnings.some((w) => /Buildings do not cover any cell/.test(w)), `warnings: ${JSON.stringify(b.warnings)}`);
+  }
   // refusals
   const { dem } = B.synthetic_us;
   await expectError("refuses a cell size that is not a multiple of the DEM", () => M.buildGrid(dem, { cellSize: 7, hUnitFt: 1, vUnitFt: 1 }), /whole multiple/);

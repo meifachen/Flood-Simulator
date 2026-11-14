@@ -46,6 +46,7 @@ const UI = (() => {
     "#outmin": "How often a map is kept, minutes. Default 5; 1–120. More maps: smoother playback, larger saved file.",
     "#engine": "GPU (WebGPU) if the browser has it, else the CPU. Both do the same arithmetic; the GPU is usually much faster.",
     "#cfl": "Courant number: the time step as a share of the time a wave takes to cross a cell. Default 0.7; 0.1–1. Lower is steadier and slower.",
+    "#dvth": "Depth × velocity threshold (ft²/s): the run records, for each cell, how long its depth × velocity stayed above this level, and when its fastest flow occurred. Default 0.5, the lowest depth × velocity class edge. It changes what is recorded, not the flow.",
     "#wet": "Water deeper than this counts as flooding in the map, the flooded area and the comparison. Default 0.1 ft; 0.01–5.",
     "#bthr": "A building counts as reached when the water next to it is this deep. Default 0.5 ft; 0.01–5.",
     "#b-run": "Run the model with these settings. Off until a DEM or example is loaded.",

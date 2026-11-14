@@ -146,13 +146,94 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     const run = async (chunkSec) => F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 3, rainAt: () => 0, stageAt: () => [h0], routedLakes: [{ lake: 0, areaFt2: Ar, level0: h0, outlet: { crestFt: c, lengthFt: L, cw } }], chunkSec, readSec: 3600 });
     const r1 = await run(60), r9 = await run(900), errs = [r1, r9].map((r) => r.lakes.series.reduce((m, x) => Math.max(m, Math.abs(x.levels[0] - ex(x.tHours * 3600))), 0));
     const lo = Math.min(...r9.lakes.series.map((x) => x.levels[0]));
-    ok("L13 an outlet weir drains the lake along the level-pool solution (within 0.005 ft, 60 s and 900 s chunks), not below its crest; outlet volume = storage lost",
-      errs.every((e) => e < 0.005) && lo >= c && Math.abs(r9.lakes.outlet[0] - (h0 - r9.lakes.end[0]) * Ar) < 1e-3 * Ar,
+    ok("L13 an outlet weir drains the lake along the level-pool solution (within 0.001 ft, 60 s and 900 s chunks), not below its crest; outlet volume = storage lost",
+      errs.every((e) => e < 0.001) && lo >= c && Math.abs(r9.lakes.outlet[0] - (h0 - r9.lakes.end[0]) * Ar) < 1e-3 * Ar,
       `largest error ${errs.map((e) => e.toFixed(4)).join(" / ")} ft; end ${r9.lakes.end[0].toFixed(4)} ft (exact ${ex(3 * 3600).toFixed(4)}); outlet ${r9.lakes.outlet[0].toFixed(0)} cf`);
     const msgs = [];
     for (const rl of [{ stageArea: [[95, 20000]] }, { stageArea: [[100, 2e4], [95, 4e4]] }, { stageArea: [[95, 0], [100, 4e4]] }, { areaFt2: Ar, outlet: { crestFt: 97, lengthFt: 0 } }, { areaFt2: Ar, outlet: { crestFt: "97", lengthFt: 10 } }, { areaFt2: Ar, outlet: { crestFt: 97, lengthFt: 10, cw: -1 } }])
       try { await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.01, rainAt: () => 0, stageAt: () => [98], routedLakes: [Object.assign({ lake: 0, level0: 98 }, rl)] }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
     ok("L13 a one-row, falling or zero-area stage-area table and a zero length, text crest or negative coefficient outlet are refused", /two or more/.test(msgs[0]) && /must rise/.test(msgs[1]) && /positive areas/.test(msgs[2]) && /outlet length 0/.test(msgs[3]) && /outlet crest 97 is not/.test(msgs[4]) && /weir coefficient -1/.test(msgs[5]), msgs.join(" | "));
+  }
+  // L14 (new in 0.6.0, E-03; covers review F-01) a routed lake fed from outside (50 cfs, as a SWMM outfall would) rises to its lip and
+  // spills for the rest of the run: the run completes, the lake budget closes, and the level settles just above the lip.
+  // On 0.5.0 this threw "a numerical failure" at hour 0.52: the guard's virtual lake never received the outside water that spilled.
+  {
+    const nx = 7, ny = 7, dx = 10, N = nx * ny, z = new Float32Array(N), type = new Uint8Array(N), node = new Uint8Array(N), n = new Float32Array(N).fill(0.03),
+      perv = new Float32Array(N), ks = new Float32Array(N), psimd = new Float32Array(N), mult = new Float32Array(N).fill(1);
+    for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) { const k = r * nx + c, lake = r >= 2 && r <= 4 && c >= 2 && c <= 4; z[k] = lake ? 90 : 100; if (lake) { type[k] = 2; node[k] = 0; mult[k] = 0; } }
+    const g14 = F.makeGrid({ nx, ny, dx, z, type, node, n, perv, ks, psimd, mult, K: 1 });
+    let r14 = null, err14 = "";
+    try {
+      r14 = await F.simulate(g14, new F.CpuSolver(g14), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [96],
+        routedLakes: [{ lake: 0, areaFt2: 9000, level0: 96, name: "Fed lake" }], lakeInflow: (a, b) => [50 * (b - a) * 3600], readSec: 3600 });
+    } catch (e) { err14 = e.message; }
+    const lk = r14 && r14.lakes, stored = lk ? (lk.end[0] - 96) * 9000 : NaN, budget = lk ? lk.from2d[0] + lk.rain[0] + lk.outside[0] - lk.outlet[0] : NaN;
+    ok("L14 a routed lake fed 50 cfs from outside rises to its lip, spills for the rest of the run and completes (F-01)",
+      !!lk && lk.end[0] > 100 && lk.end[0] < 100.6 && near(lk.outside[0], 360000, 1e-9),
+      lk ? `end ${lk.end[0].toFixed(3)} ft (lip 100); outside ${lk.outside[0].toFixed(0)} of 360,000 cf` : "threw: " + err14);
+    ok("L14 the spilling lake's budget closes: 2D exchange + rain + outside - outlet = the storage it gained",
+      !!lk && near(budget, stored, 1e-5) && Math.abs(r14.ledger.errPct) < 0.01,
+      lk ? `budget ${budget.toFixed(1)} cf vs storage ${stored.toFixed(1)} cf; 2D ledger error ${r14.ledger.errPct.toExponential(2)}%` : "no run");
+  }
+  // L15 (new in 0.6.0; covers review F-13) a lake starting 2 ft above dry, contained land (walls at the tile edge): the chunk cap is
+  // seeded from the starting head, so the first chunk already moves the level by hundredths, not by the 0.15 ft the reactive cap
+  // allowed on 0.5.0, and the 60 s and 0.1 s chunk paths agree on the level series.
+  {
+    const nx = 7, ny = 7, dx = 10, N = nx * ny, z = new Float32Array(N), type = new Uint8Array(N), node = new Uint8Array(N), n = new Float32Array(N).fill(0.03),
+      perv = new Float32Array(N), ks = new Float32Array(N), psimd = new Float32Array(N), mult = new Float32Array(N).fill(1);
+    for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) { const k = r * nx + c, lake = r >= 2 && r <= 4 && c >= 2 && c <= 4, wall = r === 0 || c === 0 || r === ny - 1 || c === nx - 1; z[k] = lake ? 90 : wall ? 110 : 100; if (lake) { type[k] = 2; node[k] = 0; mult[k] = 0; } else if (wall) { type[k] = 1; mult[k] = 0; } }
+    const g15 = F.makeGrid({ nx, ny, dx, z, type, node, n, perv, ks, psimd, mult, K: 1 });
+    const run15 = async (chunkSec) => F.simulate(g15, new F.CpuSolver(g15), { t0: 0, t1: 0.05, rainAt: () => 0, stageAt: () => [102],
+      routedLakes: [{ lake: 0, stageArea: [[95, 900], [100, 900], [105, 1800]], level0: 102, outlet: { crestFt: 101, lengthFt: 10, cw: 3.0 }, name: "Ring" }], chunkSec, readSec: 3600 });
+    const a15 = await run15(60), b15 = await run15(0.1), La = a15.lakes.series.map((x) => x.levels[0]), Lb = b15.lakes.series.map((x) => x.levels[0]);
+    ok("L15 the first chunk of a lake starting above dry land moves its level by less than 0.01 ft (0.5.0: 0.15 ft), and the level never falls below its lip on contained land",
+      La[0] > 101.99 && Math.min(...La) >= 100 && Math.min(...Lb) >= 100,
+      `first level ${La[0].toFixed(4)} ft; lowest ${Math.min(...La).toFixed(4)} / ${Math.min(...Lb).toFixed(4)} ft (lip 100)`);
+    ok("L15 the level path does not depend on the chunk length (60 s vs 0.1 s chunks: lowest and end levels within 0.01 ft)",
+      Math.abs(Math.min(...La) - Math.min(...Lb)) < 0.01 && Math.abs(a15.lakes.end[0] - b15.lakes.end[0]) < 0.01,
+      `lowest ${Math.min(...La).toFixed(4)} / ${Math.min(...Lb).toFixed(4)} ft; end ${a15.lakes.end[0].toFixed(4)} / ${b15.lakes.end[0].toFixed(4)} ft`);
+  }
+  // L16 (new in 0.6.0, E-06) a rating-curve outlet: the level settles where the curve's flow equals the inflow, nothing flows below
+  // the curve's first stage, and the budget closes. Outlet kinds other than a weir are new in 0.6.0, so these checks have no
+  // 0.5.0 counterpart (kind was not read; a rating object where a weir was expected was refused or misread).
+  {
+    const rating = [[95, 0], [98, 10], [100, 40]];
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 6, rainAt: () => 0, stageAt: () => [96], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 96, outlet: { kind: "rating", rating } }],
+      lakeInflow: (a, b) => [20 * (b - a) * 3600], chunkSec: 60, readSec: 3600 });
+    const lk = r.lakes, settle = 98 + (20 - 10) / 15;   // 20 cfs on the 98-100 segment (15 cfs per ft)
+    ok("L16 a rating-curve outlet settles the level where its flow equals the inflow (98.667 ft for 20 cfs)",
+      Math.abs(lk.end[0] - settle) < 0.02 && near(lk.outside[0] - lk.outlet[0], (lk.end[0] - 96) * lakeArea, 1e-3),
+      `end ${lk.end[0].toFixed(4)} ft (expected ${settle.toFixed(3)}); outside ${lk.outside[0].toFixed(0)} cf, outlet ${lk.outlet[0].toFixed(0)} cf`);
+    const dry = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.5, rainAt: () => 0, stageAt: () => [94.5], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 94.5, outlet: { kind: "rating", rating } }], chunkSec: 60, readSec: 3600 });
+    ok("L16 below the rating's first stage the outlet passes nothing", dry.lakes.outlet[0] === 0 && dry.lakes.end[0] === 94.5, `outlet ${dry.lakes.outlet[0]} cf, level ${dry.lakes.end[0]} ft`);
+  }
+  // L17 (new in 0.6.0, E-06) a pipe outlet is an orifice at its invert: with a constant area the head follows
+  // H(t) = (sqrt(H0) - Cd A sqrt(2 g) t / (2 Ar))^2 exactly, and the lake never falls below the invert
+  {
+    const Ar = 100000, c = 97, h0 = 99, D = 2, cd = 0.6, Ao = Math.PI * D * D / 4, k = cd * Ao * Math.sqrt(2 * 32.174) / (2 * Ar);
+    const ex = (t) => c + Math.pow(Math.sqrt(h0 - c) - k * t, 2);
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 3, rainAt: () => 0, stageAt: () => [h0], routedLakes: [{ lake: 0, areaFt2: Ar, level0: h0, outlet: { kind: "pipe", crestFt: c, diameterFt: D, cd } }], chunkSec: 60, readSec: 3600 });
+    const errs = r.lakes.series.map((x) => Math.abs(x.levels[0] - ex(x.tHours * 3600)));
+    ok("L17 a pipe outlet drains the lake along the orifice solution (within 0.01 ft), not below its invert; outlet volume = storage lost",
+      Math.max(...errs) < 0.01 && Math.min(...r.lakes.series.map((x) => x.levels[0])) >= c && Math.abs(r.lakes.outlet[0] - (h0 - r.lakes.end[0]) * Ar) < 1e-3 * Ar,
+      `largest error ${Math.max(...errs).toFixed(4)} ft; end ${r.lakes.end[0].toFixed(4)} ft (exact ${ex(3 * 3600).toFixed(4)}); outlet ${r.lakes.outlet[0].toFixed(0)} cf`);
+  }
+  // L18 (new in 0.6.0, E-06) a gate outlet: at a level above the opening it passes Cd W a sqrt(2 g (level - sill - a/2)); inside the
+  // opening it passes the orifice flow of the wetted part. Both are checked as equilibria against a matching constant inflow.
+  {
+    const Ar = 25200, sill = 97, w = 4, a = 1, cd = 0.6;
+    const qFull = cd * w * a * Math.sqrt(2 * 32.174 * (99 - sill - a / 2)), qPart = cd * w * 0.5 * Math.sqrt(32.174 * 0.5);
+    const run = async (lv, q) => F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [lv], routedLakes: [{ lake: 0, areaFt2: Ar, level0: lv, outlet: { kind: "gate", crestFt: sill, widthFt: w, openingFt: a, cd } }],
+      lakeInflow: (x, y) => [q * (y - x) * 3600], chunkSec: 60, readSec: 3600 });
+    const rF = await run(99, qFull), rP = await run(97.5, qPart);
+    ok("L18 a gate outlet holds the level against its hand-computed flow, above the opening and inside it",
+      Math.abs(rF.lakes.end[0] - 99) < 0.02 && Math.abs(rP.lakes.end[0] - 97.5) < 0.02,
+      `above: end ${rF.lakes.end[0].toFixed(4)} ft at ${qFull.toFixed(2)} cfs; inside: end ${rP.lakes.end[0].toFixed(4)} ft at ${qPart.toFixed(2)} cfs`);
+    const msgs = [];
+    for (const o of [{ kind: "rating", rating: [[95, 0], [100, -1]] }, { kind: "rating", rating: [[95, 10], [100, 5]] }, { kind: "pipe", crestFt: 97, diameterFt: 0 }, { kind: "gate", crestFt: 97, widthFt: 4, openingFt: "1" }, { kind: "flap", crestFt: 97 }])
+      try { await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.01, rainAt: () => 0, stageAt: () => [98], routedLakes: [{ lake: 0, areaFt2: Ar, level0: 98, outlet: o }] }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    ok("L18 a falling or negative rating, a zero pipe diameter, a text gate opening and an unknown outlet type are refused",
+      /flows of zero or more/.test(msgs[0]) && /must not fall/.test(msgs[1]) && /diameter 0/.test(msgs[2]) && /gate opening 1/.test(msgs[3]) && /not one of weir, rating, pipe, gate/.test(msgs[4]), msgs.join(" | "));
   }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log("CRASH " + (e.stack || e)); process.exit(1); });

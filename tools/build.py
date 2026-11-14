@@ -4,12 +4,14 @@
     python tools/build.py [--no-examples]
 
 Writes dist/FloodSimulator.html and dist/FloodSimulator.manifest.json (SHA-256 of every input and of the output).
+The output hash is not comparable across machines: the build-date stamp and the gzip encoding of the inlined
+examples vary with the Python/zlib version. The manifest's input hashes are the cross-machine check (review F-32).
 """
 import argparse, base64, gzip, hashlib, json, os, sys, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 SRC, VEN, EXA = ROOT / "src", ROOT / "vendor", ROOT / "examples"
 EXAMPLES = [("synthetic_us", "none"), ("public_demo", "osm"), ("synthetic_si", "none")]
 

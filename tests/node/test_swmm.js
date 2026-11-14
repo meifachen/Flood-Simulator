@@ -30,6 +30,8 @@ for (const d of ["synthetic_us", "synthetic_si", "public_demo"]) {
   const startMs = Math.round((ref.startDays - 25569) * 86400000);
   ok(`[${d}] .out times: first value one report step after the start`, o.start.getTime() === startMs && o.times[0].getTime() === startMs + 300000 && Math.abs(o.dateAt(0).getTime() - o.times[0].getTime()) < 1000,
     `start ${o.start.toISOString()}, first ${o.times[0].toISOString()}, stored ${o.dateAt(0).toISOString()}`);
+  ok(`[${d}] .out dateAt lands exactly on the report times, and .out nodes carry no type`, o.dateAt(0).getTime() === o.times[0].getTime() && o.dateAt(o.nPeriods - 1).getTime() === o.times[o.nPeriods - 1].getTime() && o.nodes.every((n) => n.type === undefined),
+    `dateAt(0) ${o.dateAt(0).toISOString()} vs times[0] ${o.times[0].toISOString()}; node types ${o.nodes.map((n) => String(n.type)).join(",")}`);
   let wf = 0, wh = 0;
   for (const nm of ref.outNodeNames) {
     const f = o.getNodeSeries(nm, "flooding"), h = o.getNodeSeries(nm, "head");
@@ -61,6 +63,13 @@ expectError("refuses a node defined twice", () => S.parseInp("[JUNCTIONS]\nJ1 10
 {
   const m = S.parseInp("[OPTIONS]\nFLOW_UNITS CFS\nSTART_DATE 01/01/2024\nSTART_TIME 23:00\n[RAINGAGES]\nRG INTENSITY 1:00 1 TIMESERIES T\n[TIMESERIES]\nT 01/01/2024 23:00 1\nT 01/02/2024 00:00 2\nT 01:00 3\n");
   const r = S.gaugeRain(m, "RG"); ok("dated series across midnight", JSON.stringify(r.values) === "[1,2,3]", JSON.stringify(r.values));
+}
+// a secondary field that is not a number is named in the warnings and read as 0, never silently zeroed (review F-29)
+{
+  const m = S.parseInp("[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ1 10 5 0 abc 2\nJ2 9 5 0 1.5 xyz\n[STORAGE]\nS1 8 4 deep\n[CONDUITS]\nC1 J1 J2 100 0.013 off 0\n[COORDINATES]\nJ1 0 0\nJ2 1 0\nS1 2 0\nC1 0 0\n");
+  const w = m.warnings.join(" | ");
+  ok("non-numeric secondary fields are named in the warnings (F-29)", m.nodes[0].surDepth === 0 && m.nodes[0].pondedArea === 2 && m.nodes[1].surDepth === 1.5 && m.nodes[1].pondedArea === 0 && m.nodes[2].initDepth === 0 && /Junction J1 surcharge depth: "abc"/.test(w) && /Junction J2 ponded area: "xyz"/.test(w) && /Storage S1 initial depth: "deep"/.test(w) && /Conduit C1 inlet offset: "off"/.test(w),
+    `warnings: ${w}`);
 }
 // water SWMM can make on its own besides subcatchments: [INFLOWS], [DWF], [RDII], [GROUNDWATER] lines are counted
 {

@@ -36,6 +36,21 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
   ok("files whose header does not match their contents are refused", out.every((m) => !/: opened$/.test(m)), out.join(" | "));
   const b2 = raw(gz), extra = new Uint8Array(b2.length + 8); extra.set(b2);
   ok("bytes beyond what the header lists are refused", /bytes more than its header lists/.test(await refused(extra)), await refused(extra));
+  // R-C3 (new in 0.6.0, E-04 and E-09) a saved run carries its provenance (app version, engine settings, input file hashes)
+  // and the time-of-max-velocity and duration arrays; the provenance of two runs can be diffed. New in 0.6.0: on 0.5.0 the
+  // header has no prov and the final has no tvmax/dvdur, so these checks fail there.
+  {
+    const prov = { app: "0.6.0", settings: { engine: "gpu", cfl: 0.7, coupling: "two", couplingSec: 30, t0: 0, t1: 6, outputSec: 300, rainSource: "gauge", dvThresh: 0.5 },
+      inputs: [{ kind: "dem", name: "dem.tif", sha256: "a".repeat(64) }, { kind: "inp", name: "model.inp", sha256: "b".repeat(64) }] };
+    const S2 = Object.assign({}, S, { prov, final: Object.assign({}, S.final, { tvmax: f32(1.5), dvdur: f32(600) }) });
+    const r2 = await RIO.unpack(await RIO.pack(S2, "0.6.0"));
+    const prov2 = JSON.parse(JSON.stringify(prov)); prov2.settings.cfl = 0.5; prov2.inputs[1].sha256 = "c".repeat(64);
+    const d = RIO.provDiff(prov, prov2), dSame = RIO.provDiff(prov, prov);
+    ok("R-C3 provenance and the velocity-time arrays round-trip in a saved run; provenance diffs name the changed settings and files",
+      r2.h.prov.settings.cfl === 0.7 && r2.h.prov.inputs[0].sha256 === "a".repeat(64) && r2.final.tvmax[0] === 1.5 && r2.final.dvdur[0] === 600 &&
+      d.length === 2 && /cfl: 0.7 vs 0.5/.test(d[0]) && /inp file differs/.test(d[1]) && dSame.length === 0 && /sha256 aaaaaaaaaaaa/.test(RIO.provLine(prov)),
+      `diff: ${d.join("; ") || "none"}; line: ${RIO.provLine(prov).slice(0, 90)}…`);
+  }
   // R-C1 comparing two runs on the same grid: per-cell change in maximum depth and the areas gained and lost (hand-made 2 x 2 runs)
   {
     const G = { nx: 2, ny: 2, x0: 0, y1: 0, cs: 10, dxFt: 10 }, ga = { G, type: Uint8Array.from([0, 0, 0, 1]) }, gb = { G, type: Uint8Array.from([0, 0, 0, 1]) };

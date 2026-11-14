@@ -33,6 +33,11 @@
     if (!epsg && gk.GeographicTypeGeoKey && !gk.ProjectedCSTypeGeoKey) throw new Error("The DEM is in geographic coordinates (degrees); project it to a CRS in feet or meters first (python/prep_dem.py)");
     const c = epsg ? lookupCrs(catalog, epsg) : null;
     let vUnit = null; const vt = (gk.VerticalUnitsGeoKey || null); if (vt === 9001) vUnit = "m"; else if (vt === 9002) vUnit = "ft"; else if (vt === 9003) vUnit = "us-ft";
+    if (!vUnit) {   // GDAL's UNITTYPE band tag (what python/prep_dem.py --zunits writes) is not a GeoKey, so the hint above missed it and
+      // a feet DEM under a metric CRS fell back to metres, 3.28x out (review F-11); read the tag from GDAL_METADATA as well
+      const m = /name="UNITTYPE"[^>]*>([^<]+)</.exec((fd && fd.GDAL_METADATA) || "");
+      if (m) { const u = m[1].trim().toLowerCase(); if (u === "m" || u === "metre" || u === "metres" || u === "meter" || u === "meters") vUnit = "m"; else if (u === "us-ft" || u === "us survey foot" || u === "us survey feet" || u === "us_survey_feet" || u === "ftus") vUnit = "us-ft"; else if (u === "ft" || u === "foot" || u === "feet") vUnit = "ft"; }
+    }
     return { nx, ny, x0: ox, y1: oy, res: Math.abs(rx), data, valid, epsg, crsName: c ? c.name : null, proj4: c ? c.proj4 : null, hUnitFt: c ? proj4UnitFt(c.proj4) : NaN, vUnitHint: vUnit,
       bounds: [ox, oy - ny * Math.abs(ry), ox + nx * Math.abs(rx), oy] };
   }
@@ -147,6 +152,7 @@
     const bStart = new Int32Array(bld.length + 1), bList = [];
     bld.forEach((ft, i) => { bStart[i] = bList.length; fillRings(featureRings(ft), G, (k) => { if (type[k] === 0) { type[k] = 1; bCells++; } bList.push(k); }); });
     bStart[bld.length] = bList.length;
+    if (bld.length && !bList.length) warnings.push(`Buildings do not cover any cell of the grid (the file has ${bld.length} feature${bld.length === 1 ? "" : "s"}); check the coordinate system`);   // a non-empty file covering nothing used to pass silently (review F-12)
     // boundaries -> level cells; key index into o.boundaries
     const bnd = new Int16Array(N).fill(-1); let lvlCells = 0;
     (o.boundaries || []).forEach((b, i) => {
@@ -218,19 +224,18 @@
     return { g, G, z, type, bnd, noData, n, perv, ksA, info: { nx, ny, cells: N, open, pockets, pocketCells, wallCells: bCells, nodataCells: nodata, levelCells: lvlCells, factor: f, buildings: bld.length, landcoverCells: lcInfo.cells, soilCells: soilInfo.cells }, warnings };
   }
   function cellOf(G, x, y) { const c = Math.floor((x - G.x0) / G.cs), r = Math.floor((G.y1 - y) / G.cs); return (c >= 0 && r >= 0 && c < G.nx && r < G.ny) ? r * G.nx + c : -1; }
-  /* nearest open cell within maxCells (Chebyshev rings), or -1 */
+  /* nearest open cell within maxCells of k, by true (Euclidean) distance in cells, or -1.
+   * A Chebyshev ring search (review F-09) accepted diagonal cells up to sqrt(2) x maxCells away under a
+   * "within N ft" message and could return a farther diagonal over a nearer axial cell. */
   function nearestOpen(type, G, k, maxCells) {
     if (k < 0) return -1; if (type[k] === 0) return k;
-    const r0 = (k / G.nx) | 0, c0 = k % G.nx;
-    for (let d = 1; d <= maxCells; d++) {
-      let best = -1, bd = Infinity;
-      for (let r = r0 - d; r <= r0 + d; r++) for (let c = c0 - d; c <= c0 + d; c++) {
-        if (Math.max(Math.abs(r - r0), Math.abs(c - c0)) !== d || r < 0 || c < 0 || r >= G.ny || c >= G.nx) continue;
-        const j = r * G.nx + c; if (type[j] !== 0) continue; const dd = (r - r0) ** 2 + (c - c0) ** 2; if (dd < bd) { bd = dd; best = j; }
-      }
-      if (best >= 0) return best;
+    const r0 = (k / G.nx) | 0, c0 = k % G.nx, lim = maxCells * maxCells;
+    let best = -1, bd = Infinity;
+    for (let r = Math.max(0, r0 - maxCells); r <= Math.min(G.ny - 1, r0 + maxCells); r++) for (let c = Math.max(0, c0 - maxCells); c <= Math.min(G.nx - 1, c0 + maxCells); c++) {
+      const j = r * G.nx + c; if (type[j] !== 0) continue;
+      const dd = (r - r0) ** 2 + (c - c0) ** 2; if (dd <= lim && dd < bd) { bd = dd; best = j; }
     }
-    return -1;
+    return best;
   }
 
   // ------------------------------------------------------------------ SWMM coupling (one way)

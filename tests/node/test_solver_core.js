@@ -99,6 +99,51 @@ function raw(nx, ny, dx, fz, ft = () => 0, o = {}) {
     }
     ok("T9 a dam break moves the same water whatever the step (dtMax 5, 0.1, 0.02, 0.005 s; within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
   }
+  // T10 (new in 0.6.0, E-02; covers review F-02) the same dam break at Courant numbers 0.7, 0.35 and 0.1 moves the same water (within 3%):
+  // the de Almeida smoothing is normalised to the wave step at the reference Courant number, so a lower cfl no longer adds diffusion.
+  // On 0.5.0 the cfl 0.1 run moved 14% less water than the cfl 0.7 run.
+  {
+    const nx = 40, ny = 30, g = F.makeGrid(raw(nx, ny, 10, () => 100, (r, c) => (r === 0 || c === 0 || r === ny - 1 || c === nx - 1) ? 1 : 0));
+    const moved = [];
+    for (const cfl of [0.7, 0.35, 0.1]) {
+      const init = new Float32Array(4 * g.N); for (let r = 1; r < ny - 1; r++) for (let c = 30; c < nx - 1; c++) init[4 * (r * nx + c)] = 3;
+      const out = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 20 / 3600, rainAt: () => 0, stageAt: () => [0], cfl, dtMax: 5, readSec: 3600, init });
+      const st = out.frames.at(-1).st; let v = 0; for (let r = 1; r < ny - 1; r++) for (let c = 1; c < 30; c++) v += st[4 * (r * nx + c)] * 100; moved.push(v);
+    }
+    ok("T10 a dam break moves the same water at Courant 0.7, 0.35 and 0.1 (within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
+  }
+  // T11 (new in 0.6.0, E-08) UK Environment Agency benchmarking Test 3, "momentum conservation over a small obstruction"
+  // (Neelz and Pender 2010, Benchmarking of 2D hydraulic modelling packages): a 300 m by 100 m plane at 1:200 with two
+  // depressions separated by a 0.25 m obstruction; the inflow volume is just sufficient to fill the left depression, so
+  // water reaches the right depression only if the solver carries momentum over the crest. The EA distributes the test
+  // DEM and hydrograph tables on request; this fixture reconstructs the test from the published description (5 m grid,
+  // Manning n 0.01, 900 s, dry bed, inflow along the left edge) with smooth depressions and sill of the published sizes,
+  // and the hydrograph volume set to the reconstructed left-depression storage up to the crest, which is the published
+  // defining condition. EA Test 6A (dam break, Soares-Frazao and Zech) is not used: its flume flow is supercritical with
+  // hydraulic jumps, and this engine caps face velocity at critical flow by design, so its 6A velocities would be lower
+  // bounds by construction and a pass/fail against the measured series would misstate the engine's class. Brand-new
+  // fixture (no 0.5.0 counterpart); the engine is unchanged by E-08, so this check also passes on 0.5.0.
+  {
+    const M = 1 / 0.3048, nx = 60, ny = 20, dx = 5 * M;                     // 5 m cells, in feet
+    const bowl = (x, c) => Math.abs(x - c) < 20 ? 0.35 * Math.pow(Math.cos(Math.PI * (x - c) / 40), 2) : 0;
+    const sill = (x) => Math.abs(x - 200) < 5 ? 0.25 * Math.pow(Math.cos(Math.PI * (x - 200) / 10), 2) : 0;
+    const zm = (x) => 11.0 - x / 200 - bowl(x, 150) - bowl(x, 250) + sill(x);
+    const g = F.makeGrid(raw(nx, ny, dx, (r, c) => zm((c + 0.5) * 5) * M, (r, c) => (r === 0 || r === ny - 1 || c === nx - 1) ? 1 : 0, { n: 0.01 }));
+    const crest = zm(200) * M, A = dx * dx;
+    let vFill = 0; for (let k = 0; k < g.N; k++) { const c = k % nx; if ((c + 0.5) * 5 < 200) vFill += Math.max(0, crest - g.aux[4 * k]) * A; }
+    const srcs = []; for (let r = 1; r < ny - 1; r++) srcs.push({ cell: r * nx, name: "west edge row " + r });
+    const qPeak = 2 * vFill / 300;                                        // triangle over 300 s holding exactly vFill
+    const qAt = (t) => t < 0 || t > 300 ? 0 : qPeak * (t < 150 ? t / 150 : 1 - (t - 150) / 150);
+    const solver = new F.CpuSolver(g);
+    const out = await F.simulate(g, solver, { t0: 0, t1: 0.25, rainAt: () => 0, stageAt: () => [0], sources: srcs, sourceAt: (a, b) => srcs.map(() => qAt((a + b) / 2 * 3600) / srcs.length), readSec: 900 });
+    const st = out.frames.at(-1).st, mid = 10;
+    const dep = (c) => st[4 * (mid * nx + c)], lvl = (c) => dep(c) + g.aux[4 * (mid * nx + c)];
+    let vEast = 0; for (let k = 0; k < g.N; k++) if ((k % nx + 0.5) * 5 > 200) vEast += st[4 * k] * A;
+    const v1 = out.vmax[mid * nx + 30] / M;                            // peak speed at the left depression, m/s
+    ok("T11 EA Test 3 replica: momentum carries water over the 0.25 m obstruction into the right depression, a bounded share, levels settle flat, ledger closes",
+      dep(50) > 0.15 && vEast / vFill < 0.3 && vEast > 0.01 * vFill && Math.abs(lvl(28) - lvl(32)) < 0.1 && Math.abs(out.ledger.errPct) < 0.5 && v1 > 0.3 && v1 < 3.7,
+      `right depression depth ${(dep(50) / M).toFixed(3)} m (published: the full-SWE packages settle it about 0.02 m apart), share east of crest ${(100 * vEast / vFill).toFixed(1)}% of the inflow volume, left pond flatness ${Math.abs(lvl(28) - lvl(32)).toFixed(3)} ft, peak speed at point 1 ${v1.toFixed(2)} m/s (published plot envelope up to about 3 m/s), ledger ${out.ledger.errPct.toFixed(3)}%`);
+  }
   require("fs").writeFileSync((process.env.OUTDIR || require("os").tmpdir()) + "/test_flood_results.json", JSON.stringify(res, null, 1));
   console.log(res.every((r) => r.pass) ? "ALL PASS" : "SOME FAILED"); process.exitCode = res.every((r) => r.pass) ? 0 : 1;
 })();

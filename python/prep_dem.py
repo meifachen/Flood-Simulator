@@ -50,9 +50,9 @@ def prep_buildings(src, dst, crs, bounds, min_area):
                 line = line.strip().rstrip(",")
                 if not line.startswith("{"): continue
                 g = json.loads(line); g = g.get("geometry") or g
-                xy = np.array(g["coordinates"][0])
-                if xy[:, 0].max() < ll[0] or xy[:, 0].min() > ll[2] or xy[:, 1].max() < ll[1] or xy[:, 1].min() > ll[3]: continue
-                geoms.append(shape(g))
+                geom = shape(g); bx = geom.bounds   # shape().bounds is right for every geometry type; coordinates[0] is not a ring for a MultiPolygon, whose prefilter box mixed x and y and could silently drop the footprint (review F-30)
+                if bx[2] < ll[0] or bx[0] > ll[2] or bx[3] < ll[1] or bx[1] > ll[3]: continue
+                geoms.append(geom)
         gdf = gpd.GeoDataFrame(geometry=geoms, crs=4326)
     else:
         gdf = gpd.read_file(src, bbox=tuple(gpd.GeoSeries([B], crs=crs).to_crs(gpd.read_file(src, rows=1).crs).total_bounds))
@@ -82,7 +82,7 @@ if __name__ == "__main__":
     ap.add_argument("--cell", type=float, help="cell size in target CRS units (default: about the source resolution)")
     ap.add_argument("--buildings"); ap.add_argument("--min-area", type=float, default=200.0)
     ap.add_argument("--zfactor", type=float, default=1.0, help="multiply elevations, e.g. 3.28083333 for meters to US survey feet")
-    ap.add_argument("--zunits", help="elevation units after --zfactor (ft or m), stored as a tag")
+    ap.add_argument("--zunits", help="elevation units after --zfactor (ft or m), stored as the GDAL UNITTYPE tag, which the app reads as the vertical-unit hint")
     ap.add_argument("--inp"); ap.add_argument("--out", required=True)
     a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
     b, crs = prep_dem(a.dem, os.path.join(a.out, "dem.tif"), a.epsg, a.bounds, a.cell, a.zfactor, a.zunits)

@@ -24,12 +24,17 @@ async function catalog() { if (!S.catalog) S.catalog = JSON.parse(new TextDecode
 // ------------------------------------------------------------------ inputs
 function msg(html, cls = "note") { $("#msg").className = cls; $("#msg").innerHTML = html; }
 function setSt(id, html, cls = "") { $(id).innerHTML = cls ? `<span class="${cls}">${html}</span>` : html; }
+const HASH_KINDS = ["dem", "buildings", "boundaries", "landcover", "soils", "inlets", "inp", "out"];
+async function sha256hex(data) { const b = typeof data === "string" ? new TextEncoder().encode(data) : data; const h = await crypto.subtle.digest("SHA-256", b); return [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, "0")).join(""); }
 async function loadInputs(args, label) {
   if (S.running) { msg("Stop the run first, then load files.", "err"); return false; }
   args.catalog = await catalog();
   msg(`Reading ${esc(label)}…`);
   try {
     const r = await call("load", args);
+    // run provenance (E-04): hash every input file as loaded, so a saved run names the exact files it came from
+    if (r.dem) S.inputHashes = {};
+    for (const k of HASH_KINDS) if (args[k] !== undefined && args[k] !== null) { try { (S.inputHashes ||= {})[k] = { kind: k, name: label, sha256: await sha256hex(args[k] instanceof ArrayBuffer ? args[k] : args[k].buffer ? new Uint8Array(args[k]) : args[k]) }; } catch (e) { /* hashing is bookkeeping; a failure there must not refuse the load */ } }
     if (r.dem) { S.dem = r.dem; S.grid = null; S.resultsOnly = false; S.loadedFrom = null; clearResults(); }
     if (r.buildings) S.bld = r.buildings.count ? r.buildings : null;
     if (r.boundaries) S.bnd = r.boundaries.count ? r.boundaries : null;
@@ -217,7 +222,7 @@ function runOptions() {
   if (o.rainSource === "uniform") { o.rainInHr = numIn("#rain-ih", "Rain intensity"); o.rainHours = numIn("#rain-h", "Rain duration"); }
   if (o.rainSource === "gauge" && !S.swmm) throw new Error("Rain from a gauge needs the SWMM .inp");
   o.t0 = numIn("#t0", "Start"); o.t1 = numIn("#t1", "End"); if (!(o.t1 > o.t0)) throw new Error("The end must be after the start");
-  o.outputSec = numIn("#outmin", "Map interval") * 60; o.engine = $("#engine").value; o.cfl = numIn("#cfl", "Courant number");
+  o.outputSec = numIn("#outmin", "Map interval") * 60; o.engine = $("#engine").value; o.cfl = numIn("#cfl", "Courant number"); o.dvThresh = numIn("#dvth", "Depth × velocity threshold");
   o.wetFt = numIn("#wet", "Wet depth"); o.buildingFt = numIn("#bthr", "Building depth");
   o.boundaries = (S.bspec || []).map((b) => { if (!b.node && !Number.isFinite(b.level)) throw new Error(`Give a level or a SWMM node for boundary “${b.key}”`); return b; });
   if (o.coupling === "off" && o.rainSource === "none" && !o.boundaries.length) throw new Error("Choose at least one water source (SWMM coupling, rain or a level boundary)");
@@ -252,7 +257,9 @@ async function run() {
         msg(`${p.kind === "gpu" ? "GPU" : "CPU"}: ${fmt(p.tHours, 2)} h simulated, ${fmt(p.speed, 1)}× real time, time step ${fmt(p.dt, 2)} s; about ${eta > 90 ? fmt(eta / 60, 0) + " min" : fmt(eta, 0) + " s"} left. Water balance closes within ${fmt(Math.abs(p.closurePct), 4)}%.`);
       }
     });
-    S.final = res; $("#pbar").style.width = "100%";
+    S.final = res;   // provenance of this run, saved into the .fsim.gz (E-04)
+    S.prov = { app: BUILD ? BUILD.version : "dev", settings: { engine: res.kind, cfl: o.cfl, coupling: o.coupling, couplingSec: o.coupling === "two" ? o.couplingSec : null, t0: o.t0, t1: o.t1, outputSec: o.outputSec, rainSource: o.rainSource, dvThresh: o.dvThresh }, inputs: Object.values(S.inputHashes || {}) };
+    $("#pbar").style.width = "100%";
     msg(`${res.stopped ? "<b>Stopped early.</b> " : "Done: "}${res.steps.toLocaleString()} time steps in ${fmt(res.wall, 1)} s on the ${res.kind === "gpu" ? "GPU" : "CPU"}; water balance closes within ${fmt(Math.abs(res.ledger.errPct), 4)}%.`, res.stopped ? "warn" : "note");
     S.view = $("#view").value; renderAll();
     ["#x-tif", "#x-csv", "#x-nodes", "#x-save", "#b-cmp"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
@@ -268,8 +275,10 @@ async function compareWith(file) {
     S.cmp = { name: file.name, c, saved: r.h.saved };
     $("#view-diff").disabled = false; $("#view-diff").hidden = false; $("#b-cmp-clear").hidden = false;
     $("#cmp-note").hidden = false;
+    const pdiff = RIO.provDiff(S.prov, r.h.prov);
     $("#cmp-note").innerHTML = `Compared with <b>${esc(file.name)}</b> (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}): ${fmt(c.acres.compared, 1)} ac of open ground in both runs.` +
-      (c.typeDiffers ? ` <span class="warn">${c.typeDiffers.toLocaleString()} cells are ground in one run and a building, wall or lake in the other; they are left out.</span>` : "");
+      (c.typeDiffers ? ` <span class="warn">${c.typeDiffers.toLocaleString()} cells are ground in one run and a building, wall or lake in the other; they are left out.</span>` : "") +
+      (S.prov && r.h.prov ? (pdiff.length ? ` <span class="warn">Run settings differ: ${esc(pdiff.join("; "))}.</span>` : " The two runs used the same settings and input files.") : "");
     S.view = "diff"; $("#view").value = "diff"; paint();
     msg(`Comparing with ${esc(file.name)}. Choose “Change in maximum depth” under Show to see it again.`);
   } catch (e) { msg(`Could not compare: ${esc(e.message)}`, "err"); }
@@ -455,7 +464,7 @@ function kpis() {
   const L0 = (fin || {}).ledger || f.sum.ledger;
   const mx = S.view !== "now", vmx = fin && fin.vmax ? fin.vmax.reduce((a, v) => (v > a ? v : a), 0) : NaN, dvx = fin && fin.dvmax ? fin.dvmax.reduce((a, v) => (v > a ? v : a), 0) : NaN;
   const k = [[mx ? "Peak flooded area" : "Flooded area now", fmt(mx ? peakArea : f.sum.wetAc, 2) + " ac", `deeper than ${fmt(S.grid.opts.wetFt, 2)} ft`],
-    S.view === "vmax" ? ["Fastest flow", fmt(vmx, 2) + " ft/s", fin && fin.froudeCells ? `${fin.froudeCells.toLocaleString()} cells capped at critical speed (hatched)` : "over the run"] : S.view === "dv" ? ["Highest depth × velocity", fmt(dvx, 2) + " ft²/s", "over the run"] :
+    S.view === "vmax" ? ["Fastest flow", fmt(vmx, 2) + " ft/s", fin && fin.froudeCells ? `${fin.froudeCells.toLocaleString()} cells capped at critical speed (hatched)` : "over the run"] : S.view === "dv" ? ["Highest depth × velocity", fmt(dvx, 2) + " ft²/s", fin && fin.dvdur ? `longest time above ${fmt(S.grid.opts.dvThresh ?? 0.5, 2)} ft²/s: ${fmt(Math.max(...fin.dvdur) / 60, 1)} min` : "over the run"] :
     ["Deepest water on land", fmt(mx ? dmax : f.sum.depthMax, 2) + " ft", mx ? "over the run" : "now"],
     ["Buildings reached", mx ? (fin ? peakB.toLocaleString() : "–") : f.sum.buildings.toLocaleString(), `water over ${fmt(S.grid.opts.buildingFt, 2)} ft beside them`],
     ["Water on the surface", fmt(f.sum.volCf / 43560, 2) + " ac-ft", "now"],
@@ -539,7 +548,7 @@ function onMapClick(e) {
   const f = S.frames[S.frame];
   const html = t === 1 ? (S.grid.z[k] === 0 ? "No ground data here (acts as a wall)" : "Building (wall)") : t === 2 ? "Level boundary" :
     `Ground ${fmt(S.grid.z[k], 2)} ft<br>` + (f ? `Water at ${esc(clock(f.sum.tHours))}: ${fmt(dec(f.q[k]), 2)} ft<br>` : "") + (S.final ? `Deepest ${fmt(S.final.hmax[k], 2)} ft${S.final.hmax[k] > 0 ? ` at ${esc(clock(S.final.tmax[k]))}` : ""}` : "") +
-    (S.final && S.final.vmax ? `<br>Fastest ${fmt(S.final.vmax[k], 2)} ft/s${S.final.froude && S.final.froude[k] ? " or more (capped at critical speed here)" : ""}; depth × velocity up to ${fmt(S.final.dvmax[k], 2)} ft²/s` : "");
+    (S.final && S.final.vmax ? `<br>Fastest ${fmt(S.final.vmax[k], 2)} ft/s${S.final.froude && S.final.froude[k] ? " or more (capped at critical speed here)" : ""}${S.final.tvmax && S.final.vmax[k] > 0 ? ` at ${esc(clock(S.final.tvmax[k]))}` : ""}; depth × velocity up to ${fmt(S.final.dvmax[k], 2)} ft²/s${S.final.dvdur ? `, above ${fmt(S.grid.opts.dvThresh ?? 0.5, 2)} ft²/s for ${fmt(S.final.dvdur[k] / 60, 1)} min` : ""}` : "");
   L.popup().setLatLng(e.latlng).setContent(html).openOn(MAP); pointChart();
 }
 
@@ -552,8 +561,14 @@ function exportTif() {
   const lin = S.dem.hUnitFt ? (Math.abs(S.dem.hUnitFt - 1 / 0.3048) < 1e-6 ? "m" : Math.abs(S.dem.hUnitFt - UNIT_FT["us-ft"]) < 1e-9 ? "us-ft" : "ft") : "ft";
   const vm = new Float32Array(N), dv = new Float32Array(N), fl = new Float32Array(N);
   for (let k = 0; k < N; k++) { const ok2 = gr.type[k] === 0 && S.final.hmax[k] > 0; vm[k] = ok2 && S.final.vmax ? S.final.vmax[k] : NaN; dv[k] = ok2 && S.final.dvmax ? S.final.dvmax[k] : NaN; fl[k] = ok2 && S.final.froude ? S.final.froude[k] : NaN; }
-  const buf = FloodModel.geoTiff(G, S.dem.epsg, [{ name: "max_depth_ft", data: d }, { name: `max_water_level_${vf === 1 ? "ft" : "dem_units"}`, data: wse }, { name: `hours_to_max_from_start_${S.grid.opts.t0}h`, data: tm },
-    { name: "max_velocity_ft_per_s", data: vm }, { name: "max_depth_x_velocity_ft2_per_s", data: dv }, { name: "critical_flow_cap_1_where_velocity_is_a_lower_bound", data: fl }], lin);
+  const bands = [{ name: "max_depth_ft", data: d }, { name: `max_water_level_${vf === 1 ? "ft" : "dem_units"}`, data: wse }, { name: `hours_to_max_from_start_${S.grid.opts.t0}h`, data: tm },
+    { name: "max_velocity_ft_per_s", data: vm }, { name: "max_depth_x_velocity_ft2_per_s", data: dv }, { name: "critical_flow_cap_1_where_velocity_is_a_lower_bound", data: fl }];
+  if (S.final.tvmax && S.final.dvdur) {   // 0.6.0 (E-09): when the fastest flow happened, and how long depth x velocity stayed over the run's threshold
+    const tv = new Float32Array(N), du = new Float32Array(N);
+    for (let k = 0; k < N; k++) { const ok2 = gr.type[k] === 0 && S.final.vmax && S.final.vmax[k] > 0; tv[k] = ok2 ? S.final.tvmax[k] - S.grid.opts.t0 : NaN; du[k] = ok2 ? S.final.dvdur[k] : NaN; }
+    bands.push({ name: `hours_to_max_velocity_from_start_${S.grid.opts.t0}h`, data: tv }, { name: `seconds_depth_x_velocity_above_${S.grid.opts.dvThresh ?? 0.5}_ft2_per_s`, data: du });
+  }
+  const buf = FloodModel.geoTiff(G, S.dem.epsg, bands, lin);
   download(`${stem()}_max_depth_EPSG${S.dem.epsg || "none"}.tif`, buf, "image/tiff");
 }
 function exportCsv() {
@@ -584,7 +599,7 @@ function applyOptions(o) {
   set("#edges", o.closedEdges ? "closed" : "open"); set("#roof", o.roofToGround ? "1" : "0"); set("#use-bld", o.useBuildings ? "1" : "0");
   set("#coupling", o.coupling); set("#rain", o.rainSource); set("#rain-ih", o.rainInHr); set("#rain-h", o.rainHours); set("#gauge", o.gauge);
   set("#lw", o.lw); set("#cw", o.cw); set("#ia", o.inletArea); set("#co", o.co); set("#clog", o.clog === undefined ? undefined : +(o.clog * 100).toPrecision(15)); set("#csec", o.couplingSec); set("#def-inl", o.defaultInlets === false ? "0" : o.defaultInlets ? "1" : undefined);
-  set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? +(o.outputSec / 60).toPrecision(15) : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
+  set("#t0", o.t0); set("#t1", o.t1); set("#outmin", o.outputSec !== undefined ? +(o.outputSec / 60).toPrecision(15) : undefined); set("#engine", o.engine); set("#cfl", o.cfl); set("#dvth", o.dvThresh); set("#wet", o.wetFt); set("#bthr", o.buildingFt);
   S.lcTable = o.lcTable || null; S.soilTable = o.soilTable || null; S.bspec = o.boundaries || []; S.bspecTouched = true; S._tSet = true;
 }
 async function openResults(file) {
@@ -592,7 +607,7 @@ async function openResults(file) {
   try {
     const r = await RIO.unpack(await file.arrayBuffer());
     S.dem = r.h.dem; S.bld = r.h.bld; S.bnd = r.h.bnd; S.inl = r.h.inl; S.lc = r.h.lc; S.soil = r.h.soil; S.swmm = r.h.swmm; S.exName = r.h.exName;
-    S.sources = r.h.sources; S.nodeMap = r.h.nodeMap; S.grid = r.grid; S.frames = r.frames; S.final = r.final; S.frame = r.frames.length - 1; S.sel = -1;
+    S.sources = r.h.sources; S.nodeMap = r.h.nodeMap; S.grid = r.grid; S.frames = r.frames; S.final = r.final; S.prov = r.h.prov || null; S.frame = r.frames.length - 1; S.sel = -1;
     S.loadedFrom = { name: file.name, saved: r.h.saved, app: r.h.app };
     $("#slider").max = S.frames.length - 1; $("#slider").value = S.frame; $("#slider").disabled = false; $("#b-play").disabled = false;
     S.resultsOnly = true; applyOptions(r.grid.opts);
@@ -600,7 +615,7 @@ async function openResults(file) {
     clearCompare(); mapInputs(); mapGrid(); S.view = "max"; $("#view").value = "max"; renderAll();
     ["#x-tif", "#x-csv", "#x-nodes", "#x-save", "#b-cmp"].forEach((s) => ($(s).disabled = false)); $("#x-nodes").disabled = !(S.sources && S.sources.length);
     ["#f-dem", "#f-bld", "#f-bnd", "#f-lc", "#f-soil", "#f-inl", "#f-inp", "#f-out"].forEach((s) => ($(s).value = ""));
-    msg(`Opened ${esc(file.name)} (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}). The panel shows the settings of that run. To run again, load a DEM or an example.`);
+    msg(`Opened ${esc(file.name)} (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}). The panel shows the settings of that run. To run again, load a DEM or an example.${r.h.prov ? "<br>" + esc(RIO.provLine(r.h.prov)) : ""}`);
   } catch (e) { msg(`Could not open the file: ${esc(e.message)}`, "err"); }
 }
 

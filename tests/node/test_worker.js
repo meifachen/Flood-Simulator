@@ -172,5 +172,38 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
       /stage_area "50:1" is not two or more/.test(m[0]) && /stages must rise \(60 then 50\)/.test(m[1]) && /needs outlet_crest_ft and outlet_length_ft/.test(m[2]) && /need two-way coupling/.test(m[3]),
       `end ${lk.end[0].toFixed(3)} ft; storage lost ${lost.toFixed(1)} cf = outlet ${lk.outlet[0].toFixed(1)} + to the 2D ${(-lk.from2d[0]).toFixed(1)} cf | ${m.join(" | ")}`);
   }
+  // W17 (new in 0.6.0, E-06) the other outlet kinds are read from the lake's feature the same way: a pipe (an orifice at its invert)
+  // and a rating curve both release water that is reported, neither draws the lake below its control elevation, and bad kinds,
+  // a pipeless diameter and falling rating flows are refused
+  {
+    const pondWith = (props) => { const gj = JSON.parse(text(US, "pond.geojson")); gj.features[0].properties = Object.assign({}, gj.features[0].properties, props); return JSON.stringify(gj); };
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp"), out: ab(ex(US, "model.out")) });
+    const bnd = [{ index: 0, key: "POND", level: 58, routed: true }], base = { coupling: "off", t0: 0, t1: 0.5, engine: "cpu", rainSource: "none", outputSec: 900, boundaries: bnd };
+    const runWith = async (props) => { await w.load({ boundaries: pondWith(props) }); w.build(Object.assign({}, bopt, { lcTable: null, boundaries: bnd })); w.posted.length = 0; return w.run(base); };
+    const V = (h) => 43560 * (h - 50) * (1 + 0.05 * (h - 50));   // the W16 stage-area table's storage, by hand
+    const pipe = await runWith({ STAGE_AREA: "50: 1.0; 60: 2.0", Outlet_Type: "PIPE", Outlet_Crest_Ft: 57, Outlet_Diameter_Ft: 2 });
+    const rat = await runWith({ STAGE_AREA: "50: 1.0; 60: 2.0", outlet_type: "rating", outlet_rating: "50:0; 55:5; 60:20" });
+    const lostP = V(58) - V(pipe.lakes.end[0]), lostR = V(58) - V(rat.lakes.end[0]);
+    const m = [await refused(runWith({ outlet_type: "flap", outlet_crest_ft: 57 })), await refused(runWith({ outlet_type: "pipe", outlet_crest_ft: 57 })), await refused(runWith({ outlet_type: "rating", outlet_rating: "50:10; 60:5" })), await refused(runWith({ outlet_type: "gate", outlet_crest_ft: 57, outlet_width_ft: 4 }))];
+    ok("W17 pipe and rating outlets are read from the lake's feature, release reported water and stop at their control elevation; bad kinds are refused",
+      pipe.lakes.outlet[0] > 100 && pipe.lakes.end[0] < 58 && pipe.lakes.end[0] >= 57 && Math.abs(lostP - (pipe.lakes.outlet[0] - pipe.lakes.from2d[0])) < 1e-6 * lostP &&
+      rat.lakes.outlet[0] > 100 && rat.lakes.end[0] < 58 && rat.lakes.end[0] >= 55 && Math.abs(lostR - (rat.lakes.outlet[0] - rat.lakes.from2d[0])) < 1e-6 * lostR &&
+      /outlet_type "flap" is not one of/.test(m[0]) && /outlet_diameter_ft undefined is not a positive number/.test(m[1]) && /outlet_rating flows must not fall \(10 then 5 cfs\)/.test(m[2]) && /outlet_opening_ft undefined is not a positive number/.test(m[3]),
+      `pipe: end ${pipe.lakes.end[0].toFixed(3)} ft, outlet ${pipe.lakes.outlet[0].toFixed(0)} cf; rating: end ${rat.lakes.end[0].toFixed(3)} ft, outlet ${rat.lakes.outlet[0].toFixed(0)} cf | ${m.join(" | ")}`);
+  }
+  // W18 (new in 0.6.0, E-07) on-grade inlet properties are read from the inlets file; an on-grade inlet missing a slope
+  // is refused when the two-way coupler is built, naming the inlet and the missing property
+  {
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp") });
+    const fc = (props) => JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: props, geometry: { type: "Point", coordinates: [500750, 1599200] } }] });
+    await w.load({ inlets: fc({ node: "J3", inlet_type: "curb", curb_length_ft: 10, curb_height_ft: 0.5, on_grade: true, cross_slope: 0.02, long_slope: 0.01 }) });
+    const it = w.peek("INLETS[0]");
+    await w.load({ inlets: fc({ node: "J3", inlet_type: "curb", curb_length_ft: 10, curb_height_ft: 0.5, on_grade: true, cross_slope: 0.02 }) });
+    w.build(Object.assign({}, bopt, { lcTable: null }));
+    const msg = await refused(w.run({ coupling: "two", t0: 1, t1: 1.05, engine: "cpu", rainSource: "none", outputSec: 900, couplingSec: 30 }));
+    ok("W18 on-grade inlet properties are read from the inlets file; a missing slope is refused when the coupler is built",
+      it.onGrade === true && it.crossSlope === 0.02 && it.longSlope === 0.01 && /Inlet 1 \(J3\): an on-grade inlet needs its street's longitudinal slope \(long_slope\)/.test(msg),
+      `parsed onGrade ${it.onGrade}, cross ${it.crossSlope}, long ${it.longSlope}; refused: "${msg.slice(0, 110)}"`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

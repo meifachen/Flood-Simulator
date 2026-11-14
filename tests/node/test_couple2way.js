@@ -149,7 +149,7 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       ["curb, weir below the opening height (0.3 ft)", cap(curb, 0.3, I), 3 * 5 * 0.3 ** 1.5],
       ["curb, above the opening (1.5 ft): lesser of weir and orifice at the centroid", cap(curb, 1.5, I), Math.min(3 * 5 * 1.5 ** 1.5, 0.67 * 0.5 * 5 * Math.sqrt(g2 * (1.5 - 0.25)))],
       ["curb with a 2 ft gutter depression (0.3 ft)", cap(curbD, 0.3, I), 2.3 * (5 + 1.8 * 2) * 0.3 ** 1.5],
-      ["combination, shallow (0.3 ft): the grate alone", cap(combo, 0.3, I), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.3))],
+      ["combination, shallow (0.3 ft): grate weir + curb weir (F-10; before 0.6.0 this case expected the grate alone)", cap(combo, 0.3, I), Math.min(3 * 6 * 0.3 ** 1.5 + 3 * 5 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.3))],
       ["combination, deep (1.5 ft): grate orifice + curb orifice", cap(combo, 1.5, I), Math.min(3 * 6 * 1.5 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 1.5) + 0.67 * 0.5 * 5 * Math.sqrt(g2 * 1.25))],
       ["surcharged node: grate orifice on the head left (0.1 ft)", cap(grate, 0.3, 0.1), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.1))],
       ["node level with the water: nothing", cap(curb, 0.3, 0), 0],
@@ -283,8 +283,8 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const base = await runO([0, 0]), wo = await runO([1000, 500]);
     const outfall = model.nodes.find((n) => /OUTFALL/i.test(n.type)), msgs = [];
     for (const nm of [outfall && outfall.name, "NOPE"]) { try { (await C2.makeCoupler(build(), createSWMM, inp, model, {})).lakeOutletTo([nm]); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } }
-    ok("C18 lake outlet water handed to SWMM nodes reaches them: report external inflow +18,000 cf (12 x 1,000 at J4, 12 x 500 at POND); an outfall or unknown node is refused",
-      Math.abs(wo.ext - base.ext - 18000) < 0.01 * 18000 && wo.t.lakeOutletsToSwmm[0] === 12000 && wo.t.lakeOutletsToSwmm[1] === 6000 && Math.abs(wo.t.owedToSwmm) < 1 && /is an outfall/.test(msgs[0]) && /not in the SWMM model/.test(msgs[1]),
+    ok("C18 lake outlet water handed to SWMM nodes reaches them: report external inflow +17,990 of 18,000 cf (within 20 cf, the figure STATUS quotes; 12 x 1,000 at J4, 12 x 500 at POND); an outfall or unknown node is refused",
+      Math.abs(wo.ext - base.ext - 17990) <= 20 && wo.t.lakeOutletsToSwmm[0] === 12000 && wo.t.lakeOutletsToSwmm[1] === 6000 && Math.abs(wo.t.owedToSwmm) < 1 && /is an outfall/.test(msgs[0]) && /not in the SWMM model/.test(msgs[1]),
       `report external inflow ${wo.ext.toFixed(0)} vs ${base.ext.toFixed(0)} cf without; outlets ${wo.t.lakeOutletsToSwmm.join(", ")} cf; owed ${wo.t.owedToSwmm.toFixed(2)} | ${msgs.join(" | ")}`);
   }
   // C3 prepareInp forces ALLOW_PONDING NO
@@ -292,6 +292,35 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const p = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\nALLOW_PONDING YES\n[JUNCTIONS]\nJ 1 2\n");
     const q = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ 1 2\n");
     ok("C3 ponding at nodes is turned off for coupling (and said so)", /ALLOW_PONDING\s+NO/.test(p.text) && p.notes.length === 1 && /ALLOW_PONDING\s+NO/.test(q.text), p.notes.join(""));
+  }
+  // a combination inlet's shallow-ponding capacity includes the curb-opening weir next to the grate weir (HEC-22 sag
+  // treatment; review F-10): at hw 0.3 ft, grate weir 1.48 cfs + curb weir 2.46 cfs = 3.94 cfs, below the orifice side
+  {
+    const it = { kind: "combination", cw: 3.0, lw: 3, co: 0.67, area: 4, clog: 0, cl: 5, ch: 0.5, ccw: 3.0, cco: 0.67, dw: 0 };
+    const q = C2.inletCapacity(it, 0.3, Infinity);
+    ok("combination inlet at 0.3 ft of ponding captures grate weir + curb weir (3.94 cfs, not the grate weir alone at 1.48)",
+      Math.abs(q - 3.9436) < 0.001, `capacity ${q.toFixed(4)} cfs`);
+  }
+  // C19 (new in 0.6.0, E-07) on-grade inlets intercept a fraction of the gutter flow (HEC-22 ch. 4; EPA SWMM Reference Manual
+  // vol. II addendum sec. 5.3), they do not pond-capture: hand calculations written out from the published equations.
+  // Curb: Sx 0.02, slope 0.01, n 0.016, opening 10 ft; at hw 0.2 ft the spread is 10 ft and the gutter flow is 2.395 cfs;
+  // LT = 27.16 ft, so E = 0.562 and the inlet takes 1.347 cfs; a 30 ft opening exceeds LT and takes the whole gutter flow.
+  // Grate: Sx 0.02, slope 0.04, width 2 ft, length 3 ft, splash-over 6 ft/s; at hw 0.3 ft the gutter flow is 14.10 cfs at
+  // 6.27 ft/s; E0 = 0.318, Rf = 0.976, Rs = 0.0578, E = 0.350, so it takes 4.93 cfs. A combination inlet on grade takes
+  // what its grate takes. On-grade inlets are new in 0.6.0 (the flag was not read before), so these have no 0.5.0 counterpart.
+  {
+    const gut = (sx, sl, gn, hw) => { const T = hw / sx; return { T, Q: 0.56 / gn * Math.pow(sx, 5 / 3) * Math.sqrt(sl) * Math.pow(T, 8 / 3) }; };
+    const curb = { kind: "curb", cl: 10, ch: 0.5, ccw: 3.0, cco: 0.67, dw: 0, dep: 0, clog: 0, onGrade: true, sx: 0.02, sl: 0.01, gn: 0.016 };
+    const { Q: Qc } = gut(0.02, 0.01, 0.016, 0.2), LT = 0.6 * Math.pow(Qc, 0.42) * Math.pow(0.01, 0.3) * Math.pow(1 / (0.016 * 0.02), 0.6);
+    const expCurb = Qc * (1 - Math.pow(1 - 10 / LT, 1.8)), gotCurb = C2.inletCapacity(curb, 0.2, Infinity), full = C2.inletCapacity({ ...curb, cl: 30 }, 0.2, Infinity);
+    const grate = { kind: "grate", cw: 3.0, lw: 8, co: 0.67, area: 6, clog: 0, onGrade: true, sx: 0.02, sl: 0.04, gn: 0.016, gw: 2, gl: 3, v0: 6.0 };
+    const { T, Q: Qg } = gut(0.02, 0.04, 0.016, 0.3), V = Qg / (0.5 * 0.02 * T * T), E0 = 1 - Math.pow(1 - 2 / T, 2.67);
+    const Rf = 1 - 0.09 * Math.max(0, V - 6.0), Rs = 1 / (1 + 0.15 * Math.pow(V, 1.8) / (0.02 * Math.pow(3, 2.3)));
+    const expGrate = Qg * (Rf * E0 + Rs * (1 - E0)), gotGrate = C2.inletCapacity(grate, 0.3, Infinity);
+    const comb = C2.inletCapacity({ ...grate, kind: "combination", cl: 5, ch: 0.5, ccw: 3.0, cco: 0.67, dw: 0, dep: 0 }, 0.3, Infinity);
+    ok("C19 on-grade curb and grate inlets intercept the HEC-22 fraction of the gutter flow (bypass stays on the surface)",
+      Math.abs(gotCurb - expCurb) < 1e-9 * expCurb && Math.abs(gotGrate - expGrate) < 1e-9 * expGrate && Math.abs(full - Qc) < 1e-9 * Qc && comb === gotGrate && gotCurb < Qc && gotGrate < Qg,
+      `curb ${gotCurb.toFixed(3)} of ${Qc.toFixed(3)} cfs gutter flow (LT ${LT.toFixed(2)} ft); 30 ft opening takes all ${full.toFixed(3)}; grate ${gotGrate.toFixed(3)} of ${Qg.toFixed(2)} cfs (E0 ${E0.toFixed(3)}, Rf ${Rf.toFixed(3)}, Rs ${Rs.toFixed(4)}); combination = grate ${comb.toFixed(3)}`);
   }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

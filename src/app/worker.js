@@ -116,8 +116,12 @@ async function loadAll(a) {
         };
         const clog = num(fi, "clog", p.clog, false); if (typeof clog === "number" && !(clog >= 0 && clog < 1)) errs.push(`inlet ${fi}: clog ${JSON.stringify(p.clog)} is not a fraction from 0 to below 1`);
         const dw = num(fi, "depression_width_ft", p.depression_width_ft, false); if (typeof dw === "number" && !(dw >= 0)) errs.push(`inlet ${fi}: depression_width_ft ${JSON.stringify(p.depression_width_ft)} is negative`);
+        const onGrade = p.on_grade === undefined || p.on_grade === null || p.on_grade === "" ? undefined : (p.on_grade === true || p.on_grade === 1 || /^(true|yes|1)$/i.test(String(p.on_grade).trim()));
+        if (p.on_grade !== undefined && p.on_grade !== null && p.on_grade !== "" && onGrade === false && !/^(false|no|0)$/i.test(String(p.on_grade).trim())) errs.push(`inlet ${fi}: on_grade ${JSON.stringify(p.on_grade)} is not true or false`);
         const props = { node, type, lw: both("perimeter_ft", "weir_length_ft"), area: both("open_area_sqft", "orifice_area_sqft"), cw: num(fi, "cw", p.cw, true), co: num(fi, "co", p.co, true),
-          curbLength: num(fi, "curb_length_ft", p.curb_length_ft, true), curbHeight: num(fi, "curb_height_ft", p.curb_height_ft, true), depressionWidth: dw, clog, rimFt: num(fi, "rim_ft", p.rim_ft, false) };
+          curbLength: num(fi, "curb_length_ft", p.curb_length_ft, true), curbHeight: num(fi, "curb_height_ft", p.curb_height_ft, true), depressionWidth: dw, clog, rimFt: num(fi, "rim_ft", p.rim_ft, false),
+          onGrade, crossSlope: num(fi, "cross_slope", p.cross_slope, true), longSlope: num(fi, "long_slope", p.long_slope, true), gutterN: num(fi, "gutter_n", p.gutter_n, true),
+          grateLength: num(fi, "grate_length_ft", p.grate_length_ft, true), grateWidth: num(fi, "grate_width_ft", p.grate_width_ft, true), splashOver: num(fi, "splash_over_ft_s", p.splash_over_ft_s, true), depressionDepth: num(fi, "depression_depth_ft", p.depression_depth_ft, false) };
         for (const k of Object.keys(props)) if (props[k] === undefined || props[k] === null) delete props[k];
         for (const c0 of pts) { const xy = fwd ? fwd.forward([c0[0], c0[1]]) : c0; list.push(Object.assign({ x: xy[0], y: xy[1], feature: fi }, props)); }
       });
@@ -153,7 +157,12 @@ async function loadAll(a) {
 
 /* a routed lake's storage and outlet from its boundary feature's properties (any letter case):
  *   stage_area: [[stage ft, area ac], ...] or "stage:area; stage:area" (two or more rows, stages rising),
- *   outlet_crest_ft, outlet_length_ft, outlet_cw (default 3.0): a weir; outlet_node: the SWMM node it discharges into (two-way runs) */
+ *   outlet_type: weir (the default), rating, pipe or gate;
+ *   weir: outlet_crest_ft, outlet_length_ft, outlet_cw (default 3.0);
+ *   rating: outlet_rating as "stage:flow; stage:flow" (ft and cfs) or pairs;
+ *   pipe: outlet_crest_ft (its invert), outlet_diameter_ft, outlet_cd (default 0.6);
+ *   gate: outlet_crest_ft (its sill), outlet_width_ft, outlet_opening_ft, outlet_cd (default 0.6);
+ *   outlet_node: the SWMM node any of them discharges into (two-way runs) */
 function lakeProps(name, p0) {
   const p = Object.create(null); for (const k of Object.keys(p0 || {})) { const l = k.toLowerCase(); if (!(l in p)) p[l] = p0[k]; }
   const has = (v) => v !== undefined && v !== null && v !== "", show = (v) => (typeof v === "string" ? JSON.stringify(v) : JSON.stringify(v) ?? String(v));
@@ -168,19 +177,35 @@ function lakeProps(name, p0) {
     for (let m = 1; m < tab.length; m++) if (!(tab[m][0] > tab[m - 1][0])) throw new Error(`Routed lake ${name}: stage_area stages must rise (${tab[m - 1][0]} then ${tab[m][0]})`);
     out.stageArea = tab;
   }
-  const oc = p.outlet_crest_ft, ol = p.outlet_length_ft, ow = p.outlet_cw, on = p.outlet_node;
-  if (has(oc) || has(ol) || has(ow) || has(on)) {
-    if (!has(oc) || !has(ol)) throw new Error(`Routed lake ${name}: an outlet needs outlet_crest_ft and outlet_length_ft`);
-    const crest = numOf(oc), len = numOf(ol), cw = has(ow) ? numOf(ow) : 3.0;
-    if (!Number.isFinite(crest)) throw new Error(`Routed lake ${name}: outlet_crest_ft ${show(oc)} is not a number`);
-    if (!(len > 0)) throw new Error(`Routed lake ${name}: outlet_length_ft ${show(ol)} is not a positive number`);
-    if (!(cw > 0)) throw new Error(`Routed lake ${name}: outlet_cw ${show(ow)} is not a positive number`);
-    out.outlet = { crestFt: crest, lengthFt: len, cw };
+  const oc = p.outlet_crest_ft, ol = p.outlet_length_ft, ow = p.outlet_cw, on = p.outlet_node, ot = p.outlet_type, orr = p.outlet_rating,
+    od = p.outlet_diameter_ft, ogw = p.outlet_width_ft, ogo = p.outlet_opening_ft, ocd = p.outlet_cd;
+  if (has(ot) || has(oc) || has(ol) || has(ow) || has(on) || has(orr) || has(od) || has(ogw) || has(ogo)) {
+    const kind = has(ot) ? String(ot).trim().toLowerCase() : "weir";
+    if (!["weir", "rating", "pipe", "gate"].includes(kind)) throw new Error(`Routed lake ${name}: outlet_type ${show(ot)} is not one of weir, rating, pipe, gate`);
+    const crest = () => { if (!has(oc)) throw new Error(`Routed lake ${name}: a ${kind} outlet needs outlet_crest_ft`); const v = numOf(oc); if (!Number.isFinite(v)) throw new Error(`Routed lake ${name}: outlet_crest_ft ${show(oc)} is not a number`); return v; };
+    const posOf = (v, label) => { const x = numOf(v); if (!(x > 0)) throw new Error(`Routed lake ${name}: ${label} ${show(v)} is not a positive number`); return x; };
+    const cd = () => (has(ocd) ? posOf(ocd, "outlet_cd") : 0.6);
+    if (kind === "weir") {
+      if (!has(oc) || !has(ol)) throw new Error(`Routed lake ${name}: an outlet needs outlet_crest_ft and outlet_length_ft`);
+      out.outlet = { kind, crestFt: crest(), lengthFt: posOf(ol, "outlet_length_ft"), cw: has(ow) ? posOf(ow, "outlet_cw") : 3.0 };
+    } else if (kind === "rating") {
+      let rows = orr;
+      if (typeof rows === "string") { const t = rows.trim(); try { rows = t.startsWith("[") ? JSON.parse(t) : t.split(/[;\n]+/).filter((x) => x.trim()).map((x) => x.split(/[:,\s]+/).filter(Boolean)); } catch (e) { rows = null; } }
+      const ok = Array.isArray(rows) && rows.length >= 2 && rows.every((x) => Array.isArray(x) && x.length === 2 && x.every((v) => Number.isFinite(numOf(v))) && numOf(x[1]) >= 0);
+      if (!ok) throw new Error(`Routed lake ${name}: outlet_rating ${show(orr)} is not two or more pairs of stage (ft) and flow (cfs), such as "95:0; 100:25; 105:80"`);
+      const tab = rows.map((x) => [numOf(x[0]), numOf(x[1])]);
+      for (let m = 1; m < tab.length; m++) { if (!(tab[m][0] > tab[m - 1][0])) throw new Error(`Routed lake ${name}: outlet_rating stages must rise (${tab[m - 1][0]} then ${tab[m][0]})`); if (tab[m][1] < tab[m - 1][1]) throw new Error(`Routed lake ${name}: outlet_rating flows must not fall (${tab[m - 1][1]} then ${tab[m][1]} cfs)`); }
+      out.outlet = { kind, rating: tab };
+    } else if (kind === "pipe") {
+      out.outlet = { kind, crestFt: crest(), diameterFt: posOf(od, "outlet_diameter_ft"), cd: cd() };
+    } else {
+      out.outlet = { kind, crestFt: crest(), widthFt: posOf(ogw, "outlet_width_ft"), openingFt: posOf(ogo, "outlet_opening_ft"), cd: cd() };
+    }
     if (has(on)) out.outletNode = String(on).trim();
   }
   return out;
 }
-const INLET_KEYS = new Set(["node", "inlet_type", "type", "perimeter_ft", "weir_length_ft", "open_area_sqft", "orifice_area_sqft", "cw", "co", "curb_length_ft", "curb_height_ft", "depression_width_ft", "clog", "rim_ft"]);
+const INLET_KEYS = new Set(["node", "inlet_type", "type", "perimeter_ft", "weir_length_ft", "open_area_sqft", "orifice_area_sqft", "cw", "co", "curb_length_ft", "curb_height_ft", "depression_width_ft", "clog", "rim_ft", "on_grade", "cross_slope", "long_slope", "gutter_n", "grate_length_ft", "grate_width_ft", "splash_over_ft_s", "depression_depth_ft"]);
 /* a note when a raster's CRS cannot be matched to the DEM's (it is then read as if in the DEM's CRS) */
 function crsNote(R, what) {
   if (!R.proj4 && R.epsg !== DEM.epsg) return `${what} has no known CRS; it is taken to be in the DEM's CRS`;
@@ -294,7 +319,7 @@ async function run(o, id) {
   const t0w = Date.now(), simLen = (o.t1 - o.t0) * 3600;
   const isOpen = (k) => (g.aux[4 * k + 2] & 3) === 0;
   const r = await Flood2D.simulate(g, solver, {
-    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, routedLakes, lakeInflow: two && routedLakes.length ? two.lakeInflowFor(routedLakes) : undefined, lakeOutflow: two && outletNodes.some(Boolean) ? two.lakeOutletTo(outletNodes) : undefined, cfl: o.cfl ?? 0.7, readSec: o.outputSec, chunkSec,
+    t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, routedLakes, lakeInflow: two && routedLakes.length ? two.lakeInflowFor(routedLakes) : undefined, lakeOutflow: two && outletNodes.some(Boolean) ? two.lakeOutletTo(outletNodes) : undefined, cfl: o.cfl ?? 0.7, dvThresh: o.dvThresh, readSec: o.outputSec, chunkSec,
     shouldStop: () => STOP,
     onRead: async (fr) => {
       const st = fr.st, q = new Uint8Array(N); let wet = 0, vol = 0, dmax = 0, bNow = 0;
@@ -321,10 +346,11 @@ async function run(o, id) {
   for (let k = 0; k < N; k++) if (!(hmax[k] > 0)) tmax[k] = NaN;
   const bReached = bMax.reduce((s, v) => s + (v > bthr ? 1 : 0), 0);
   const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N), froude = r.froude || new Uint8Array(N);
-  let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; } froudeCells += froude[k]; }
+  const tvmax = r.tvmax || new Float32Array(N), dvdur = r.dvdur || new Float32Array(N);
+  let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; tvmax[k] = 0; dvdur[k] = 0; } froudeCells += froude[k]; }
   const lakes = r.lakes ? Object.assign({}, r.lakes, { outletNode: outletNodes, hasOutlet: routedLakes.map((x) => !!x.outlet), areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
     seriesT: r.lakes.series.map((x) => x.tHours), seriesL: r.lakes.series.map((x) => x.levels) }) : null;
-  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, froudeCells, ledger: r.ledger, lakes, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
+  return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer, tvmax.buffer, dvdur.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, tvmax, dvdur, froudeCells, ledger: r.ledger, lakes, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }
 
 self.onmessage = async (e) => {

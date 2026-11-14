@@ -13,7 +13,7 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
 - **Water sources:**
   - SWMM node flooding, added at each node;
   - rain on the grid, from a SWMM rain gauge or uniform;
-  - water levels held at lakes, ponds or tidal boundaries: from a SWMM node's head, a fixed level, or routed (the lake rises with the water it gains, including SWMM outfalls into it).
+  - water levels held at lakes, ponds or tidal boundaries: from a SWMM node's head, a fixed level, or routed (the lake rises with the water it gains, including SWMM outfalls into it; a routed lake can have a stage-area table and an outlet: a weir, a rating curve, a pipe or a gate, discharging out of the model or into a SWMM node).
 - **Engine:** local-inertial shallow-water equations (Bates et al. 2010; de Almeida et al. 2012), with Green-Ampt infiltration. It runs on the GPU (WebGPU) or the CPU, and keeps a water balance at every output step.
 - **Results:**
   - animated depth map over a hillshade or basemap;
@@ -21,9 +21,9 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
   - maximum velocity and maximum depth × velocity maps, with the cells where the solver capped the flow at critical speed hatched (speed there is a lower bound);
   - charts of flooded area, SWMM exchange, boundary levels and the depth at any point;
   - water-balance table;
-  - exports: a 6-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity, critical-flow cap flag), buildings CSV and SWMM exchange CSV;
-  - save a run to a `.fsim.gz` file and open it later without the inputs;
-  - compare two saved runs on the same grid: change in maximum depth, areas newly flooded and no longer flooded, buildings reached.
+  - exports: an 8-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity, critical-flow cap flag, time of maximum velocity, duration above a depth × velocity threshold), buildings CSV and SWMM exchange CSV;
+  - save a run to a `.fsim.gz` file and open it later without the inputs; the file records the run's provenance (app version, engine settings, input file names and SHA-256 hashes);
+  - compare two saved runs on the same grid: change in maximum depth, areas newly flooded and no longer flooded, buildings reached, and how the two runs' settings and input files differ.
 - **Help in the page:** a workflow map of the five steps (it shows what is done and jumps to any setting), tooltips on every control (units, default, range), a searchable User Guide, and a first-run tour.
 
 ![screenshot](docs/screenshot.png)
@@ -51,7 +51,7 @@ Use `--zfactor 3.2808333333 --zunits ft` to convert meter elevations to US surve
 
 | | One way | Two way |
 |---|---|---|
-| What runs SWMM | You, beforehand. The app reads your `.out`. | The app: EPA SWMM 5.2.4 compiled to WebAssembly, run in step with the 2D. Results are identical to the native engine. |
+| What runs SWMM | You, beforehand. The app reads your `.out`. | The app: EPA SWMM 5.2.4 compiled to WebAssembly, run in step with the 2D. For the two models the C0 check covers, its results are identical to the native engine's (max difference 0). |
 | Into the 2D | Node flooding (cfs) at each node's location | Node overflow every coupling interval |
 | Back into SWMM | Nothing | Surface water through inlets: weir flow while the node is below its rim, orifice flow when it is surcharged, limited each step by the water in the cell, with SWMM sent the volume actually taken (independent of cell size). Inlets come from an inlets file (each at its own cell, with its own size), or default to one at each manhole. |
 | Level boundaries | Storage or outfall head from the `.out` | Live storage or outfall head |
@@ -65,7 +65,7 @@ Notes:
 - **Two-way settings:**
   - the coupling is explicit, with a default interval of 30 s; the 2D sees SWMM's response one interval later;
   - `ALLOW_PONDING` is forced to `NO` in the in-memory copy so that overflow reaches the surface, and the app says so;
-  - in the inlets file, each point names its junction (`node`) and can set `weir_length_ft`, `orifice_area_sqft`, `cw`, `co` and `rim_ft`. The defaults in the app apply to anything not given; without `rim_ft` the crest is the SWMM rim of the node, as for a default inlet.
+  - in the inlets file, each point names its junction (`node`) and can set `weir_length_ft`, `orifice_area_sqft`, `cw`, `co` and `rim_ft`. The defaults in the app apply to anything not given; without `rim_ft` the crest is the SWMM rim of the node, as for a default inlet. An inlet flagged `on_grade` with its street's `cross_slope` and `long_slope` uses the HEC-22 on-grade interception path instead of the sag equations.
   - when the 2D run ends before SWMM's, the inlet inflow is reset to zero and SWMM finishes on its own, so its report holds only what the inlets took.
 - **Double counting:** rain on the grid together with SWMM counts runoff twice where the grid overlaps SWMM subcatchments. The app warns about this.
 
@@ -80,7 +80,7 @@ The WebAssembly build of SWMM is `vendor/swmm-wasm/swmm5.js`. It was built from 
 | `src/core/model.js` | DEM to grid, buildings to walls, boundary polygons, one-way SWMM coupling, GeoTIFF writer |
 | `src/app/` | Page, worker, 3D view, help |
 | `tools/build.py` | Builds `dist/FloodSimulator.html` with every library inlined |
-| `python/` | `prep_dem.py` (DEM and buildings prep), `make_synthetic.py`, `make_public_demo.py`, `make_landcover_example.py`, `make_inlets_example.py`, `make_winter_haven_demo.py` (real site from public data) |
+| `python/` | `prep_dem.py` (DEM and buildings prep), `make_synthetic.py`, `make_public_demo.py`, `make_landcover_example.py`, `make_inlets_example.py`, `make_winter_haven_demo.py` (real site from public data), `compare_icpr_winter_haven.py` (compares the Winter Haven runs with the City's ICPR inundation) |
 | `examples/` | Synthetic street sewer (US and SI units) and a public-data demo |
 | `tests/` | Node tests (engine, SWMM readers, model builder), Python reference generators, browser tests |
 
@@ -94,11 +94,13 @@ node tests/node/test_sources.js
 node tests/node/test_swmm.js
 node tests/node/test_model.js
 node tests/node/test_couple2way.js
+node tests/node/test_lakes.js
 node tests/node/test_velocity.js
 node tests/node/test_landcover.js
 node tests/node/test_worker.js
 node tests/node/test_results_io.js
 python tools/build.py && python tests/browser/test_app.py
+python tools/check_claims.py   # the figures STATUS quotes, checked against what the suites print
 ```
 
 The SWMM readers are checked against the EPA SWMM 5.2 engine (`swmm-toolkit`), and the grid builder against rasterio.
@@ -124,4 +126,4 @@ The SWMM model is built from the inventory as is (rims from the lidar, no subcat
 
 ## License
 
-MIT (see `LICENSE`). Bundled libraries keep their own licenses (`vendor/*/LICENSE*`): Leaflet (BSD-2), three.js (MIT), Plotly.js (MIT), geotiff.js (MIT), proj4js (MIT). The CRS list comes from the PROJ database (MIT/X).
+MIT (see `LICENSE`). Bundled libraries keep their own licenses (`vendor/*/LICENSE*`): Leaflet (BSD-2), three.js (MIT), Plotly.js (MIT), geotiff.js (MIT), proj4js (MIT). Two bundled items carry no LICENSE file: EPA SWMM (public domain; see `vendor/swmm-wasm/NOTICE`) and the CRS list (a file, `vendor/crs_catalog.json`, from the PROJ database, MIT/X).

@@ -86,9 +86,10 @@
 <tr><td>generic (default)</td><td>Cw L d<sup>1.5</sup> (Cw 3.0, L 3 ft)</td><td>Co A √(2gd) (Co 0.6, A 4 sq ft)</td><td>the lesser</td></tr>
 <tr><td>grate</td><td>3.0 P d<sup>1.5</sup>, P = perimeter</td><td>0.67 A √(2gd), A = clear opening</td><td>the lesser</td></tr>
 <tr><td>curb</td><td>2.3 (L + 1.8 W) d<sup>1.5</sup> with a gutter depression of width W; 3.0 L d<sup>1.5</sup> without</td><td>above the opening height h: 0.67 h L √(2g (d − h/2))</td><td>the weir up to h; above it the lesser</td></tr>
-<tr><td>combination</td><td>the grate alone</td><td>grate orifice + curb orifice (the curb part once d &gt; h)</td><td>the lesser</td></tr>
+<tr><td>combination</td><td>grate weir + curb weir</td><td>grate orifice + curb orifice (the curb part once d &gt; h)</td><td>the lesser of the two sums</td></tr>
 </tbody></table>
-<p>When the node is surcharged, the orifice head is limited to the 2D level minus the node head, so capture stops when the node reaches the water surface; the weir and orifice regimes meet at the crest, so the exchange does not jump. <b>Clogging</b> c (a fraction) scales the grate perimeter and opening area (for a curb-only inlet, its opening length) by 1 − c; TxDOT suggests about 0.5 for grates in sag. All inlets use the sag equations at the local depth; flow past an inlet on a grade is carried by the 2D model itself.</p>
+<p>When the node is surcharged, the orifice head is limited to the 2D level minus the node head, so capture stops when the node reaches the water surface; the weir and orifice regimes meet at the crest, so the exchange does not jump. <b>Clogging</b> c (a fraction) scales the grate perimeter and opening area (for a curb-only inlet, its opening length) by 1 − c; TxDOT suggests about 0.5 for grates in sag. Inlets use the sag equations at the local depth, except inlets flagged <code>on_grade</code> (below).</p>
+<p><b>On-grade inlets</b> (<code>on_grade</code> true; HEC-22 ch. 4, the method EPA SWMM's Reference Manual vol. II §5.3 follows): the inlet intercepts a share of the gutter flow instead of ponding. The gutter flow at the spread the local depth makes follows from the street's cross slope, longitudinal slope and roughness (<code>cross_slope</code>, <code>long_slope</code>, <code>gutter_n</code>, default 0.016; a <code>depression_depth_ft</code> deepens the section at the curb). A curb inlet of length L intercepts the share E = 1 − (1 − L/L<sub>T</sub>)<sup>1.8</sup>, where L<sub>T</sub> is the length that intercepts all of the flow; a grate intercepts by its frontal-flow and side-flow ratios (splash-over velocity <code>splash_over_ft_s</code>, or the standard P-50 grate polynomial from <code>grate_length_ft</code>); a combination inlet on grade takes what its grate takes (HEC-22). There is no sag limit on grade: what is not intercepted stays on the surface and flows past, as it does in the street. Both slopes are required for an on-grade inlet; a missing one is refused by name.</p>
 <p><b>Inlets file properties</b> (GeoJSON points; MultiPoint gives several inlets with the same properties):</p>
 <table class="t"><thead><tr><th>Property</th><th>Meaning</th><th>Default</th></tr></thead><tbody>
 <tr><td><code>node</code></td><td>the SWMM junction it drains to (required)</td><td></td></tr>
@@ -100,6 +101,12 @@
 <tr><td><code>cw</code>, <code>co</code></td><td>grate or generic weir and orifice coefficients</td><td>grate 3.0, 0.67; generic: the panel values</td></tr>
 <tr><td><code>clog</code></td><td>clogging fraction, 0 to below 1</td><td>the panel value (0)</td></tr>
 <tr><td><code>rim_ft</code></td><td>crest elevation</td><td>the node's SWMM rim</td></tr>
+<tr><td><code>on_grade</code></td><td>true puts the inlet on a grade (HEC-22 interception, above) instead of in sag</td><td>false</td></tr>
+<tr><td><code>cross_slope</code>, <code>long_slope</code></td><td>the street's cross and longitudinal slopes (ft/ft)</td><td>required when <code>on_grade</code></td></tr>
+<tr><td><code>gutter_n</code></td><td>gutter roughness</td><td>0.016</td></tr>
+<tr><td><code>grate_length_ft</code>, <code>grate_width_ft</code></td><td>grate size along and across the flow (on grade)</td><td>required for an on-grade grate</td></tr>
+<tr><td><code>splash_over_ft_s</code></td><td>splash-over velocity of the grate</td><td>the P-50 polynomial</td></tr>
+<tr><td><code>depression_depth_ft</code></td><td>local depression depth at the curb (on grade)</td><td>0</td></tr>
 </tbody></table>
 </section>
 
@@ -113,17 +120,19 @@
 <p>A routed lake can also have, as properties of its polygon (any letter case):</p>
 <ul>
 <li><b>A stage-area table,</b> <code>stage_area</code>: two or more pairs of stage (ft) and area (ac), such as <code>"95:12; 100:20"</code> or <code>[[95, 12], [100, 20]]</code>. The area is linear between stages and held beyond the first and last, and the level follows from the volume the lake holds. Without a table the area is constant.</li>
-<li><b>An outlet weir,</b> <code>outlet_crest_ft</code> and <code>outlet_length_ft</code>, with <code>outlet_cw</code> (default 3.0): Q = Cw L (level − crest)<sup>1.5</sup> cfs, taken at the level half way through each chunk. The outlet never draws the lake below its crest.</li>
+<li><b>An outlet weir</b> (the default kind), <code>outlet_crest_ft</code> and <code>outlet_length_ft</code>, with <code>outlet_cw</code> (default 3.0): Q = Cw L (level − crest)<sup>1.5</sup> cfs, taken at the level half way through each chunk. The outlet never draws the lake below its crest.</li>
+<li><b>Other outlet kinds,</b> chosen with <code>outlet_type</code>: <code>rating</code> takes <code>outlet_rating</code>, stage : flow pairs such as <code>"95:0; 97:40; 100:150"</code> (nothing passes below the first stage, the last flow is held above it); <code>pipe</code> takes <code>outlet_crest_ft</code> (the invert) and <code>outlet_diameter_ft</code> and runs as an orifice, Q = Cd A √(2g·head) with <code>outlet_cd</code> (default 0.6); <code>gate</code> takes <code>outlet_crest_ft</code> (the sill), <code>outlet_width_ft</code> and <code>outlet_opening_ft</code> and runs as an orifice on the part of the opening under water. All kinds use the same midpoint step and never draw the lake below their control elevation (crest, invert, sill, or the rating's first stage).</li>
 <li><b>Where the outlet goes,</b> <code>outlet_node</code>: a SWMM junction or storage node (not an outfall) that receives the outlet's water as inflow, one coupling interval later, in two-way runs. Without it the water leaves the model and is reported in the lakes table.</li>
 </ul>
 </section>
 
 <section id="g-run" class="gsec"><h3>8. Run</h3>
 <table class="t"><thead><tr><th>Setting</th><th>Default</th><th>Notes</th></tr></thead><tbody>
-<tr><td>Engine</td><td>GPU if available</td><td>WebGPU and the CPU do the same arithmetic; the GPU is usually 10–30 times faster on a laptop.</td></tr>
+<tr><td>Engine</td><td>GPU if available</td><td>WebGPU and the CPU run the same formulas (compared to a stated tolerance, not bit-identical); the GPU is usually about 9–32 times faster on a laptop, two-way coupling at the low end.</td></tr>
 <tr><td>Courant number</td><td>0.7</td><td>0.1–1. Lower is more stable and slower.</td></tr>
 <tr><td>Wet when deeper than</td><td>0.1 ft</td><td>For flooded areas, the map and the comparison.</td></tr>
 <tr><td>Building reached at</td><td>0.5 ft</td><td>Water this deep next to a footprint counts the building as reached.</td></tr>
+<tr><td>Depth × velocity threshold</td><td>0.5 ft²/s</td><td>How long each cell spends above this product is recorded (the time the fastest flow came, too). It changes what is recorded, not the flow. The lowest class edge of the depth × velocity map.</td></tr>
 </tbody></table>
 <p>Run is off until a DEM or an example is loaded. Opening saved results, loading data or an example is refused during a run.</p>
 </section>
@@ -153,10 +162,10 @@
 
 <section id="g-export" class="gsec"><h3>11. Save, export and compare</h3>
 <ul>
-<li><b>GeoTIFF:</b> six bands in the DEM's coordinate system: maximum depth, maximum water level, time of the maximum, maximum velocity, maximum depth × velocity, and 1 where the speed was capped at critical flow.</li>
+<li><b>GeoTIFF:</b> eight bands in the DEM's coordinate system: maximum depth, maximum water level, time of the maximum, maximum velocity, maximum depth × velocity, 1 where the speed was capped at critical flow, the time of the maximum velocity, and the seconds the depth × velocity spent above the threshold set under Run (band names carry the threshold).</li>
 <li><b>Buildings (CSV):</b> the deepest water next to each footprint. <b>SWMM inflows (CSV):</b> the exchange at each node over time.</li>
-<li><b>Save results:</b> a .fsim.gz file with every map. <b>Open saved results</b> (under Data) shows it again, with the same maps, charts, exports and panel settings, without the input files.</li>
-<li><b>Compare with saved results:</b> opens another saved run on the same grid (same DEM and cell size) and maps the change in maximum depth, this run minus that one: newly flooded, no longer flooded, deeper and shallower (by 0.1 ft or more), and buildings reached in each. Runs on different grids are refused. Use it for before and after a project, or for two lake-level assumptions.</li>
+<li><b>Save results:</b> a .fsim.gz file with every map. It also records the run's provenance: the app version, the engine settings and the name and SHA-256 hash of every input file, shown when the file is opened again. <b>Open saved results</b> (under Data) shows it again, with the same maps, charts, exports and panel settings, without the input files.</li>
+<li><b>Compare with saved results:</b> opens another saved run on the same grid (same DEM and cell size) and maps the change in maximum depth, this run minus that one: newly flooded, no longer flooded, deeper and shallower (by 0.1 ft or more), and buildings reached in each. Runs on different grids are refused. The comparison note also lists how the two runs' settings and input files differ, from their provenance. Use it for before and after a project, or for two lake-level assumptions.</li>
 </ul>
 </section>
 
@@ -181,8 +190,8 @@
 <section id="g-limits" class="gsec"><h3>14. Limits</h3>
 <ul>
 <li>Two-way coupling is explicit (one coupling interval of lag).</li>
-<li>Inlets use sag equations at the local depth; on-grade interception curves are not used.</li>
-<li>A routed lake is a level pool: one level over its whole area. Its area is constant unless a stage-area table is given, and its only outlet is the weir given (if any); an outlet rating curve or a gate is not modeled.</li>
+<li>Inlets in sag use the sag equations at the local depth. An inlet flagged <code>on_grade</code> uses the HEC-22 on-grade path instead (gutter flow and interception efficiency from the street's cross slope, longitudinal slope and roughness); the two are not mixed for one inlet.</li>
+<li>A routed lake is a level pool: one level over its whole area. Its area is constant unless a stage-area table is given. Its outlet is the one given (weir, rating curve, pipe or gate); compound structures (a weir and a pipe together) are not modeled.</li>
 <li>A routed lake's level is updated once per chunk of 2D steps (at most the coupling interval in two-way runs), from the water that crossed its edge and the outside inflow in that chunk. Chunks are kept short while the level moves and under the measured stability limit of a level-dependent outside inflow, so the level follows a fine update within about 0.03 ft in the tests. The first chunk after such an inflow starts is not limited, because its dependence on the level is not known yet.</li>
 <li>Cell velocity is the mean of the two face flows in each direction divided by the depth; it is a cell-average value.</li>
 <li>The local-inertial method is for subcritical flow: speeds above critical are capped (see the hatched cells).</li>

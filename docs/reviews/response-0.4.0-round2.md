@@ -32,7 +32,7 @@ Every new check fails on 0.4.1: C16 (3 checks), L7 (new reference), L10 (2 check
 | WRK2-F6 | `inlet_type` in two cases | Refused: "inlet_type is given twice (inlet_type and INLET_TYPE); keep one". The same for any property | W13 | fails |
 | WRK2-T1 | W12 text area passed by wording | W14 tests Infinity, `true` and `"5"` | W14 | fails |
 | PAGE2-F1 | Tour moves on with earlier results loaded | The example and Run steps check that the DEM and the results are new objects | B24 (example step with a run in progress; Run step with earlier results) | fails (probe: old moved on to 4 of 8 and 8 of 8) |
-| PAGE2-F2 | Impervious % rounded on restore | Restored with 12 significant digits, like clogging; the map interval too | B22: 12.34567% | fails (probe: old 12.3457) |
+| PAGE2-F2 | Impervious % rounded on restore | Restored with 12 significant digits, like clogging; the map interval too *(superseded in 0.4.3: settings restore now uses 15 significant digits; see response-0.4.0-round3.md)* | B22: 12.34567% | fails (probe: old 12.3457) |
 | PAGE2-F3 | Counts in double, map in Float32 | The change is rounded to Float32 before it is classed and counted, so the counts match the map | R-C2 | fails (old: 0 cells deeper) |
 | SITE2-S1 | Tolerance below the cell size | Those scores are "n/a" with a note in the .md and .json | rerun on the PC | — |
 | SITE2-S2 | STRUCTURE-4059 at 6 ft | Site doc and builder message corrected: at 6 ft it is coupled in an open cell at the shore, but the water there peaks near 143.3 ft, below its 146.40 ft rim, so it takes nothing | — | — |

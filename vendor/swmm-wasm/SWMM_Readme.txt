@@ -1,3 +1,9 @@
+NOTE (Flood Simulator): the file below is the readme from EPA's SWMM 5.2.2 engine
+source archive (SWMM522_ENGINE.ZIP), kept here as it was found in this folder. It does
+NOT describe the engine binary shipped beside it: swmm5.js was built from EPA SWMM
+tag v5.2.4 (see tools/build_swmm_wasm.sh), and the binary reports version 52004
+(5.2.4) through its API. See NOTICE in this folder for the license and provenance.
+
 CONTENTS OF SWMM522_ENGINE.ZIP
 ==============================
 

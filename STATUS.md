@@ -1,9 +1,9 @@
 # STATUS: Flood Simulator
 
-Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and an outlet weir, discharging out of the model or into a SWMM node. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/reviews/review-0.4.0-round3.md; response in docs/reviews/response-0.4.0-round3.md). Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/reviews/review-0.4.0-round2.md; response in docs/reviews/response-0.4.0-round2.md). Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results.
+Updated 2026-11-13. Version 0.6.0: fixes and enhancements from the 0.5.0 review, round 1 (docs/reviews/review-0.5.0-round1.md; response in docs/reviews/response-0.5.0-round1.md): the routed-lake guard and first-chunk cap, Courant-independent smoothing, generalised lake outlets (weir, rating curve, pipe, gate), on-grade inlets (HEC-22), velocity time series, run provenance in saved results, a claims gate for the figures quoted here, and an EA benchmark test. Version 0.5.0: routed lakes can have a stage-area table and an outlet weir, discharging out of the model or into a SWMM node. Version 0.4.3: fixes from the 0.4.0 review, round 3 (docs/reviews/review-0.4.0-round3.md; response in docs/reviews/response-0.4.0-round3.md). Version 0.4.2: fixes from the 0.4.0 review, round 2 (docs/reviews/review-0.4.0-round2.md; response in docs/reviews/response-0.4.0-round2.md). Version 0.4.1: fixes from the 0.4.0 review, round 1 (docs/reviews/review-0.4.0-round1.md; response in docs/reviews/response-0.4.0-round1.md). Version 0.4.0: inlet types and clogging, routed lakes, comparison of two saved runs, and help in the page (workflow map, tooltips, User Guide, tour). Version 0.3.3: grid-independent inlet capture, a comparison with the City of Winter Haven's SAIP ICPR v4 inundation, City lake levels as an option, and the vertical datum recorded. Version 0.3.2: first real-site test (Winter Haven, FL; docs/sites/winter-haven-lake-martha.md) and a real-GPU benchmark, with two fixes they led to. Version 0.3.1 fixed the findings of the 0.3.0 review (docs/reviews/review-0.3.0-round1.md; response in docs/reviews/response-0.3.0-round1.md). Version 0.3.0 added per-inlet sizes, roughness and soils from land cover, velocity and hazard maps, and save and reopen results. Version 0.2.0 precedes this chain (the first version with a STATUS file; see the git history).
 
 ## What works
-- **App:** offline single file `dist/FloodSimulator.html` (5.6 MB including three examples and SWMM 5.2.4 in WebAssembly).
+- **App:** offline single file `dist/FloodSimulator.html` (5.77 MB including three examples and SWMM 5.2.4 in WebAssembly; the 0.5.0 file measured 5,736,443 B).
 - **Inputs:**
   - DEM GeoTIFF in any projected CRS from the PROJ list (5,252 EPSG codes);
   - building and level-boundary GeoJSON (reprojected from lon/lat or another EPSG);
@@ -13,17 +13,18 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - Two way: EPA SWMM 5.2.4 runs in the page in step with the 2D. Node overflow goes onto the surface. Surface water returns through inlets (weir below the rim, orifice when surcharged). Each engine step an inlet takes its demand or the water left in its cell, whichever is less, and SWMM is sent the volume actually taken, so capture does not depend on cell size (0.3.3). `ALLOW_PONDING` is forced to NO, and the app says so.
   - Boundary levels: storage or outfall heads (from the `.out`, or live in two-way) or fixed levels.
 - **Rain on the grid:** from a SWMM gauge (intensity, volume or cumulative) or uniform. A warning shows when it is combined with SWMM, since that counts runoff twice.
-- **Engine:** CPU or WebGPU, identical arithmetic, with a water balance at every map. Stop works in about 0.2 s.
+- **Engine:** CPU or WebGPU, the same formulas on both paths (see CLAUDE.md for the comparison tolerance), with a water balance at every map. Stop works (the browser check gates it at 5 s; it is normally much faster).
 - **Results:**
   - map (hillshade offline, or OSM or USGS imagery online);
   - 3D view with buildings, water and SWMM nodes;
   - four charts and a water-balance table;
   - a two-way SWMM summary with the coupled `.rpt` and `.out` to download;
-  - GeoTIFF (max depth, max water level, time of max), buildings CSV and SWMM exchange CSV.
+  - GeoTIFF (8 bands: max depth, max water level, time of max, max velocity, max depth × velocity, critical-flow flag, time of max velocity, duration above the depth × velocity threshold), buildings CSV and SWMM exchange CSV;
+  - saved results carry the run's provenance (app version, engine settings, input file names and SHA-256 hashes), shown on reopen, and a comparison of two runs reports how their settings and input files differ.
 - **Python tools:**
   - `prep_dem.py`: clip, reproject and resample, vertical unit factor, buildings, SWMM node check;
   - `make_synthetic.py` and `make_public_demo.py`.
-- **Other tools:** `tools/build.py` builds the page, `tools/build_swmm_wasm.sh` builds SWMM in WebAssembly, and `tools/screenshot.py`.
+- **Other tools:** `tools/build.py` builds the page, `tools/build_swmm_wasm.sh` builds SWMM in WebAssembly, `tools/screenshot.py`, `tools/check_claims.py` gates the figures quoted in this file against the test suites' measured values, and `tools/stress_grid.js` runs a grid at the 8-million-cell limit and reopens its results.
 
 - **New in 0.3.0:**
   - **Inlets:** a GeoJSON of inlets (point, node, weir length, grate area, coefficients, rim) replaces the single default size. Each inlet is its own sink; the half-the-water cap is shared among inlets in one cell. Junctions without a listed inlet use the default size or none (setting in the two-way box). An unknown node is reported and the inlet is ignored; an invalid size is refused.
@@ -38,6 +39,19 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - The level follows from the volume held (exact inverse of the piecewise storage). The outlet uses the level half way through each chunk (a midpoint step), never draws the lake below its crest, and keeps chunks under its own stability limit.
   - `outlet_node` sends the outlet's water into a SWMM junction or storage node in two-way runs (one coupling interval later); without it the water leaves the model and is reported. The lakes table and the two-way table show the outlet volumes.
   - Checks: L12 (storage by hand: +0.111720 ft for 3,600 cf on a 20,000–40,000 sq ft table), L13 (weir drawdown against the closed-form level-pool solution within 0.001 ft at 60 s and 900 s chunks; refusals), C18 (SWMM report external inflow +17,990 of 18,000 cf through a coupled junction and a storage node), W16 (properties read; storage lost by hand = outlet + water to the 2D), B26 (the page, budget closed with the outlet; the lakes table scrolls in its own box at 390 px, where it widened the page before). These are new functions: on 0.4.3 they crash or are absent.
+- **New in 0.6.0 (0.5.0 review, round 1; response in docs/reviews/response-0.5.0-round1.md):**
+  - **Routed lakes:** the "numerical failure" guard now counts outside inflow that adds water, so a lake fed from SWMM no longer throws while behaving correctly (L14: a lake fed 50 cfs for 6 h spills throughout and closes its budget); the first chunk is capped prospectively from the spill rate at the starting level (L15: first level 101.996 ft, was 101.850 ft on contained land).
+  - **Engine:** the de Almeida smoothing is normalised to the wave step at the reference Courant number 0.7, so the answer no longer depends on the Courant number (T10: a dam break moves 54,801 / 54,074 / 53,575 cf at Courant 0.7 / 0.35 / 0.1; at 0.5.0 the 0.1 run moved 14% less). At the default the results are bit-identical (T9 unchanged). L13's weir drawdown is now asserted at the quoted 0.001 ft.
+  - **Lake outlets generalised:** a routed lake's outlet can be a weir, a rating curve (stage : flow pairs), a pipe (orifice, Cd 0.6 by default) or a gate, under the same midpoint step and never-below-control discipline, discharging out of the model or into a SWMM node (L16–L18 against hand and closed-form values; W17 through the worker). The Winter Haven builder takes `--outlets` with a user-supplied CSV (the City's structures are not in the public layers, so none are invented).
+  - **On-grade inlets (HEC-22):** an inlet flagged `on_grade` with its street's `cross_slope` and `long_slope` intercepts a share of the gutter flow (curb: length for full interception; grate: frontal/side-flow ratios with splash-over) instead of using the sag equations; what is not intercepted flows past. C19: a 10 ft curb opening intercepts 1.346 of 2.394 cfs of gutter flow, a 30 ft opening all of it; a grate intercepts 4.928 of 14.12 cfs. Sag inlets are unchanged.
+  - **Velocity time series:** each cell records the time of its maximum velocity and how long its depth × velocity stayed above a threshold (Run setting, default 0.5 ft²/s). Shown in the cell popup and the depth × velocity KPI, carried in saved results, exported as GeoTIFF bands 7 and 8 (V8, B4).
+  - **Run provenance:** a saved run records the app version, the engine settings and every input file's name and SHA-256 hash; opening the file shows them, and comparing two runs lists the settings and files that differ (R-C3).
+  - **EA benchmark:** Test 3 of the UK Environment Agency benchmarking set (momentum over a 0.25 m obstruction) is a fixture (T11): with the inflow volume set to just fill the left depression, 18.3% of it settles in the right depression (0.166 m deep), the left pond settles flat and the ledger closes — the behaviour the test is designed to discriminate. Test 6A is not used: its flow is supercritical with hydraulic jumps, and this engine caps face velocity at critical by design (see the response doc).
+  - **Claims gate:** `tools/check_claims.py` runs the suites and compares the figures this file quotes (L12, L13, C18, the soil infiltration values, and B20 with a browser log) with what the suites measure; CI runs it.
+  - **Stress run:** an 8,000,000-cell grid (the app limit) built in 1.4 s; 600 s of rain in 131 steps took 409 s of wall time on the build sandbox (1.5 shared CPUs, other suites running alongside); the 49.8 MB results file reopens with the same wet-cell count; peak memory 1,115 MB (`tools/stress_grid.js`).
+  - **Review fixes in io and the app:** the nearest open cell and lake membership use true Euclidean distance (F-09); a combination inlet's weir capacity is the grate weir plus the curb weir (F-10: 3.94 cfs at 0.3 ft in the probe sizes, was 1.48); a DEM's vertical units are read from the file's GDAL metadata when no GeoKey is present (F-11); buildings covering no cell warn (F-12); `.out` node types come from the .inp, not a derived field (F-14); non-numeric secondary .inp fields warn by name instead of reading silently as 0 (F-29); prep_buildings keeps MultiPolygons whose later parts fall in the box (F-30); saved-run frame times land on whole seconds (F-31). Docs, CI and wording fixes F-03–F-08 and F-15–F-28, F-32–F-35 are itemised in the response doc.
+  - **Winter Haven evidence pack:** `examples/winter_haven/README.md` ships the pack structure and the one regeneration command. A fresh regeneration for 0.6.0 was attempted twice and stopped at the soils step both times (the USDA Soil Data Access service did not answer within 300 s); the figures quoted here remain the review environment's run.
+  - **Second GPU:** a benchmark procedure is prepared (`tools/gpu_benchmark.md`), awaiting a run on the work PC; no figures are recorded yet.
 - **Fixed in 0.4.3 (review round 3):**
   - **2D scheme converges in the time step:** the de Almeida smoothing is scaled with the step, so short chunks and a low dtMax no longer slow the flow (a dam break moved 14,134 cf at dt 0.005 s against 54,801 cf at the Courant step; now 53,438 against 54,801). Ordinary runs, whose chunks hold ten or more Courant steps, are unchanged.
   - **Routed lakes:** chunks are kept under the measured stability limit of a level-dependent outside inflow, and a reversing level halves the chunk; the low-level guard checks only the 2D share, so withdrawals may draw a lidar lake below its surface.
@@ -53,7 +67,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - **Two-way coupling refuses:** a NaN depth or clamp, a non-finite inflow to SWMM, `finish()` with an interval not booked, and a model with `[EVENTS]` (SWMM would skip the inlet water). Curb openings over 12 ft use Cw 3.0 even when another is given.
   - **Inlets file:** every property name is read in any letter case; a name given twice in two cases is refused; the type note counts inlets, not features.
   - **Worker:** loading buildings, boundaries, land cover, soils or a CRS clears the built grid; a routed lake with any node (also 0) is refused; areas are named as given.
-  - **Page:** the tour's example and Run steps fail when the earlier site or results are left in place; impervious % is restored exactly; the comparison counts match the map's classes.
+  - **Page:** the tour's example and Run steps fail when the earlier site or results are left in place; impervious % is restored exactly (the restore precision this refers to was raised in 0.4.3 to 15 significant digits; see the round-3 response); the comparison counts match the map's classes.
   - **Builder and comparison:** a tolerance below the cell gives n/a with a note; `--routed` is recorded in the build report; site doc corrections (STRUCTURE-4059 at 6 ft, continuity bound, run versions).
 - **Fixed in 0.4.1:**
   - **Routed lakes:**
@@ -80,7 +94,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - **Compare two saved runs** on the same grid: the change in maximum depth, the area newly flooded, no longer flooded, deeper and shallower, and buildings reached. Runs on different grids are refused.
   - **Help in the page:**
     - a workflow map of the five steps, which shows what is done and jumps to any setting;
-    - tooltips on all 126 controls (what each is, its units, default and range), on hover, focus or tap;
+    - tooltips on every control (what each is, its units, default and range), on hover, focus or tap;
     - the User Guide, a searchable drawer with 15 sections;
     - a first-run tour that loads the example and makes one run.
 - **New in 0.3.3:**
@@ -110,7 +124,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - The double-counting warning for rain on the grid shows only when the SWMM model has subcatchments that use that gauge.
   - An example can carry its run settings (coupling, rain and gauge, inlets, cell size, time window), filled in on Load.
   - A two-way run with no rain on the grid is refused when the SWMM model has no subcatchments or inflows of its own (it would have no water).
-- **Measured on a real GPU (Intel Core 7 150U laptop graphics, headless Chrome):** 12 to 32 times faster than the CPU on the synthetic example (6 ft: 3.4 s vs 110.1 s), same maps within 1.4e-5 ft. Winter Haven, 8 h two-way (0.3.3): 26.9 s at 12 ft, 93.2 s at 6 ft, 786.6 s at 3 ft (1.33 M cells); whole 26 h storm 76.0 s at 12 ft, 281.0 s at 6 ft.
+- **Measured on a real GPU (Intel Core 7 150U laptop graphics, headless Chrome):** about 9 to 32 times faster than the CPU (two-way coupling at the low end) on the synthetic example (6 ft: 3.4 s vs 110.1 s), same maps within 1.4e-5 ft. Winter Haven, 8 h two-way (0.3.3): 26.9 s at 12 ft, 93.2 s at 6 ft, 786.6 s at 3 ft (1.33 M cells); whole 26 h storm 76.0 s at 12 ft, 281.0 s at 6 ft.
 - **Fixed in 0.3.1** (review IDs in brackets):
   - SWMM no longer keeps receiving the last inlet capture after the 2D run ends: the coupler zeroes the inlet inflow and then runs SWMM to its end [W9]. Test case: SWMM's external inflow 4,530 cf against 4,536 cf taken by the inlets (before: 104,326 cf extra in the reviewer's case).
   - A refused land cover, soils, inlets, buildings or boundary file leaves the layer loaded before in use, in the worker and on the page; its file box is cleared and the message says nothing was changed [W1, W2]. A DEM that fails to load changes nothing [AU-3]. A new DEM clears the worker's layers too [W5].
@@ -163,7 +177,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - land cover sampled at cell centres agrees 100% with pyproj/rasterio for both examples;
   - the soils raster equals the rasterio rasterization;
   - table values reach the cells;
-  - group A soil infiltrates 13.81 ac-ft against 3.54 for group D on the same storm;
+  - group A soil infiltrates 13.99 ac-ft against 2.61 for group D on the same storm (of 14.58 ac-ft of rain);
   - unknown classes reported, invalid table values refused.
 - `tests/node/test_couple2way.js` C4 (inlets): per-node sums equal the exchange; at the same location a smaller inlet takes 15,356 cf against 28,551 cf; unknown node reported; invalid size refused.
 - `tests/node/test_model.js` closed edges: edge outflow 0 and closure −1.86 cf of 466,886 cf of rain. Fails on the earlier code (edge outflow 218,522 cf): proven fail-first.
@@ -177,7 +191,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
     - `test_worker.js` W10: inlet types and clogging read from the file.
     - Browser:
       - B18: the tour is offered once and runs the example in 8 steps; the workflow map goes from 0 to 5 steps done.
-      - B19: every one of 126 controls has a tooltip; the focus tooltip; the map focuses a setting; guide links, search and Esc.
+      - B19: every visible control has a tooltip; the focus tooltip; the map focuses a setting; guide links, search and Esc.
       - B20: routed pond, rise = budget ÷ area; GPU = CPU, 55.5367 ft.
       - B21: comparison view and areas; clear; a different grid refused.
     - Fail-first status:
@@ -195,7 +209,19 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - `tests/node/test_landcover.js`: expected values written out from the published tables (not read from the code); Green-Ampt infiltration against EPA SWMM 5.2.4 for groups A and D (1.919 vs 1.920 in; 0.358 vs 0.358 in); default IMD = porosity − field capacity; refusals, coverage, codes, NoData and out-of-raster sampling.
   - `tests/node/test_velocity.js`: Manning within 1% to the east and to the south; inflow-cell speed is the face mean; maxima survive the falling limb; reset; step inflow (V5); supercritical channel flagged, subcritical not (V6); hot start (V7); the 0.05 ft threshold checked on a sheet that crosses it (V3).
   - `tests/node/test_model.js`: no rain on the closed-edge ring (466,886 cf = 1.5 in on 25,938 ground cells).
-  - Browser: B4 checks bands 5 and 6 cell by cell; B16 compares KPIs, area chart, last map and water balance at the same view, and the restored panel; B17 failed DEM, refused land cover, inlets before .inp, example clears all file boxes; B9 refuses opening results during a run; B12 SWMM report = inlet tally (88,557 vs 88,563 cf); B6 GPU critical-cap flags equal the CPU (19 = 19).
+  - Browser: B4 checks bands 5 and 6 cell by cell (bands 7 and 8 added in 0.6.0); B16 compares KPIs, area chart, last map and water balance at the same view, and the restored panel; B17 failed DEM, refused land cover, inlets before .inp, example clears all file boxes; B9 refuses opening results during a run; B12 SWMM report = inlet tally (88,557 vs 88,563 cf); B6 GPU critical-cap flags equal the CPU (19 = 19).
+- New and strengthened in 0.6.0 (each fails on 0.5.0 unless noted; details in the response doc):
+  - `test_solver_core.js` T10 (Courant invariance), T11 (EA Test 3 replica; brand-new fixture, also passes on 0.5.0 since the engine is unchanged by it).
+  - `test_lakes.js` L14 (lake fed from outside, spills, budget closes), L15 (first-chunk cap), L16–L18 (rating, pipe and gate outlets against hand and closed-form values); L13 asserted at 0.001 ft.
+  - `test_couple2way.js` C19 (on-grade inlets against HEC-22 hand calculations; fails on 0.5.0, which ignores the flag); C18 asserts the measured report inflow, 17,990 ± 20 cf; C10's shallow combination case now expects grate weir + curb weir and fails on 0.5.0 (2.958 against 5.422 cfs).
+  - `test_worker.js` W17 (pipe and rating outlets through the worker), W18 (on-grade properties parsed; a missing slope refused when the coupler is built).
+  - `test_results_io.js` R-C3 (provenance and the velocity-time arrays round-trip in a saved run; provenance diffs).
+  - `test_velocity.js` V8 (time of max velocity and duration above a threshold).
+  - `test_model.js`: Euclidean nearest cell; buildings covering no cell warn; DEM vertical units from GDAL metadata (fixtures in `tests/fixtures/`).
+  - `tools/check_claims.py`: L12, L13, C18 and the soil figures in this file equal the suites' measured values; B20 gated from the browser log.
+  - `tools/stress_grid.js`: 8,000,000 cells, results saved and reopened with the same wet cells.
+  - Browser: B4 checks all 8 GeoTIFF bands cell by cell (bands 7–8 new); B27 soils as a GeoTIFF through the app (106,266 soil cells, infiltration in the ledger); B28 a DEM without a CRS through the EPSG entry box.
+  - Node suites in all: 259 checks (0.5.0: 235), all pass.
 - Fail-first (scripted gate, then each block run alone at 0.3.0 so one crash does not hide the rest): every check written for a fix fails at 0.3.0 by assertion (C4–C8 except the shared-cap check, W1–W9, all six results-file checks, the land cover table, IMD, refusal, coverage, code and NoData checks, V1 inflow-cell, V5, V7). The shared-cap, V1 Manning, V3, V4 maxima and closed-edge rain checks pass at 0.3.0: they guard behavior that was already right and were added to catch the mutations the review listed. V4 reset and V6 crash at 0.3.0 because the flag output did not exist (symbol only).
 - No regression: the eight node suites as they were at 0.3.0 run at 0.3.1: 138 checks hold and 4 differ, all by design and in test files changed on purpose (inlet size message wording; land cover counts now leave out NoData cells; the infiltration check used a 1 cf absolute closure, now 0.001%).
 - On the US example (one way, 0 to 1.5 h) the new time-step sizing takes the same 6,981 steps and gives the same maxima as 0.3.0.
@@ -218,7 +244,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
   - SI files through the file inputs with lon/lat buildings;
   - two-way CPU (exchange balances, SWMM continuity −0.003%, `.rpt` and `.out` open in the EPA reader);
   - two-way GPU equal to CPU (4.8e-6 ft);
-  - Stop (0.2 s);
+  - Stop (gated at 5 s);
   - 390 px width with no horizontal scroll;
   - dark theme;
   - public demo;
@@ -226,21 +252,19 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
 - Prep: `prep_dem.py` run on a raw USGS 1 m tile reproduces the 3 ft DEM within 0.12 ft.
 
 ## Not tested
-- Speed on a real GPU. Only SwiftShader was available; it is slower than the CPU here (CPU about 30–35× real time at 100,000–160,000 cells).
+- Speed on GPUs other than the home laptop's Intel Core 7 150U integrated graphics (measured above). A second-GPU run is prepared (`tools/gpu_benchmark.md`) and awaiting a machine. The SwiftShader software renderer in the test sandbox is slower than the CPU and is not a speed test (CPU about 30–35× real time at 100,000–160,000 cells).
 - The work PC's browser and its WebGPU policy.
 - Online basemaps: tiles are blocked in the test sandbox, so only the hillshade fallback was tested.
-- A DEM without an EPSG code (the EPSG entry box is coded but was not run).
-- Grids near the 8-million-cell limit.
+- Grids near the 8-million-cell limit on the GPU, and reopening such a grid's results through the page (the CPU stress run at the limit, with save and reopen, is in Tested).
 - Two-way coupling against another coupled model (e.g. PCSWMM 2D or HEC-RAS). It is verified for conservation and consistency only.
-- A soils GeoTIFF in the browser (the code path exists; only soils GeoJSON was run in the app).
 - Land cover classes other than NLCD codes (other schemes need an edited table).
-- Results files from very large grids (file size and memory when reopening).
 - The 0.3.1 fixes were checked by the tests above, not by a second independent review round. The 0.4.3 fixes and the 0.5.0 lake outlets have not had a review round of their own.
 - The work PC (only the home laptop's Intel GPU was tested).
 - **Winter Haven:**
   - No check against observed flooding.
   - The check against the City's ICPR model is not like-for-like: different rainfall distribution, DEM and lake treatment.
-  - The lakes are held at fixed levels, or routed with no outlet.
+  - The lakes are held at fixed levels, or routed with no outlet or a weir; the 0.6.0 outlet kinds (rating, pipe, gate) have not been run at Winter Haven.
+  - A regeneration of the example pack for 0.6.0 stopped at the USDA soils service (300 s read timeout, twice); the committed figures are the review environment's run (see examples/winter_haven/README.md).
   - The fixed-level runs were made with 0.4.0 and not repeated.
   - Inlet sizes are not in the inventory, so the app defaults were used.
   - The City's vertical datum is unconfirmed.
@@ -248,8 +272,7 @@ Updated 2026-11-11. Version 0.5.0: routed lakes can have a stage-area table and 
 - The browser checks were not run against 0.3.0 (its page lacks the new inputs), so their fail-first status is not established.
 
 ## Open items
-- Lake outlets are a single weir; an outlet rating curve, a pipe or a gate is not modeled. The Winter Haven builder does not yet write outlets (the City's outlet structures are not in the public layers).
 - Inlet sizes at Winter Haven: capture now follows the inlet equations, so the default sizes matter more; the inventory has no sizes.
-- On-grade inlet interception (HEC-22 curves for inlets on a grade). Inlets use the sag equations at the local depth.
-- Time series of velocity (only maxima are kept).
-- Velocity and hazard checked against a benchmark (e.g. UK EA test 6A); only Manning flow is checked now.
+- Second-GPU benchmark run (`tools/gpu_benchmark.md`): prepared, awaiting the work PC.
+- Winter Haven pack regeneration: one command (`python python/make_winter_haven_demo.py examples/winter_haven`) when the USDA soils service answers; the 0.6.0 attempts timed out there.
+- UK EA Test 6A is not applicable to this engine class (supercritical flow with hydraulic jumps; face velocity is capped at critical by design) — documented in the response doc, not planned.

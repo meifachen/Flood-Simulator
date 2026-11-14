@@ -136,12 +136,17 @@ with sync_playwright() as p:
         a = ds.read(1); nod = ds.nodata; crs = ds.crs.to_epsg(); nb = ds.count; desc = ds.descriptions
     G = pg.evaluate("S.grid.G"); h_app = cpu_hmax.reshape(G["ny"], G["nx"])
     open_mask = np.array(pg.evaluate("Array.from(S.grid.type)")).reshape(G["ny"], G["nx"]) == 0
-    with rasterio.open(tif) as ds: v4 = ds.read(4); v5 = ds.read(5); v6 = ds.read(6)
+    with rasterio.open(tif) as ds: v4 = ds.read(4); v5 = ds.read(5); v6 = ds.read(6); v7 = ds.read(7); v8 = ds.read(8)
     vapp = np.array(pg.evaluate("Array.from(S.final.vmax)")).reshape(G["ny"], G["nx"]); wetm = open_mask & (h_app > 0)
     dvapp = np.array(pg.evaluate("Array.from(S.final.dvmax)")).reshape(G["ny"], G["nx"]); frapp = cpu_fr.reshape(G["ny"], G["nx"])
+    tvapp = np.array(pg.evaluate("Array.from(S.final.tvmax)")).reshape(G["ny"], G["nx"]); durapp = np.array(pg.evaluate("Array.from(S.final.dvdur)")).reshape(G["ny"], G["nx"])
     ok("B4 GeoTIFF velocity, depth x velocity and critical-cap bands equal the run cell by cell", np.allclose(v4[wetm], vapp[wetm], atol=1e-6) and np.allclose(v5[wetm], dvapp[wetm], atol=1e-6) and np.array_equal(v6[wetm], frapp[wetm])
        and v4.max() > 0 and v5.max() > 0 and (v5[~wetm] == -9999).all(), f"max velocity {v4.max():.2f} ft/s, max D x V {v5.max():.2f} ft2/s, {int((v6 == 1).sum())} capped cells")
-    ok("B4 GeoTIFF: CRS, 6 bands, NoData, values equal the run", crs == 2236 and nb == 6 and nod == -9999 and np.allclose(a[open_mask], h_app[open_mask], atol=1e-6) and (a[~open_mask] == -9999).all(),
+    flowm = open_mask & (vapp > 0)   # bands 7-8 are written where water flowed; band 7 is hours from the run's start, like band 3
+    t0r = pg.evaluate("S.grid.opts.t0")
+    ok("B4 GeoTIFF time-of-max-velocity and duration-above-threshold bands equal the run cell by cell (E-09)", np.allclose(v7[flowm], tvapp[flowm] - t0r, atol=1e-4) and np.allclose(v8[flowm], durapp[flowm], atol=1e-3)
+       and v8.max() > 0 and (v7[~flowm] == -9999).all() and (v8[~flowm] == -9999).all(), f"latest peak {v7[flowm].max():.2f} h after the start, longest duration {v8.max():.0f} s; bands {desc[6]}, {desc[7]}")
+    ok("B4 GeoTIFF: CRS, 8 bands, NoData, values equal the run", crs == 2236 and nb == 8 and nod == -9999 and np.allclose(a[open_mask], h_app[open_mask], atol=1e-6) and (a[~open_mask] == -9999).all(),
        f"EPSG {crs}, {nb} bands {desc}, max {a.max():.3f} ft")
     with pg.expect_download() as d: pg.click("#x-csv")
     csvb = os.path.join(TMP, "b.csv"); d.value.save_as(csvb); rows = open(csvb).read().strip().splitlines()
@@ -180,7 +185,8 @@ with sync_playwright() as p:
     raw = _gz.decompress(open(resf, "rb").read())
     for label, data in [("truncated", _gz.compress(raw[: len(raw) // 2])), ("not gzip or results", b"hello world"), ("future version", _gz.compress(raw.replace(b'"version":1', b'"version":9', 1)))]:
         bp = os.path.join(TMP, "bad.fsim.gz"); open(bp, "wb").write(data)
-        pg.set_input_files("#f-res", bp); pg.wait_for_function("/Opened|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+        prev = pg.inner_text("#msg")   # wait for the message to CHANGE to the refusal: the old wait matched the preceding "Opened" text and raced (review F-07)
+        pg.set_input_files("#f-res", bp); pg.wait_for_function("prev => { const t = document.querySelector('#msg').textContent; return t !== prev && t.includes('Could not open'); }", arg=prev, timeout=60000)
         ok(f"B16 refuses a {label} file", "Could not open" in pg.inner_text("#msg"), pg.inner_text("#msg"))
     pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
     settings(pg); pg.click("#b-run"); wait_done(pg)
@@ -275,7 +281,7 @@ with sync_playwright() as p:
         ok("B12 two-way run: water goes into the inlets and the exchange balances", msg.startswith("Done") and t2["sentToSwmm"] > 1000 and abs(net2d - netsw) / t2["fromSwmm"] < 1e-6 and abs(L2["errPct"]) < 0.01,
            f"into inlets {t2['sentToSwmm']:.0f} cf, out of nodes {t2['fromSwmm']:.0f} cf; net 2D {net2d:.1f} = SWMM {netsw:.1f} cf; 2D closure {L2['errPct']:.5f}%")
         ok("B12 SWMM continuity within 1%", abs(r2["mb"]["flow"]) < 1, f"{r2['mb']['flow']:.3f}%")
-        ninl = pg.evaluate("S.final.swmm2.inlets.length"); ok("B15 the 14 listed curb inlets are used", ninl == 14 and "14 inlets on 7 junctions" in pg.inner_text("#st-inl"), f"{ninl} inlets")
+        ninl = pg.evaluate("S.final.swmm2.inlets.length"); ok("B15 the 14 listed inlets are used", ninl == 14 and "14 inlets on 7 junctions" in pg.inner_text("#st-inl"), f"{ninl} inlets")
     else: ok("B12 two-way run", False, msg)
     ok("B12 exchange chart and SWMM table shown", "exchange" in pg.evaluate("document.getElementById('c-in').layout.title.text") and "two-way coupling" in pg.inner_text("#ledger"), "")
     with pg.expect_download() as d: pg.click("#dl-rpt")
@@ -370,6 +376,35 @@ with sync_playwright() as p:
     bg = pg.evaluate("getComputedStyle(document.body).backgroundColor")
     ok("B10 dark theme applies", bg in ("rgb(17, 22, 28)",), bg)
     pg.set_viewport_size({"width": 1400, "height": 1000}); pg.screenshot(path=os.path.join(TMP, "dark.png"), full_page=True)
+
+    # ---- B27 (new in 0.6.0, E-11) soils as a GeoTIFF through the file input: read, grouped and used by the build
+    us = os.path.join(ROOT, "examples", "synthetic_us")
+    with rasterio.open(os.path.join(us, "dem.tif")) as ds:
+        prof = ds.profile; arr = np.where(np.arange(ds.height)[:, None] < ds.height // 2, 1, 2).astype("float32")
+    prof.update(dtype="float32", count=1, nodata=None)
+    soil_tif = os.path.join(TMP, "soils.tif")
+    with rasterio.open(soil_tif, "w", **prof) as ds: ds.write(arr, 1)
+    pg.reload(); pg.wait_for_selector("#ex-load"); pg.select_option("#ex-pick", "0"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example/.test(document.querySelector('#msg').textContent)", timeout=120000)
+    pg.set_input_files("#f-soil", soil_tif); pg.wait_for_function("/Loaded soils|Could not/.test(document.querySelector('#msg').textContent)", timeout=60000)
+    st_soil = pg.inner_text("#st-soil")
+    pg.select_option("#rain", "gauge"); pg.evaluate("waterNotes()")
+    settings(pg, cell_index=0, t0="0", t1="0.1", outmin="2", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)
+    ok("B27 soils load as a GeoTIFF and the build puts them on the grid (infiltration follows)", "raster of groups" in st_soil and "A: " in st_soil and pg.evaluate("S.grid.info.soilCells") > 0 and pg.evaluate("S.final.ledger.inf") > 0,
+       f"{st_soil[:110]}; soil cells {pg.evaluate('S.grid.info.soilCells')}, infiltration {pg.evaluate('S.final.ledger.inf'):.0f} cf")
+
+    # ---- B28 (new in 0.6.0, E-11) a DEM whose file carries no CRS: the EPSG entry box appears and the typed code is used
+    with rasterio.open(os.path.join(us, "dem.tif")) as ds:
+        prof = ds.profile; data = ds.read(1); tags = ds.tags()
+    prof.update(crs=None)
+    nocrs = os.path.join(TMP, "dem_nocrs.tif")
+    with rasterio.open(nocrs, "w", **prof) as ds: ds.write(data, 1); ds.update_tags(**tags)
+    pg.reload(); pg.wait_for_selector("#ex-load")
+    pg.set_input_files("#f-dem", nocrs); pg.wait_for_function("/CRS unknown/.test(document.querySelector('#st-dem').textContent) && !!S.dem", timeout=60000)
+    box = pg.is_visible("#crs-box")
+    pg.fill("#crs-epsg", "2236"); pg.evaluate("document.querySelector('#crs-epsg').dispatchEvent(new Event('change'))")
+    pg.wait_for_function("/EPSG 2236/.test(document.querySelector('#st-dem').textContent)", timeout=60000)
+    ok("B28 a DEM without a CRS asks for the EPSG code and loads with the typed one", box and "EPSG 2236" in pg.inner_text("#st-dem") and pg.evaluate("!!S.dem"),
+       f"box shown {box}; {pg.inner_text('#st-dem')[:100]}")
 
     # ---- B11 public-data demo loads offline (basemap tiles blocked) and builds its grid
     pg.select_option("#ex-pick", "1"); pg.click("#ex-load"); pg.wait_for_function("/Loaded example|Could not/.test(document.querySelector('#msg').textContent)", timeout=120000)

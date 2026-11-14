@@ -13,13 +13,14 @@ const RIO = {
     const arrays = [], blobs = [], add = (name, a) => { arrays.push({ name, type: RIO.typeName(a), length: a.length }); blobs.push(a); };
     add("grid.z", S.grid.z); add("grid.type", S.grid.type);
     S.frames.forEach((f, i) => add(`frame.${i}.q`, f.q));
-    for (const k of ["hmax", "tmax", "bMax", "vmax", "dvmax", "froude"]) if (S.final[k]) add(`final.${k}`, S.final[k]);
+    for (const k of ["hmax", "tmax", "bMax", "vmax", "dvmax", "froude", "tvmax", "dvdur"]) if (S.final[k]) add(`final.${k}`, S.final[k]);
     const fin = {}; for (const [k, v] of Object.entries(S.final)) if (!ArrayBuffer.isView(v) && k !== "swmm2") fin[k] = v;
     let swmm2 = null;
     if (S.final.swmm2) { const { out, ...rest } = S.final.swmm2; swmm2 = rest; if (out) add("swmm2.out", new Uint8Array(out)); }
     const header = { format: "flood-simulator-results", version: RIO.VERSION, app: appVersion, saved: new Date().toISOString(),
       dem: S.dem, grid: { G: S.grid.G, info: S.grid.info, opts: S.grid.opts, warnings: S.grid.warnings || [] },
       frames: S.frames.map((f) => f.sum), final: fin, swmm2, swmm: S.swmm, bld: S.bld, bnd: S.bnd, inl: S.inl || null, lc: S.lc || null, soil: S.soil || null,
+      prov: S.prov || null,   // run provenance (E-04): app version, engine settings and input file hashes, so a saved run can be audited and compared
       sources: S.sources || [], nodeMap: S.nodeMap || [], exName: S.exName || null, arrays };
     // numbers JSON cannot hold (NaN, Infinity) are written as {"$num": "NaN"} and read back as numbers, so they are not turned into null (and then 0)
     const hb = new TextEncoder().encode(JSON.stringify(header, (k, v) => (typeof v === "number" && !Number.isFinite(v) ? { $num: String(v) } : v)));
@@ -46,8 +47,8 @@ const RIO = {
     const N = G.nx * G.ny, nf = Array.isArray(h.frames) ? h.frames.length : 0; if (!nf) throw new Error("The results file has no maps");
     if (!Number.isInteger(G.nx) || !Number.isInteger(G.ny) || (h.grid.info && (h.grid.info.nx !== G.nx || h.grid.info.ny !== G.ny))) throw new Error("The results file's grid size is not consistent");
     // every known array: its length and its type; optional ones need only be right when present
-    const want = { "grid.z": N, "grid.type": N, "final.hmax": N, "final.tmax": N }, opt = { "final.vmax": N, "final.dvmax": N, "final.froude": N };
-    const TYPE = { "grid.z": "F32", "grid.type": "U8", "final.hmax": "F32", "final.tmax": "F32", "final.bMax": "F32", "final.vmax": "F32", "final.dvmax": "F32", "final.froude": "U8", "swmm2.out": "U8" };
+    const want = { "grid.z": N, "grid.type": N, "final.hmax": N, "final.tmax": N }, opt = { "final.vmax": N, "final.dvmax": N, "final.froude": N, "final.tvmax": N, "final.dvdur": N };
+    const TYPE = { "grid.z": "F32", "grid.type": "U8", "final.hmax": "F32", "final.tmax": "F32", "final.bMax": "F32", "final.vmax": "F32", "final.dvmax": "F32", "final.froude": "U8", "final.tvmax": "F32", "final.dvdur": "F32", "swmm2.out": "U8" };
     for (let i = 0; i < nf; i++) { want[`frame.${i}.q`] = N; TYPE[`frame.${i}.q`] = "U8"; }
     let off = Math.ceil((12 + hl) / 4) * 4; const A = Object.create(null);
     for (const a of h.arrays || []) {
@@ -61,9 +62,31 @@ const RIO = {
     }
     if (off !== u8.length) throw new Error(`The results file has ${u8.length - off} bytes more than its header lists`);
     for (const n of Object.keys(want)) if (!A[n]) throw new Error(`The results file is missing ${n}`);
-    const final = Object.assign({}, h.final, { hmax: A["final.hmax"], tmax: A["final.tmax"], bMax: A["final.bMax"] || new Float32Array(0), vmax: A["final.vmax"] || null, dvmax: A["final.dvmax"] || null, froude: A["final.froude"] || null });
+    const final = Object.assign({}, h.final, { hmax: A["final.hmax"], tmax: A["final.tmax"], bMax: A["final.bMax"] || new Float32Array(0), vmax: A["final.vmax"] || null, dvmax: A["final.dvmax"] || null, froude: A["final.froude"] || null, tvmax: A["final.tvmax"] || null, dvdur: A["final.dvdur"] || null });
     if (h.swmm2) final.swmm2 = Object.assign({}, h.swmm2, { out: A["swmm2.out"] ? A["swmm2.out"].buffer : null });
     return { h, grid: Object.assign({}, h.grid, { z: A["grid.z"], type: A["grid.type"] }), frames: h.frames.map((sum, i) => ({ sum, q: A[`frame.${i}.q`] })), final };
+  },
+  /* One line describing a run's provenance (E-04), for the Opened message. */
+  provLine(p) {
+    if (!p) return "";
+    const s = p.settings || {}, ins = (p.inputs || []).map((i) => `${i.kind}: ${i.name} (sha256 ${String(i.sha256 || "").slice(0, 12)}…)`).join(", ");
+    return `Run settings: app ${p.app || "?"}, ${s.engine || "?"} engine, Courant ${s.cfl}, coupling ${s.coupling}${s.couplingSec ? ` every ${s.couplingSec} s` : ""}, ${s.t0} to ${s.t1} h${s.dvThresh ? `, D x V threshold ${s.dvThresh} ft2/s` : ""}. Inputs: ${ins || "none recorded"}.`;
+  },
+  /* The differences between two runs' provenance: a list of "what: this vs other" strings (empty when the settings
+   * and the input files agree). Input files are compared by name and hash. */
+  provDiff(a, b) {
+    if (!a || !b) return [];
+    const out = [], sa = a.settings || {}, sb = b.settings || {};
+    if (String(a.app ?? "") !== String(b.app ?? "")) out.push(`app version: ${a.app ?? "–"} vs ${b.app ?? "–"}`);
+    for (const k of ["engine", "cfl", "coupling", "couplingSec", "t0", "t1", "outputSec", "rainSource", "dvThresh"])
+      if (String(sa[k] ?? "") !== String(sb[k] ?? "")) out.push(`${k}: ${sa[k] ?? "–"} vs ${sb[k] ?? "–"}`);
+    const ia = new Map((a.inputs || []).map((i) => [i.kind, i])), ib = new Map((b.inputs || []).map((i) => [i.kind, i]));
+    for (const k of new Set([...ia.keys(), ...ib.keys()])) {
+      const x = ia.get(k), y = ib.get(k);
+      if (!x || !y) out.push(`${k} file: ${x ? "only in this run" : "only in the other run"}`);
+      else if (x.sha256 !== y.sha256) out.push(`${k} file differs (${x.name} vs ${y.name})`);
+    }
+    return out;
   },
   /* Compare two runs on the same grid: this run (a) minus the other (b), in maximum depth.
    * Cells counted: open ground in both runs. Wet = maximum depth at least wetFt; "deeper" and "shallower" need a change of at least tolFt.

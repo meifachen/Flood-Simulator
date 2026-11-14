@@ -93,22 +93,54 @@
    *   generic / grate:  min(Cw P hw^1.5, Co A sqrt(2 g min(hw, lim)))   grate: Cw 3.0, Co 0.67 (P perimeter, A clear opening)
    *   curb opening:     weir Cw (L + 1.8 W) hw^1.5 (Cw 2.3 with a gutter depression W > 0, else 3.0 on L);
    *                     above the opening height h also orifice Co h L sqrt(2 g do), do = hw - h/2, Co 0.67; capacity = the lesser
-   *   combination:      weir = the grate alone; orifice = grate orifice + curb orifice (the curb part once hw > h); capacity = the lesser
-   * Clogging c (0 <= c < 1) scales the grate perimeter and area (a curb-only inlet: its opening length) by 1 - c. */
+   *   combination:      weir = grate weir + curb-opening weir (HEC-22 sag treatment; the curb weir was omitted before 0.6.0,
+   *                     understating shallow-ponding capture by over half, review F-10); orifice = grate orifice + curb orifice
+   *                     (the curb part once hw > h); capacity = the lesser
+   * Clogging c (0 <= c < 1) scales the grate perimeter and area (a curb-only inlet: its opening length) by 1 - c.
+   *
+   * An inlet flagged on-grade (it.onGrade, with its street's cross slope sx, longitudinal slope sl and gutter roughness gn)
+   * does not pond: it intercepts a fraction of the gutter flow that passes it, and the rest stays on the surface. The
+   * approach flow is the triangular-gutter flow at the depth hw at the curb (HEC-22 ch. 4, as restated in the EPA SWMM
+   * Reference Manual vol. II addendum, sec. 5.3): spread T = hw / sx, Q = (0.56 / gn) sx^(5/3) sl^(1/2) T^(8/3).
+   *   curb opening: the length for total interception is LT = 0.6 Q^0.42 sl^0.3 (1 / (gn Se))^0.6, Se the equivalent cross
+   *     slope (sx, plus (depression depth / width) x the depressed section's flow share when a depression is given);
+   *     efficiency E = 1 - (1 - min(1, L / LT))^1.8 on the (clogging-scaled) opening length L.
+   *   grate: E = Rf E0 + Rs (1 - E0), with E0 = 1 - (1 - W / T)^2.67 the frontal-flow share over the grate width W,
+   *     Rf = 1 - 0.09 max(0, V - V0) the frontal efficiency (V the gutter velocity, V0 the splash-over velocity: the
+   *     inlet's own value when given, else the P-50 parallel-bar polynomial in the grate length), and
+   *     Rs = 1 / (1 + 0.15 V^1.8 / (sx L^2.3)) the side-flow efficiency on the grate length L.
+   *   combination: on grade it intercepts as its grate alone (HEC-22). A generic inlet has no on-grade form. */
+  function gradeCapacity(it, hw) {
+    const sx = it.sx, sl = it.sl, gn = it.gn ?? 0.016, f = 1 - (it.clog || 0);
+    const T = hw / sx, Q = 0.56 / gn * Math.pow(sx, 5 / 3) * Math.sqrt(sl) * Math.pow(T, 8 / 3);
+    if (it.kind === "curb") {
+      const E0 = it.dw > 0 ? 1 - Math.pow(1 - Math.min(it.dw / T, 1), 2.67) : 0;
+      const Se = sx + (it.dep > 0 && it.dw > 0 ? (it.dep / it.dw) * E0 : 0);
+      const LT = 0.6 * Math.pow(Q, 0.42) * Math.pow(sl, 0.3) * Math.pow(1 / (gn * Se), 0.6), L = it.cl * f;
+      return Q * (L >= LT ? 1 : 1 - Math.pow(1 - L / LT, 1.8));
+    }
+    const W = it.gw, Lg = it.gl * f, E0 = 1 - Math.pow(1 - Math.min(W / T, 1), 2.67), V = Q / (0.5 * sx * T * T);
+    const v0 = it.v0 ?? (2.22 + 4.03 * Lg - 0.65 * Lg * Lg + 0.06 * Lg * Lg * Lg);
+    const Rf = Math.max(0, 1 - 0.09 * Math.max(0, V - v0)), Rs = 1 / (1 + 0.15 * Math.pow(V, 1.8) / (sx * Math.pow(Lg, 2.3)));
+    return Q * (Rf * E0 + Rs * (1 - E0));
+  }
   function inletCapacity(it, hw, lim) {
     if (!(hw > 0) || !(lim > 0)) return 0;
+    if (it.onGrade) return gradeCapacity(it, hw);
     const f = 1 - (it.clog || 0), hg = Math.min(hw, lim), r15 = Math.pow(hw, 1.5);
     const grateW = () => it.cw * it.lw * f * r15, grateO = () => it.co * it.area * f * Math.sqrt(2 * G * hg);
     if (it.kind === "generic" || it.kind === "grate") return Math.min(grateW(), grateO());
     const L = it.cl * (it.kind === "curb" ? f : 1), h = it.ch;
+    const curbW = () => it.ccw * (L + 1.8 * it.dw) * r15;
     const curbO = () => { const hc = Math.min(hw > h ? hw - h / 2 : Infinity, lim); return hc === Infinity ? Infinity : it.cco * h * L * Math.sqrt(2 * G * hc); };
-    if (it.kind === "curb") return Math.min(it.ccw * (L + 1.8 * it.dw) * r15, curbO());
-    return Math.min(grateW(), grateO() + (hw > h ? curbO() : 0));   // combination
+    if (it.kind === "curb") return Math.min(curbW(), curbO());
+    return Math.min(grateW() + curbW(), grateO() + (hw > h ? curbO() : 0));   // combination
   }
   const KINDS = ["generic", "grate", "curb", "combination"];
 
   /* B: model.buildGrid result; opts: {cw (3.0), lw ft (3), co (0.6), area sq ft (4), clog (0), capFrac (none), searchFt (30),
-   *   inlets: [{x, y, node, type, lw, area, cw, co, curbLength, curbHeight, depressionWidth, ccw, cco, clog, rimFt}] (optional; inlet points
+   *   inlets: [{x, y, node, type, lw, area, cw, co, curbLength, curbHeight, depressionWidth, ccw, cco, clog, rimFt,
+   *     onGrade, crossSlope, longSlope, gutterN, grateLength, grateWidth, splashOver, depressionDepth}] (optional; inlet points
    *     in the grid CRS, each tied to a SWMM junction; type generic (default: lw, area, cw, co as given or the defaults), grate (lw = perimeter,
    *     area = clear opening; Cw 3.0, Co 0.67 unless given), curb (curbLength, curbHeight, depressionWidth 0) or combination (both);
    *     rimFt, the inlet crest, defaults to the SWMM rim of its node, the same crest a default inlet has),
@@ -131,7 +163,7 @@
       const r0 = (k0 / Gd.nx) | 0, c0 = k0 % Gd.nx; let best = -1, bd = Infinity;
       for (let dr = -maxCells; dr <= maxCells; dr++) for (let dc = -maxCells; dc <= maxCells; dc++) {
         const r = r0 + dr, c = c0 + dc; if (r < 0 || c < 0 || r >= Gd.ny || c >= Gd.nx) continue; const k = r * Gd.nx + c, d = dr * dr + dc * dc;
-        if (B.type[k] === 2 && d < bd) { bd = d; best = (B.g.aux[4 * k + 2] >> 4) & 255; }
+        if (B.type[k] === 2 && d <= maxCells * maxCells && d < bd) { bd = d; best = (B.g.aux[4 * k + 2] >> 4) & 255; }
       }
       return best;
     };
@@ -178,6 +210,26 @@
       for (const [key, v] of Object.entries(p)) if (key !== "kind" && key !== "dw" && !(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: ${NAMES[key]} ${show(v)} is not a positive number`);
       p.clog = it.clog ?? def.clog;
       if (!(typeof p.clog === "number" && Number.isFinite(p.clog) && p.clog >= 0 && p.clog < 1)) throw new Error(`${label}: clogging ${show(p.clog)} is not a fraction from 0 to below 1`);
+      if (it.onGrade) {
+        // on-grade interception (HEC-22 ch. 4): the street's slopes are site data, so they are required, not defaulted
+        if (kind === "generic") throw new Error(`${label}: a generic inlet has no on-grade form in HEC-22; give the inlet a type (grate, curb or combination)`);
+        for (const [key, v, what] of [["sx", it.crossSlope, "cross slope (cross_slope)"], ["sl", it.longSlope, "longitudinal slope (long_slope)"]]) {
+          if (!(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: an on-grade inlet needs its street's ${what}; ${show(v)} is not a positive number`);
+          p[key] = v;
+        }
+        p.gn = it.gutterN ?? 0.016;
+        if (!(typeof p.gn === "number" && Number.isFinite(p.gn) && p.gn > 0)) throw new Error(`${label}: gutter roughness (gutter_n) ${show(it.gutterN)} is not a positive number`);
+        if (hasGrate) {
+          for (const [key, v, what] of [["gl", it.grateLength, "grate length (grate_length_ft)"], ["gw", it.grateWidth, "grate width (grate_width_ft)"]]) {
+            if (!(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: an on-grade ${kind} inlet needs its ${what}; ${show(v)} is not a positive number`);
+            p[key] = v;
+          }
+          p.v0 = it.splashOver ?? null;
+          if (p.v0 !== null && !(typeof p.v0 === "number" && Number.isFinite(p.v0) && p.v0 > 0)) throw new Error(`${label}: splash-over velocity (splash_over_ft_s) ${show(it.splashOver)} is not a positive number`);
+        }
+        if (hasCurb) { p.dep = it.depressionDepth ?? 0; if (!(typeof p.dep === "number" && Number.isFinite(p.dep) && p.dep >= 0)) throw new Error(`${label}: gutter depression depth (depression_depth_ft) ${show(it.depressionDepth)} is not zero or a positive number`); }
+        p.onGrade = true;
+      }
       if (it.rimFt !== undefined && it.rimFt !== null && !(typeof it.rimFt === "number" && Number.isFinite(it.rimFt))) throw new Error(`${label}: crest elevation ${show(it.rimFt)} is not a number`);
       const j = byName[it.node];
       if (j === undefined) { W.push(`Inlet ${n + 1}: node ${it.node} is not a coupled SWMM junction; inlet ignored`); continue; }

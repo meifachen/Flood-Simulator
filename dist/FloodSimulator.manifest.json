@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.5.0",
- "bytes": 5736443,
- "sha256": "36d5d616296372f289b4a87b4b4ccbbf98d338ca856aa0641803a138a0771300",
+ "version": "0.6.0",
+ "bytes": 5768737,
+ "sha256": "ace9da88b2440eca356f3cee670a92614aca885a28b9927b41c87c6d0c7e67d1",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -98,23 +98,23 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "0c3560b3ad3e0bf4f50799779587cd79989587c59e8c8c7dfe220c9f9ec2df7b"
+   "sha256": "affa33774ad7d433ad835d2e26fd37e621cf36ead11fa39a6019492da17ad5c0"
   },
   {
    "file": "src/app/help.html",
-   "sha256": "55ec1569af4699be01c01e07ecc5623a56fff28f60acab86d50e7d7834afa7f4"
+   "sha256": "febe6fba216ee79014889533288975fec7f6c7328db09bdacf3486adfb670b0c"
   },
   {
    "file": "src/app/index.html",
-   "sha256": "9a8c7fb41b104b425358b8e804cda50a6cadc76d910ff9e80bc1c720fd0bbb09"
+   "sha256": "4b3e6ea9aedfd8ae22e9be899dd2761e19d7016339a0b928e920b8fcaf5d48e5"
   },
   {
    "file": "src/app/results_io.js",
-   "sha256": "677167edbd9ea911bba2a5b48bd1040068406cb40b9c22ff95792b992dee3afd"
+   "sha256": "b7d30d4bc84f2c2bf0c84c73873ee22e6facb0764bb037a7c91b6f79dc131417"
   },
   {
    "file": "src/app/ui.js",
-   "sha256": "861952837665e89ff242efd904ca8e2bce05ecb3d01c2561309f08e0bd223851"
+   "sha256": "9e01df89a0892e6134d828720191a839d386a55936d20027e4d371805e5263cf"
   },
   {
    "file": "src/app/view3d.js",
@@ -122,23 +122,23 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "a66e35cdc72198c40a090d73ddabc82bd2d981d5ddde6ecc53d6ea099725e8e3"
+   "sha256": "cf20e2e13e72929e5e4625da585edb02b8663df00ecd1dbd29b83defe0bcfff2"
   },
   {
    "file": "src/core/couple2way.js",
-   "sha256": "7fd5ac0c2a91c4efe12e172e08220ce2def23f84c07cc4dea52bf3f747be4db9"
+   "sha256": "a7d72af70827bef9a928947c076d29609caafa94b888f9bdb72956b0648169c2"
   },
   {
    "file": "src/core/model.js",
-   "sha256": "ff21822daf76e44d18505495c7c29c227dbb94547026a092048abdf49a678fa1"
+   "sha256": "e7625748d21804796c48f424dba4d8169791fc539517c79e82799a094c7a6f07"
   },
   {
    "file": "src/engine/flood2d.js",
-   "sha256": "cc03c8fbe7ccadb0549a0328f164214895c1cdc40fda6d02f6f2801c3e07bbf4"
+   "sha256": "f314e38b8aae9da9c8d9c78f804294674280b7e42cc64cfe2926f961c616d618"
   },
   {
    "file": "src/io/swmm.js",
-   "sha256": "0f7ea54bdeef7461575339548d89881f0fb4d7bf8df17ca01f58b4c369f22886"
+   "sha256": "a6a58b6bed702a01c66aec4a43956bb93c0a353662199260c7ae4e1f9141898f"
   },
   {
    "file": "vendor/crs_catalog.json",

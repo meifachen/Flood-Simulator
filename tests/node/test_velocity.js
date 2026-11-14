@@ -88,5 +88,17 @@ function grid(nx, ny, dx, fz, ft, n = 0.03) {
     for (let k = 0; k < g.N; k++) { if ((g.aux[4 * k + 2] & 3) !== 0) continue; const hm = st[4 * k + 2]; if (hm <= 0.05) { below++; if (out.vmax[k] > 0) belowV++; } else if (hm > 0.06) { above++; if (out.vmax[k] > 0) aboveV++; } }
     ok("V3 speeds are recorded only where the water got deeper than 0.05 ft", below > 20 && above > 20 && belowV === 0 && aboveV === above, `${below} cells never deeper than 0.05 ft (${belowV} with a speed); ${above} cells deeper than 0.06 ft (${aboveV} with a speed)`);
   }
+  // V8 (new in 0.6.0, E-09) the time of the maximum speed and the duration with depth x speed above a threshold are recorded.
+  // The V1 channel runs at D x V = q = 1.0 ft2/s, above the default 0.5 threshold: with the inflow stopping at 1 h of a 2 h run,
+  // the middle third spends between 0.75 and 1.6 h above the threshold (the wave has to arrive and decay), its time of max speed falls inside the run, and a
+  // threshold of 2.0 (above anything the channel reaches) records no duration at all. tvmax/dvdur are new outputs in 0.6.0.
+  {
+    const ch = channel({}), out = await sim(ch, { t1: 2, sourceAt: ramp(ch, 600, 3600) });
+    const dur = mid(ch, out, (k) => out.dvdur[k]), tv = mid(ch, out, (k) => out.tvmax[k]);
+    const hi = await sim(ch, { t1: 2, sourceAt: ramp(ch, 600, 3600), dvThresh: 2.0 }), durHi = mid(ch, hi, (k) => hi.dvdur[k]);
+    ok("V8 time of max speed and duration above the D x V threshold are recorded (and the threshold is the run's)",
+      out.tvmax.length === ch.g.N && dur > 0.75 * 3600 && dur < 1.6 * 3600 && tv > 0 && tv <= 2 && durHi === 0,
+      `duration above 0.5 ft2/s ${dur.toFixed(0)} s of 7200; time of max speed ${tv.toFixed(3)} h; duration above 2.0 ft2/s ${durHi.toFixed(0)} s`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

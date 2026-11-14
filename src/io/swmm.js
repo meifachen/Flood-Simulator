@@ -38,13 +38,16 @@
     if (!(flowUnits in CFS)) throw new Error(`Unknown FLOW_UNITS ${flowUnits}`);
     const model = { title: (sec.TITLE || []).map((r) => r.t[0]).join("\n"), options, flowUnits, unitSystem: US_UNITS.has(flowUnits) ? "US" : "SI",
       nodes: [], nodeIndex: {}, links: [], gauges: [], timeseries: {}, subcatchments: [], polygons: {}, vertices: {}, warnings: [] };
+    /* secondary numeric fields: a present token that is not a number is named in the warnings and read as 0,
+     * never silently zeroed (review F-29); primary fields refuse through num() instead */
+    const secNum = (tok, what) => { if (tok === undefined) return 0; const x = Number(tok); if (Number.isFinite(x)) return x; model.warnings.push(`${what}: "${tok}" is not a number; 0 is used`); return 0; };
     const addNode = (name, type, invert, maxDepth, extra, line) => {
       if (name in model.nodeIndex) throw new Error(`Node ${name} is defined twice (line ${line})`);
       model.nodeIndex[name] = model.nodes.length; model.nodes.push(Object.assign({ name, type, invert, maxDepth, x: null, y: null }, extra));
     };
-    for (const r of sec.JUNCTIONS || []) { const t = r.t; addNode(t[0], "JUNCTION", num(t[1], `Junction ${t[0]} elevation`), num(t[2] ?? 0, `Junction ${t[0]} max depth`), { surDepth: Number(t[4] ?? 0) || 0, pondedArea: Number(t[5] ?? 0) || 0 }, r.line); }
+    for (const r of sec.JUNCTIONS || []) { const t = r.t; addNode(t[0], "JUNCTION", num(t[1], `Junction ${t[0]} elevation`), num(t[2] ?? 0, `Junction ${t[0]} max depth`), { surDepth: secNum(t[4], `Junction ${t[0]} surcharge depth`), pondedArea: secNum(t[5], `Junction ${t[0]} ponded area`) }, r.line); }
     for (const r of sec.OUTFALLS || []) { const t = r.t; addNode(t[0], "OUTFALL", num(t[1], `Outfall ${t[0]} elevation`), 0, { outfallType: (t[2] || "FREE").toUpperCase(), stageData: t[3] }, r.line); }
-    for (const r of sec.STORAGE || []) { const t = r.t; addNode(t[0], "STORAGE", num(t[1], `Storage ${t[0]} elevation`), num(t[2] ?? 0, `Storage ${t[0]} max depth`), { initDepth: Number(t[3] ?? 0) || 0, shape: (t[4] || "").toUpperCase() }, r.line); }
+    for (const r of sec.STORAGE || []) { const t = r.t; addNode(t[0], "STORAGE", num(t[1], `Storage ${t[0]} elevation`), num(t[2] ?? 0, `Storage ${t[0]} max depth`), { initDepth: secNum(t[3], `Storage ${t[0]} initial depth`), shape: (t[4] || "").toUpperCase() }, r.line); }
     for (const r of sec.DIVIDERS || []) { const t = r.t; addNode(t[0], "DIVIDER", num(t[1], `Divider ${t[0]} elevation`), 0, {}, r.line); }
     for (const r of sec.COORDINATES || []) {
       const i = model.nodeIndex[r.t[0]]; if (i === undefined) { model.warnings.push(`Coordinates given for unknown node ${r.t[0]} (line ${r.line})`); continue; }
@@ -54,20 +57,20 @@
     const linkSec = { CONDUITS: "CONDUIT", PUMPS: "PUMP", ORIFICES: "ORIFICE", WEIRS: "WEIR", OUTLETS: "OUTLET" };
     for (const [s, type] of Object.entries(linkSec)) for (const r of sec[s] || []) {
       const t = r.t, l = { name: t[0], type, from: t[1], to: t[2] };
-      if (type === "CONDUIT") { l.length = num(t[3], `Conduit ${t[0]} length`); l.roughness = num(t[4], `Conduit ${t[0]} roughness`); l.inOffset = Number(t[5] ?? 0) || 0; l.outOffset = Number(t[6] ?? 0) || 0; }
+      if (type === "CONDUIT") { l.length = num(t[3], `Conduit ${t[0]} length`); l.roughness = num(t[4], `Conduit ${t[0]} roughness`); l.inOffset = secNum(t[5], `Conduit ${t[0]} inlet offset`); l.outOffset = secNum(t[6], `Conduit ${t[0]} outlet offset`); }
       for (const e of [l.from, l.to]) if (!(e in model.nodeIndex)) model.warnings.push(`Link ${l.name} refers to unknown node ${e}`);
       model.links.push(l);
     }
-    const xs = {}; for (const r of sec.XSECTIONS || []) xs[r.t[0]] = { shape: (r.t[1] || "").toUpperCase(), geom1: Number(r.t[2]) || 0 };
+    const xs = {}; for (const r of sec.XSECTIONS || []) xs[r.t[0]] = { shape: (r.t[1] || "").toUpperCase(), geom1: secNum(r.t[2], `Cross section ${r.t[0]} geometry`) };
     for (const l of model.links) if (xs[l.name]) Object.assign(l, xs[l.name]);
     for (const r of sec.VERTICES || []) (model.vertices[r.t[0]] = model.vertices[r.t[0]] || []).push([num(r.t[1], "Vertex X"), num(r.t[2], "Vertex Y")]);
     for (const r of sec.POLYGONS || []) (model.polygons[r.t[0]] = model.polygons[r.t[0]] || []).push([num(r.t[1], "Polygon X"), num(r.t[2], "Polygon Y")]);
-    for (const r of sec.SUBCATCHMENTS || []) { const t = r.t; model.subcatchments.push({ name: t[0], gauge: t[1], outlet: t[2], area: Number(t[3]) || 0, imperv: Number(t[4]) || 0 }); }
+    for (const r of sec.SUBCATCHMENTS || []) { const t = r.t; model.subcatchments.push({ name: t[0], gauge: t[1], outlet: t[2], area: secNum(t[3], `Subcatchment ${t[0]} area`), imperv: secNum(t[4], `Subcatchment ${t[0]} impervious percent`) }); }
     // other water SWMM can make on its own: external and dry-weather inflows, RDII, groundwater
     model.otherInflows = ["INFLOWS", "DWF", "RDII", "GROUNDWATER"].reduce((n, k) => n + (sec[k] || []).length, 0);
     for (const r of sec.RAINGAGES || []) {
       const t = r.t; // Name Format Interval SCF TIMESERIES ts | FILE fname sta units
-      model.gauges.push({ name: t[0], format: (t[1] || "INTENSITY").toUpperCase(), interval: t[2], intervalSec: clockSec(t[2]), scf: Number(t[3] ?? 1) || 1, source: (t[4] || "").toUpperCase(), series: t[5], fileUnits: t[8] });
+      model.gauges.push({ name: t[0], format: (t[1] || "INTENSITY").toUpperCase(), interval: t[2], intervalSec: clockSec(t[2]), scf: t[3] === undefined ? 1 : secNum(t[3], `Rain gauge ${t[0]} snow catch factor`), source: (t[4] || "").toUpperCase(), series: t[5], fileUnits: t[8] });
     }
     // time series: "name [date] time value" or "name FILE path"; dates continue across lines
     let lastDate = {};
@@ -162,7 +165,9 @@
     const nSubProp = i32(o); o += 4 * (1 + nSubProp) + 4 * nSubProp * nSub;
     const nNodeProp = i32(o); o += 4; const nodeCodes = []; for (let i = 0; i < nNodeProp; i++) { nodeCodes.push(i32(o)); o += 4; }
     const nodes = [];
-    for (let j = 0; j < nNode; j++) { const p = {}; for (let i = 0; i < nNodeProp; i++) { p[nodeCodes[i]] = f32(o); o += 4; } nodes.push({ name: nodeNames[j], type: ["JUNCTION", "OUTFALL", "STORAGE", "DIVIDER"][Math.round(p[0])] || "NODE", invert: p[2], maxDepth: p[3] }); }
+    // no node type is reported: property code 0 is 0 for junctions, outfalls and storage alike in files the EPA engine writes,
+    // so a type derived from it labelled every node "JUNCTION" (review F-14). Node types come from parseInp, by name.
+    for (let j = 0; j < nNode; j++) { const p = {}; for (let i = 0; i < nNodeProp; i++) { p[nodeCodes[i]] = f32(o); o += 4; } nodes.push({ name: nodeNames[j], invert: p[2], maxDepth: p[3] }); }
     const nLinkProp = i32(o); o += 4 * (1 + nLinkProp) + 4 * nLinkProp * nLink;
     // reporting variables
     const nSubVar = i32(o); o += 4 * (1 + nSubVar);
@@ -177,7 +182,7 @@
       subcatchments: subNames, nodeNames, linkNames, pollutants: pollNames, nodes, nodeVars: NODE_VARS.slice(),
       // the first reported value is at start + one report step
       times: Array.from({ length: nPeriods }, (_, i) => new Date(t0ms + (i + 1) * stepSec * 1000)) };
-    out.dateAt = (i) => new Date(Math.round((f64(resOff + i * bytesPerPeriod) - 25569) * 86400000));
+    out.dateAt = (i) => new Date(Math.round((f64(resOff + i * bytesPerPeriod) - 25569) * 86400) * 1000);   // report times are whole seconds; rounding to the second keeps dateAt in step with times (the stored OLE date can carry a millisecond of float error, review F-31)
     out.getNodeSeries = (node, variable) => {
       const j = typeof node === "number" ? node : nodeNames.indexOf(node); if (j < 0 || j >= nNode) throw new Error(`Node ${node} is not in the output file`);
       const v = typeof variable === "number" ? variable : NODE_VARS.indexOf(variable); if (v < 0 || v >= nNodeVar) throw new Error(`Unknown node variable ${variable}`);
