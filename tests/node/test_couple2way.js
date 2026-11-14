@@ -74,7 +74,7 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
   }
   {
     let m = ""; try { await coupled({ inlets: [{ x: model.nodes[0].x, y: model.nodes[0].y, node: "J1", lw: -2 }] }); } catch (e) { m = e.message; }
-    ok("C4 an invalid inlet size is refused", /Inlet 1 \(J1\): weir length -2/.test(m), m);
+    ok("C4 an invalid inlet size is refused", /Inlet 1 \(J1\): weir length or grate perimeter -2/.test(m), m);
   }
   // ---- exchange-only probes: a stand-in surface with a fixed depth everywhere (no 2D run), so each check isolates the coupler
   const flat = (depth) => ({ readCells: async (cells) => cells.map(() => depth) });
@@ -149,7 +149,7 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       ["curb, weir below the opening height (0.3 ft)", cap(curb, 0.3, I), 3 * 5 * 0.3 ** 1.5],
       ["curb, above the opening (1.5 ft): lesser of weir and orifice at the centroid", cap(curb, 1.5, I), Math.min(3 * 5 * 1.5 ** 1.5, 0.67 * 0.5 * 5 * Math.sqrt(g2 * (1.5 - 0.25)))],
       ["curb with a 2 ft gutter depression (0.3 ft)", cap(curbD, 0.3, I), 2.3 * (5 + 1.8 * 2) * 0.3 ** 1.5],
-      ["combination, shallow (0.3 ft): grate weir + curb weir (F-10; before 0.6.0 this case expected the grate alone)", cap(combo, 0.3, I), Math.min(3 * 6 * 0.3 ** 1.5 + 3 * 5 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.3))],
+      ["combination, shallow (0.3 ft): the grate weir alone, no curb weir along the grate (HEC-22; SWMM 5.2.4 getOnSagInletCapture)", cap(combo, 0.3, I), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.3))],
       ["combination, deep (1.5 ft): grate orifice + curb orifice", cap(combo, 1.5, I), Math.min(3 * 6 * 1.5 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 1.5) + 0.67 * 0.5 * 5 * Math.sqrt(g2 * 1.25))],
       ["surcharged node: grate orifice on the head left (0.1 ft)", cap(grate, 0.3, 0.1), Math.min(3 * 6 * 0.3 ** 1.5, 0.67 * 2 * Math.sqrt(g2 * 0.1))],
       ["node level with the water: nothing", cap(curb, 0.3, 0), 0],
@@ -293,13 +293,16 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const q = C2.prepareInp("[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ 1 2\n");
     ok("C3 ponding at nodes is turned off for coupling (and said so)", /ALLOW_PONDING\s+NO/.test(p.text) && p.notes.length === 1 && /ALLOW_PONDING\s+NO/.test(q.text), p.notes.join(""));
   }
-  // a combination inlet's shallow-ponding capacity includes the curb-opening weir next to the grate weir (HEC-22 sag
-  // treatment; review F-10): at hw 0.3 ft, grate weir 1.48 cfs + curb weir 2.46 cfs = 3.94 cfs, below the orifice side
+  // a combination inlet in sag at shallow ponding (review 0.6.1 CPL6-1, which reverses 0.6.0's F-10 change): the weir side is the grate
+  // weir plus the weir of the curb opening's part beyond the grate only (the "sweeper"); EPA SWMM 5.2.4 getOnSagInletCapture adds no curb
+  // weir along the grate, and HEC-22 treats a combination inlet in weir flow as its grate. At hw 0.3 ft with a 3 ft grate perimeter
+  // (Cw 3.0): grate weir 3.0 x 3 x 0.3^1.5 = 1.4789 cfs. With a 5 ft curb opening and a 2 ft grate length, the 3 ft sweeper adds
+  // 3.0 x 3 x 0.3^1.5 = 1.4789 cfs (2.9578 in all). 0.6.0 and 0.6.1 gave 3.9436 for both (the whole 5 ft curb weir).
   {
     const it = { kind: "combination", cw: 3.0, lw: 3, co: 0.67, area: 4, clog: 0, cl: 5, ch: 0.5, ccw: 3.0, cco: 0.67, dw: 0 };
-    const q = C2.inletCapacity(it, 0.3, Infinity);
-    ok("combination inlet at 0.3 ft of ponding captures grate weir + curb weir (3.94 cfs, not the grate weir alone at 1.48)",
-      Math.abs(q - 3.9436) < 0.001, `capacity ${q.toFixed(4)} cfs`);
+    const q = C2.inletCapacity(it, 0.3, Infinity), qs = C2.inletCapacity(Object.assign({}, it, { gl: 2 }), 0.3, Infinity);
+    ok("combination inlet at 0.3 ft of ponding captures the grate weir (1.4789 cfs), plus the 3 ft curb sweeper's weir (2.9578) when the grate is 2 ft long",
+      Math.abs(q - 1.4789) < 0.001 && Math.abs(qs - 2.9578) < 0.001, `capacity ${q.toFixed(4)} cfs; with a 2 ft grate length ${qs.toFixed(4)} cfs`);
   }
   // C19 (new in 0.6.0, E-07) on-grade inlets intercept a fraction of the gutter flow (HEC-22 ch. 4; EPA SWMM Reference Manual
   // vol. II addendum sec. 5.3), they do not pond-capture: hand calculations written out from the published equations.
@@ -321,6 +324,46 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     ok("C19 on-grade curb and grate inlets intercept the HEC-22 fraction of the gutter flow (bypass stays on the surface)",
       Math.abs(gotCurb - expCurb) < 1e-9 * expCurb && Math.abs(gotGrate - expGrate) < 1e-9 * expGrate && Math.abs(full - Qc) < 1e-9 * Qc && comb === gotGrate && gotCurb < Qc && gotGrate < Qg,
       `curb ${gotCurb.toFixed(3)} of ${Qc.toFixed(3)} cfs gutter flow (LT ${LT.toFixed(2)} ft); 30 ft opening takes all ${full.toFixed(3)}; grate ${gotGrate.toFixed(3)} of ${Qg.toFixed(2)} cfs (E0 ${E0.toFixed(3)}, Rf ${Rf.toFixed(3)}, Rs ${Rs.toFixed(4)}); combination = grate ${comb.toFixed(3)}`);
+  }
+  // C20 (review 0.6.1) on-grade inlets through makeCoupler and the inlet checks: an on-grade curb at J4 (Sx 0.02, SL 0.01, n 0.016,
+  // 10 ft, crest at the ground) demands the HEC-22 interception at 0.2 ft (1.346 cfs, C19) where in sag it would take 2.683 cfs;
+  // at 2 ft the on-grade curb takes no more than its opening passes as an orifice (0.67 x 0.5 x 10 x sqrt(2 g 1.75) = 35.55 cfs,
+  // against 55.19 uncapped);
+  // percent slopes, a text on_grade, a depression depth without a width, and bad unused sizes are refused; a blank (null) ccw is not
+  {
+    const j4 = model.nodes.find((n) => n.name === "J4"), at = (o) => Object.assign({ x: j4.x, y: j4.y, node: "J4", rimFt: 0 }, o);
+    const demand = async (inl, d) => { const c = await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [inl], defaultInlets: false }); const r = await c.sourceAt(1, 1 + 30 / 3600, flat(d)); return -r.at(-1); };
+    const curbG = at({ type: "curb", curbLength: 10, curbHeight: 0.5, onGrade: true, crossSlope: 0.02, longSlope: 0.01, gutterN: 0.016 });
+    const qG = await demand(curbG, 0.2), qS = await demand(at({ type: "curb", curbLength: 10, curbHeight: 0.5 }), 0.2);
+    const q2 = await demand(curbG, 2.0), orf = 0.67 * 0.5 * 10 * Math.sqrt(2 * 32.174 * 1.75);
+    const msgs = [], tryIt = async (o) => { try { await C2.makeCoupler(build(), createSWMM, inp, model, { inlets: [at(o)], defaultInlets: false }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } };
+    await tryIt(Object.assign({}, curbG, { crossSlope: 2, longSlope: 1 }));
+    await tryIt(Object.assign({}, curbG, { onGrade: "false" }));
+    await tryIt({ type: "curb", curbLength: 10, curbHeight: 0.5, depressionDepth: 0.17 });
+    await tryIt({ type: "curb", curbLength: 10, curbHeight: 0.5, lw: -5 });
+    await tryIt({ type: "grate", lw: 8, area: 6, curbLength: -3 });
+    await tryIt({ type: "curb", curbLength: 10, curbHeight: 0.5, ccw: null });
+    ok("C20 an on-grade curb through makeCoupler demands the HEC-22 interception (1.346 cfs, sag 2.683); at 2 ft it is held to its opening's orifice (35.55 cfs, 55.19 before); percent slopes, text on_grade, a depth without a width and bad unused sizes are refused; a blank ccw is not",
+      Math.abs(qG - 1.346) < 0.001 && Math.abs(qS - 3 * 10 * 0.2 ** 1.5) < 1e-6 && Math.abs(q2 - orf) < 1e-6 * orf &&
+      /cross slope \(cross_slope\) 2 is not a street slope in ft\/ft/.test(msgs[0]) && /on_grade "false" is not true or false/.test(msgs[1]) && /depression depth of 0.17 ft needs its width/.test(msgs[2]) &&
+      /weir length or grate perimeter -5/.test(msgs[3]) && /curb opening length -3/.test(msgs[4]) && msgs[5] === "accepted",
+      `on grade ${qG.toFixed(3)} cfs, sag ${qS.toFixed(3)}; at 2 ft ${q2.toFixed(2)} (orifice ${orf.toFixed(2)}) | ${msgs.join(" | ")}`);
+  }
+  // C21 (review 0.5.0 round 4 CPL5-F1, F2, F6) lake outlet water at the end of a run: the last interval's release (3,000 cf per 300 s)
+  // reaches SWMM over one interval (10 cfs), not in one 5 s routing step (600 cfs); outlet volumes that are not one finite volume of
+  // zero or more per lake are refused; finish() with outlet water owed and no inflow ever set does not crash
+  {
+    const peakAt = (rpt, node) => { const sec = rpt.split("Node Inflow Summary")[1] || "", m = new RegExp("^\\s*" + node + "\\s+\\S+\\s+([\\d.]+)", "m").exec(sec); return m ? Number(m[1]) : NaN; };
+    const c = await C2.makeCoupler(build(), createSWMM, inp, model, { cw: 0, area: 0 }), f = c.lakeOutletTo(["POND"]);
+    for (let t = 1; t < 2 - 1e-9; t += 300 / 3600) { const sv = flat(0); await c.sourceAt(t, t + 300 / 3600, sv); await c.afterChunk(t, t + 300 / 3600, sv); f(t, t + 300 / 3600, [3000]); }
+    const fin = c.finish(), pk = peakAt(fin.rpt, "POND");
+    const msgs = [];
+    const c2 = await C2.makeCoupler(build(), createSWMM, inp, model, { cw: 0, area: 0 }), f2 = c2.lakeOutletTo(["POND"]);
+    for (const v of [[500, 700], [NaN], [-400], []]) { try { f2(1, 1.1, v); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } }
+    let m3 = "finished";
+    try { const c3 = await C2.makeCoupler(build(), createSWMM, inp, model, { cw: 0, area: 0, defaultInlets: false }), f3 = c3.lakeOutletTo(["POND"]); f3(1, 1.1, [2000]); c3.finish(); } catch (e) { m3 = e.message; }
+    ok("C21 the last lake-outlet release reaches SWMM over an interval (peak lateral inflow at POND about 10 cfs, not 600); bad outlet volumes are refused; finish() with outlet water owed and no inflow set completes",
+      pk > 9 && pk < 11 && msgs.every((m) => /not one volume of zero or more per lake/.test(m)) && m3 === "finished", `POND peak lateral inflow ${pk} cfs | ${msgs.length} refused | ${m3}`);
   }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

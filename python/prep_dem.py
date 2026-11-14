@@ -32,7 +32,10 @@ def prep_dem(src, dst, epsg, bounds, cell, zfactor=1.0, zunits=None):
         prof = dict(driver="GTiff", width=nx, height=ny, count=1, dtype="float32", crs=dst_crs, transform=tf, nodata=-9999.0, compress="deflate", predictor=3)
         if zfactor != 1: out = np.where(out == -9999.0, out, out * zfactor).astype("float32")
         with rasterio.open(dst, "w", **prof) as o:
+            # the band's unit as GDAL stores it (role="unittype", which other GIS tools read) and the plain tag earlier versions wrote
+            # (review 0.6.1 WRK6-9); the app reads either
             o.write(out, 1); o.update_tags(1, UNITTYPE=zunits or "")
+            if zunits: o.set_band_unit(1, zunits)
     valid = (out != -9999).mean()
     print(f"DEM: {nx} x {ny} cells of {cell:g} {dst_crs.linear_units}, {100 * valid:.1f}% with data -> {dst}")
     return (xmin, ymax - ny * cell, xmin + nx * cell, ymax), dst_crs
@@ -44,15 +47,19 @@ def prep_buildings(src, dst, crs, bounds, min_area):
     B = box(*bounds)
     if src.endswith((".geojsonl", ".geojsonl.gz", ".csv.gz", ".jsonl", ".jsonl.gz")):
         ll = gpd.GeoSeries([B], crs=crs).to_crs(4326).total_bounds
-        op = gzip.open if src.endswith(".gz") else open; geoms = []
+        op = gzip.open if src.endswith(".gz") else open; geoms = []; skipped = 0
         with op(src, "rt") as fh:
             for line in fh:
                 line = line.strip().rstrip(",")
                 if not line.startswith("{"): continue
-                g = json.loads(line); g = g.get("geometry") or g
+                g = json.loads(line)
+                if "geometry" in g:   # a feature: a null geometry (allowed by GeoJSON) is skipped, not a crash (review 0.6.1 WRK6-12)
+                    g = g["geometry"]
+                    if not g: skipped += 1; continue
                 geom = shape(g); bx = geom.bounds   # shape().bounds is right for every geometry type; coordinates[0] is not a ring for a MultiPolygon, whose prefilter box mixed x and y and could silently drop the footprint (review F-30)
                 if bx[2] < ll[0] or bx[0] > ll[2] or bx[3] < ll[1] or bx[1] > ll[3]: continue
                 geoms.append(geom)
+        if skipped: print(f"buildings: {skipped} features with no geometry skipped")
         gdf = gpd.GeoDataFrame(geometry=geoms, crs=4326)
     else:
         gdf = gpd.read_file(src, bbox=tuple(gpd.GeoSeries([B], crs=crs).to_crs(gpd.read_file(src, rows=1).crs).total_bounds))

@@ -65,6 +65,17 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
       dRain.length === 2 && /rainInHr: 1 vs 4/.test(dRain[0]) && /rainHours: 6 vs 2/.test(dRain[1]) &&
       dInl.length === 2 && /inlet clog: 0 vs 0.25/.test(dInl[0]) && /boundary Pond level: 54.8 vs 55.5/.test(dInl[1]),
       `rain: ${dRain.join("; ") || "none"}; inlet/boundary: ${dInl.join("; ") || "none"}`);
+    // R-C4 (review 0.6.1 WRK6-3, P-03) the grid and surface settings are compared too: two runs differing only in Manning n pervious,
+    // closed edges or the vertical unit are named as different; and a run with no provenance gives null (unknown), not "no difference"
+    const sur = { cellSize: 12, vUnitFt: 1, useBuildings: true, closedEdges: false, nPerv: 0.1, lcTable: { 41: { n: 0.36, imp: 0 } } };
+    const pD = JSON.parse(JSON.stringify(pA)); pD.settings.surface = sur;
+    const pE = JSON.parse(JSON.stringify(pD)); Object.assign(pE.settings.surface, { nPerv: 0.4, closedEdges: true, vUnitFt: 0.3048 });
+    const pF = JSON.parse(JSON.stringify(pD)); pF.settings.surface.lcTable = { 41: { n: 0.2, imp: 0 } };
+    const dS = RIO.provDiff(pD, pE), dT = RIO.provDiff(pD, pF);
+    ok("R-C4 differences in Manning n, closed edges, vertical unit and the land cover table are named; missing provenance is unknown (null), not identical",
+      dS.length === 3 && dS.some((x) => /nPerv: 0.1 vs 0.4/.test(x)) && dS.some((x) => /closedEdges: false vs true/.test(x)) && dS.some((x) => /vUnitFt: 1 vs 0.3048/.test(x)) && dT.length === 1 && /lcTable/.test(dT[0]) &&
+      RIO.provDiff(pD, null) === null && RIO.provDiff(null, null) === null && RIO.provDiff(pD, pD).length === 0,
+      `${dS.join("; ")} | ${dT.join("; ")} | null case: ${JSON.stringify(RIO.provDiff(pD, null))}`);
   }
   // R-C1 comparing two runs on the same grid: per-cell change in maximum depth and the areas gained and lost (hand-made 2 x 2 runs)
   {

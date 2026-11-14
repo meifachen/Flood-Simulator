@@ -11,7 +11,7 @@ import argparse, base64, gzip, hashlib, json, os, sys, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 SRC, VEN, EXA = ROOT / "src", ROOT / "vendor", ROOT / "examples"
 EXAMPLES = [("synthetic_us", "none"), ("public_demo", "osm"), ("synthetic_si", "none")]
 

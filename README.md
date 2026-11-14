@@ -21,7 +21,7 @@ A 2D overland flood simulator that runs in a web browser, with SWMM5 integration
   - maximum velocity and maximum depth × velocity maps, with the cells where the solver capped the flow at critical speed hatched (speed there is a lower bound);
   - charts of flooded area, SWMM exchange, boundary levels and the depth at any point;
   - water-balance table;
-  - exports: an 8-band GeoTIFF (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity, critical-flow cap flag, time of maximum velocity, duration above a depth × velocity threshold), buildings CSV and SWMM exchange CSV;
+  - exports: a GeoTIFF of 8 bands, or 6 for runs saved before 0.6.0 (maximum depth, maximum water level, time to maximum, maximum velocity, maximum depth × velocity, critical-flow cap flag, time of maximum velocity, duration above a depth × velocity threshold), buildings CSV and SWMM exchange CSV;
   - save a run to a `.fsim.gz` file and open it later without the inputs; the file records the run's provenance (app version, engine settings, input file names and SHA-256 hashes);
   - compare two saved runs on the same grid: change in maximum depth, areas newly flooded and no longer flooded, buildings reached, and how the two runs' settings and input files differ.
 - **Help in the page:** a workflow map of the five steps (it shows what is done and jumps to any setting), tooltips on every control (units, default, range), a searchable User Guide, and a first-run tour.

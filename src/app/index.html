@@ -173,7 +173,7 @@ ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:re
   </div></details>
   <details class="card" open id="s-run"><summary>4. Run <span class="state" id="st-run"></span></summary><div class="body">
     <label class="f"><span>Engine</span><select id="engine"><option value="auto">GPU if available, else CPU</option><option value="gpu">GPU (WebGPU)</option><option value="cpu">CPU</option></select></label>
-    <label class="f"><span>Courant number</span><input type="number" id="cfl" min="0.1" max="1" step="0.05" value="0.7"></label>
+    <label class="f"><span>Courant number</span><input type="number" id="cfl" min="0.1" max="0.7" step="0.05" value="0.7"></label>
     <label class="f"><span>Depth × velocity threshold (ft²/s)</span><input type="number" id="dvth" min="0.01" max="100" step="0.1" value="0.5"></label>
     <label class="f"><span>Wet when deeper than (ft)</span><input type="number" id="wet" min="0.01" max="5" step="0.01" value="0.1"></label>
     <label class="f"><span>Building reached at (ft)</span><input type="number" id="bthr" min="0.01" max="5" step="0.05" value="0.5"></label>
@@ -194,7 +194,7 @@ ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:re
     <div id="v3d" hidden><div class="badge" id="b3d"></div></div>
     <div class="timebar"><button id="b-play" disabled>Play</button><input type="range" id="slider" min="0" max="0" value="0" disabled aria-label="Time"><span id="tlabel" class="note">–</span></div>
     <div class="legend" id="legend"></div>
-    <div class="row" style="margin-top:8px"><button id="x-tif" disabled>Export GeoTIFF (max depth, water level, time, velocity, depth × velocity, critical-flow cap)</button><button id="x-csv" disabled>Export buildings (CSV)</button><button id="x-nodes" disabled>Export SWMM inflows (CSV)</button><button id="x-save" disabled>Save results (.fsim.gz)</button><button id="b-cmp" disabled>Compare with saved results…</button><input type="file" id="f-cmp" accept=".gz,.fsim" hidden aria-label="Saved results to compare with"><button id="b-cmp-clear" hidden>Clear comparison</button></div>
+    <div class="row" style="margin-top:8px"><button id="x-tif" disabled>Export GeoTIFF (max depth, water level, time, velocity, depth × velocity, cap flag; time of max velocity and D × V duration for runs from 0.6.0)</button><button id="x-csv" disabled>Export buildings (CSV)</button><button id="x-nodes" disabled>Export SWMM inflows (CSV)</button><button id="x-save" disabled>Save results (.fsim.gz)</button><button id="b-cmp" disabled>Compare with saved results…</button><input type="file" id="f-cmp" accept=".gz,.fsim" hidden aria-label="Saved results to compare with"><button id="b-cmp-clear" hidden>Clear comparison</button></div>
     <div id="cmp-note" class="note" hidden></div>
   </div>
   <div class="charts">

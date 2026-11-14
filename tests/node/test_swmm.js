@@ -71,15 +71,23 @@ expectError("refuses a node defined twice", () => S.parseInp("[JUNCTIONS]\nJ1 10
   ok("non-numeric secondary fields are named in the warnings (F-29)", m.nodes[0].surDepth === 0 && m.nodes[0].pondedArea === 2 && m.nodes[1].surDepth === 1.5 && m.nodes[1].pondedArea === 0 && m.nodes[2].initDepth === 0 && /Junction J1 surcharge depth: "abc"/.test(w) && /Junction J2 ponded area: "xyz"/.test(w) && /Storage S1 initial depth: "deep"/.test(w) && /Conduit C1 inlet offset: "off"/.test(w),
     `warnings: ${w}`);
 }
-// Geom1 of an IRREGULAR section is a transect name and of a CUSTOM section a curve name: both stay strings and earn
-// no "not a number" warning, while genuinely bad numeric fields in the same file still do (0.6.1, review 0.6.0 F-05;
-// Pass B's probe file). On 0.6.0 the name was warned on and zeroed.
+// Geom1 of an IRREGULAR or STREET section is a transect or street name: kept as text, no "not a number" warning. A CUSTOM section
+// takes its full height there and the shape curve's name next (SWMM 5.2 link.c link_readXsectParams; "C3 CUSTOM CURVE1" is refused
+// by SWMM with ERROR 203): the height is a number and the curve is kept apart (review 0.6.1 CPL6-7; 0.6.1 kept "2.5" as text and
+// still zeroed a STREET name with a warning). Bad numeric fields in the same file are still warned on.
 {
-  const m = S.parseInp("[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ1 10 5 0 0 0\nJ2 9 5 0 abc 0\n[OUTFALLS]\nO1 5 FREE NO\n[CONDUITS]\nC1 J1 J2 100 0.013 0 0 0 0\nC2 J2 O1 100 0.013 * 0 0 0\nC3 J1 O1 100 0.013 0 0 0 0\n[XSECTIONS]\nC1 CIRCULAR 3.0\nC2 IRREGULAR TRANSECT1\nC3 CUSTOM CURVE1\n[COORDINATES]\nJ1 0 0\nJ2 1 0\nO1 2 0\n");
+  const m = S.parseInp("[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ1 10 5 0 0 0\nJ2 9 5 0 abc 0\n[OUTFALLS]\nO1 5 FREE NO\n[CONDUITS]\nC1 J1 J2 100 0.013 0 0 0 0\nC2 J2 O1 100 0.013 * 0 0 0\nC3 J1 O1 100 0.013 0 0 0 0\nC4 J1 O1 100 0.013 0 0 0 0\n[XSECTIONS]\nC1 CIRCULAR 3.0\nC2 IRREGULAR TRANSECT1\nC3 CUSTOM 2.5 CURVE1 0 0 1\nC4 STREET ST1\n[COORDINATES]\nJ1 0 0\nJ2 1 0\nO1 2 0\n");
   const w = m.warnings.join(" | "), byName = Object.fromEntries(m.links.map((l) => [l.name, l]));
-  ok("a transect or curve name in a cross section is kept as a name, not warned on or zeroed (F-05 of the 0.6.0 review)",
-    byName.C2.geom1 === "TRANSECT1" && byName.C3.geom1 === "CURVE1" && byName.C1.geom1 === 3.0 && !/TRANSECT1/.test(w) && !/CURVE1/.test(w) && /Junction J2 surcharge depth: "abc"/.test(w) && /Conduit C2 inlet offset: "\*"/.test(w),
-    `C1 geom1 ${byName.C1.geom1}; C2 geom1 ${JSON.stringify(byName.C2.geom1)}; C3 geom1 ${JSON.stringify(byName.C3.geom1)}; warnings: ${w}`);
+  ok("a transect or street name is kept as a name; a CUSTOM section's height is a number and its curve is kept (CPL6-7 of the 0.6.1 review)",
+    byName.C2.geom1 === "TRANSECT1" && byName.C4.geom1 === "ST1" && byName.C3.geom1 === 2.5 && byName.C3.curve === "CURVE1" && byName.C1.geom1 === 3.0 && !/TRANSECT1|ST1|CURVE1/.test(w) && /Junction J2 surcharge depth: "abc"/.test(w) && /Conduit C2 inlet offset: "\*"/.test(w),
+    `C1 ${byName.C1.geom1}; C2 ${JSON.stringify(byName.C2.geom1)}; C3 ${JSON.stringify(byName.C3.geom1)} curve ${byName.C3.curve}; C4 ${JSON.stringify(byName.C4.geom1)}; warnings: ${w}`);
+}
+// the snow catch factor scales snowfall only (SWMM 5.2 gage.c): a rain series gives the same depth at SCF 1, 0.5 and 0
+// (EPA SWMM 5.2.4 reports 2.000 in for all three; review 0.6.1 CPL6-2: the reader gave 2, 1 and 0 in)
+{
+  const g = (scf) => S.gaugeRain(S.parseInp(`[OPTIONS]\nFLOW_UNITS CFS\nSTART_DATE 01/01/2024\nSTART_TIME 0:00\n[RAINGAGES]\nRG INTENSITY 1:00 ${scf} TIMESERIES T1\n[TIMESERIES]\nT1 01/01/2024 0:00 1\nT1 01/01/2024 1:00 1\n`), "RG").totalIn;
+  const t = [g(1), g(0.5), g(0)];
+  ok("a rain gauge's snow catch factor does not scale rain (2 in at SCF 1, 0.5 and 0, as SWMM reports)", t.every((v) => Math.abs(v - 2) < 1e-9), t.join(" / ") + " in");
 }
 // water SWMM can make on its own besides subcatchments: [INFLOWS], [DWF], [RDII], [GROUNDWATER] lines are counted
 {

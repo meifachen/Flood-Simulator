@@ -26,6 +26,7 @@ jobs:
           node tests/node/test_landcover.js
           node tests/node/test_worker.js
           node tests/node/test_results_io.js
+          node tests/node/test_lakes.js
       - name: SWMM reference reproduces with the EPA engine
         run: |
           python tests/py/make_swmm_reference.py examples/synthetic_us
@@ -33,4 +34,6 @@ jobs:
       - name: Build and browser tests
         run: |
           python tools/build.py
-          python tests/browser/test_app.py
+          python tests/browser/test_app.py 2>&1 | tee tests/browser-last.log; test "${PIPESTATUS[0]}" -eq 0
+      - name: Claims gate (STATUS figures against the suites; dist built from this tree)
+        run: python tools/check_claims.py --browser-log tests/browser-last.log

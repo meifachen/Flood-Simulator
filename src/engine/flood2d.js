@@ -58,14 +58,14 @@
       this.nqx = (g.nx + 1) * g.ny; this.q = new Float32Array(this.nqx + g.nx * (g.ny + 1)); this.qo = new Float32Array(this.q.length);
       this.theta = g.theta ?? 0.8; this.kind = "cpu"; this.src = new Float32Array(N);   // point-source depth rate (ft/s) per cell
       this.vmx = new Float32Array(N); this.dvmx = new Float32Array(N);   // running maxima of speed (ft/s) and depth x speed (ft2/s)
-      this.tvx = new Float32Array(N); this.dur = new Float32Array(N);   // time of the maximum speed (hours, the chunk-mid convention of tmax) and seconds with depth x speed above dvThresh
+      this.tvx = new Float32Array(N); this.dur = new Float32Array(N); this.durC = new Float32Array(N);   // time of the maximum speed (hours, the chunk-mid convention of tmax) and seconds with depth x speed above dvThresh
       this.dvThresh = g.dvThresh ?? 0.5;   // ft2/s; the lowest depth x velocity class edge in the app (0.5), unless the run sets it
       this.lim = new Uint8Array(N);   // 1 where a face of the cell hit the Froude limiter (flow capped at critical) with water deeper than VEL_H
     }
     async init() { return this; }
-    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); this.vmx.fill(0); this.dvmx.fill(0); this.tvx.fill(0); this.dur.fill(0); this.lim.fill(0); }
+    reset() { this.r.fill(1); this.q.fill(0); this.qo.fill(0); this.acc.fill(0); this.st.fill(0); this.src.fill(0); this.vmx.fill(0); this.dvmx.fill(0); this.tvx.fill(0); this.dur.fill(0); this.durC.fill(0); this.lim.fill(0); }
     async readVel() { return { vmax: this.vmx.slice(), dvmax: this.dvmx.slice(), froude: this.lim.slice(), tvmax: this.tvx.slice(), dvdur: this.dur.slice() }; }
-    setVel(v) { this.vmx.set(v.vmax); this.dvmx.set(v.dvmax); if (v.froude) this.lim.set(v.froude); if (v.tvmax) this.tvx.set(v.tvmax); if (v.dvdur) this.dur.set(v.dvdur); }
+    setVel(v) { this.vmx.set(v.vmax); this.dvmx.set(v.dvmax); if (v.froude) this.lim.set(v.froude); if (v.tvmax) this.tvx.set(v.tvmax); if (v.dvdur) this.dur.set(v.dvdur); this.durC.fill(0); }
     setSources(list) { const A = this.g.dx * this.g.dx; this.src.fill(0); for (const s of list || []) this.src[s.cell] += s.rate / A; }
     setBoundary(stages) {
       const g = this.g, a = g.aux, st = this.st;
@@ -158,7 +158,9 @@
         if (h > VEL_H) {   // cell velocity from the mean of the two face flows in each direction
           const qx = 0.5 * (qW + qE), qy = 0.5 * (qN + qS), dv = Math.sqrt(qx * qx + qy * qy), sp = dv / h;
           if (sp > this.vmx[k]) { this.vmx[k] = sp; this.tvx[k] = tHours; } if (dv > this.dvmx[k]) this.dvmx[k] = dv;
-          if (dv > this.dvThresh) this.dur[k] += dt;
+          // seconds above the threshold, summed in Float32 with Kahan compensation (durC), as the GPU does: a plain Float32 sum of
+          // ~0.1 s steps drifted by percent over a day (review 0.6.1 ENG6-6)
+          if (dv > this.dvThresh) { const y = Math.fround(dt - this.durC[k]), t = Math.fround(this.dur[k] + y); this.durC[k] = Math.fround(Math.fround(t - this.dur[k]) - y); this.dur[k] = t; }
         }
         st[4 * k] = h; acc[4 * k] += inf; acc[4 * k + 1] += dr; acc[4 * k + 2] += edgeOut + pipeOut; acc[4 * k + 3] += cl;
         if (h > st[4 * k + 2]) { st[4 * k + 2] = h; st[4 * k + 3] = tHours; }
@@ -331,7 +333,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups
   if (h > ${VEL_H}) {
     let qx = 0.5 * (qW + qE); let qy = 0.5 * (qN + qS); let dv = sqrt(qx * qx + qy * qy); let sp = dv / h;
     if (sp > sv.y) { vv.x = U.tHours; }
-    if (dv > U.dvThresh) { vv.y = vv.y + U.dt; }
+    if (dv > U.dvThresh) { let y = U.dt - vv.z; let t = vv.y + y; vv.z = (t - vv.y) - y; vv.y = t; }   // Kahan sum (vv.z the compensation)
     src[k].s = vec4<f32>(sv.x, max(sv.y, sp), max(sv.z, dv), sv.w); src[k].v = vv;
   }
   s.x = h;
@@ -495,12 +497,15 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       const dv = v - V[m - 1], a0 = a[m - 1], k = (a[m] - a0) / (s[m] - s[m - 1]);   // a(x) = a0 + k x, volume a0 x + k x^2 / 2
       return s[m - 1] + (Math.abs(k) < 1e-12 ? dv / a0 : 2 * dv / (a0 + Math.sqrt(a0 * a0 + 2 * k * dv)));
     };
-    return { area, vol, levelOf, minArea: Math.min(...a) };
+    return { area, vol, levelOf, minArea: Math.min(...a), bottom: s[0] };
   }
   async function simulate(g, solver, o) {
     const A = g.dx * g.dx, cfl = o.cfl ?? 0.7, dtMax = o.dtMax ?? 5, chunkSec = o.chunkSec ?? 60, readSec = o.readSec ?? 900;
     if (!(Number.isFinite(o.t0) && Number.isFinite(o.t1) && o.t1 > o.t0)) throw new Error(`Invalid simulation window: start ${o.t0}, end ${o.t1} (hours); the end must be after the start`);
-    if (!(cfl > 0 && cfl <= 1)) throw new Error(`Invalid Courant number ${cfl}; use a value in (0, 1]`);
+    // Above 0.7 the local-inertial scheme is outside its stable range (Bates et al. 2010 use 0.2-0.7): pockets overshoot (a page
+    // example peaked at 10.3-10.7 ft at 0.8-0.95 against 4.67 ft at 0.7 and below), so higher values are refused (review 0.6.1 ENG6-1).
+    if (g.theta !== undefined && !(typeof g.theta === "number" && g.theta >= 0.5 && g.theta <= 1)) throw new Error(`Invalid weighting theta ${g.theta}; use a value from 0.5 to 1`);
+    if (!(cfl > 0 && cfl <= 0.7)) throw new Error(`Invalid Courant number ${cfl}; use a value above 0 and at most 0.7 (the stable range of the local-inertial scheme)`);
     if (!(dtMax > 0) || !(chunkSec > 0) || !(readSec > 0)) throw new Error("Invalid time-step settings (dtMax, chunkSec and readSec must be positive)");
     const K = g.K || 0, pipes = o.pipes || [], srcs = o.sources || [], rainStep = o.rainStep ?? 3600;
     if (!(rainStep > 0)) throw new Error(`Invalid rain interval ${rainStep} s`);
@@ -525,6 +530,9 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         if (!(Array.isArray(tab) && tab.length >= 2 && tab.every((x) => Array.isArray(x) && x.length === 2 && x.every((v) => typeof v === "number" && Number.isFinite(v)) && x[1] > 0)))
           throw new Error(`Routed lake ${nm}: the stage-area table ${JSON.stringify(tab)} needs two or more [stage ft, area sq ft] pairs with positive areas`);
         for (let m = 1; m < tab.length; m++) if (!(tab[m][0] > tab[m - 1][0])) throw new Error(`Routed lake ${nm}: stages in the stage-area table must rise (${tab[m - 1][0]} then ${tab[m][0]})`);
+        // a lake's surface does not shrink as it rises; a falling area is a typo or a row in other units (review 0.5.0 round 4 ENG5-4)
+        for (let m = 1; m < tab.length; m++) if (tab[m][1] < tab[m - 1][1]) throw new Error(`Routed lake ${nm}: areas in the stage-area table must not fall as the stage rises (${tab[m - 1][1]} sq ft at ${tab[m - 1][0]} ft, then ${tab[m][1]} at ${tab[m][0]} ft)`);
+        if (r.level0 < tab[0][0]) throw new Error(`Routed lake ${nm}: its starting level ${r.level0} ft is below the bottom of its stage-area table (${tab[0][0]} ft)`);
       } else {
         if (!(r.areaFt2 > 0 && Number.isFinite(r.areaFt2))) throw new Error(`Routed lake ${nm}: area ${r.areaFt2} is not a positive number`);
         tab = [[r.level0, r.areaFt2]];
@@ -532,9 +540,8 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       let out = null;
       if (r.outlet !== undefined && r.outlet !== null) {
         /* An outlet is any Q(level) with a control elevation it cannot draw the lake below: a weir (the 0.5.0 form), a rating
-         * curve (stage ft : flow cfs pairs, linear between, held beyond), a pipe (an orifice on the wetted circular segment:
-         * Cd A_wet sqrt(2 g y), y the depth of the wetted centroid below the surface, the full area and the head to the
-         * centre once the level reaches the crown; Cd 0.6 unless given) or a gate (an orifice of width x opening at its
+         * curve (stage ft : flow cfs pairs, linear between, held beyond), a pipe (EPA SWMM 5.2's side orifice: full, the head
+         * to the centre; part full, its weir form; Cd 0.6 unless given) or a gate (an orifice of width x opening at its
          * sill, the head taken to the opening's centroid, the wetted part only while the level is inside the opening).
          * All run through the same midpoint step and chunk limits. */
         const ol = r.outlet, kind = ol.kind ?? "weir";
@@ -556,25 +563,25 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           const cd = ol.cd ?? 0.6; pos(cd, "discharge coefficient"); const ctl = ol.crestFt;
           if (kind === "pipe") {
             const D = pos(ol.diameterFt, "diameter"), R = D / 2, Af = Math.PI * R * R;
-            /* the orifice law on the part of the pipe that is wet: below the crown the flow area is the circular segment
-             * up to the level and the head is taken to that segment's centroid (the gate's wetted convention, on a round
-             * opening); at and above the crown the pipe runs full and the head is to the centre. Measuring the head from
-             * the invert instead, as 0.6.0 did, overstates the flow by up to sqrt(2) (review 0.6.0 F-02). */
+            /* EPA SWMM 5.2 side orifice (link.c orifice_getFlow): at and above the crown the pipe runs full and the head is to its
+             * centre, Q = Cd A sqrt(2 g (d - D/2)); below the crown it acts as a weir, Q = Cd A sqrt(2 g D/2) (d/D)^1.5, which meets
+             * the full-pipe flow at the crown. 0.6.1 used the orifice law on the wetted segment instead, which passed up to 2.3 times
+             * less than SWMM at shallow depth (review 0.6.1 ENG6-4). */
+            const qFull = cd * Af * Math.sqrt(2 * G * R);
             const q = (h) => { const d = h - ctl; if (!(d > 0)) return 0;
-              if (d >= D) return cd * Af * Math.sqrt(2 * G * (d - R));
-              const phi = Math.acos((R - d) / R), s = Math.sin(phi), den = phi - s * (R - d) / R;
-              const Aw = R * R * den, yb = d - R + 2 * R * s * s * s / (3 * den);   // wetted area; depth of its centroid below the surface
-              return cd * Aw * Math.sqrt(2 * G * Math.max(yb, 0)); };
-            out = { kind, ctl, q, dq: (h) => (h > ctl ? (q(h + 0.02) - q(h)) / 0.02 : 0) };
+              return d >= D ? cd * Af * Math.sqrt(2 * G * (d - R)) : qFull * Math.pow(d / D, 1.5); };
+            out = { kind, ctl, q, dq: (h) => { const d = h - ctl; if (!(d > 0)) return 0; return d >= D ? cd * Af * G / Math.sqrt(2 * G * (d - R) || 1e-12) : 1.5 * qFull * Math.sqrt(d / D) / D; } };
           } else {
             const w = pos(ol.widthFt, "gate width"), a = pos(ol.openingFt, "gate opening");
             const q = (h) => { if (!(h > ctl)) return 0; const d = h - ctl; return d < a ? cd * w * d * Math.sqrt(G * d) : cd * w * a * Math.sqrt(2 * G * (d - a / 2)); };
             out = { kind, ctl, q, dq: (h) => (q(h + 0.02) - q(h)) / 0.02 };
           }
         } else throw new Error(`Routed lake ${nm}: outlet type ${JSON.stringify(kind)} is not one of weir, rating, pipe, gate`);
+        // the table holds no storage below its first stage, so an outlet set lower would drain water that is not there (review 0.6.1 WRK6-2)
+        if (r.stageArea && out.ctl < tab[0][0]) throw new Error(`Routed lake ${nm}: its outlet (${kind}) is set at ${out.ctl} ft, below the bottom of its stage-area table (${tab[0][0]} ft); extend the table down to the outlet`);
       }
       const S = storage(tab);
-      return { lake: r.lake, S, out, outVol: 0, area: S.area(r.level0), level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0, kExt: 0, lastRate: null, lastLv: 0 };
+      return { lake: r.lake, S, out, outVol: 0, tabled: !!r.stageArea, area: S.area(r.level0), level: r.level0, start: r.level0, name: r.name || `Lake ${r.lake + 1}`, cells: [], prev: null, gain2d: 0, gainRain: 0, gainExt: 0, nCells: 0, bed: Infinity, lip: Infinity, faces: 0, cap: 1, lastD: 0, kExt: 0, kSeen: false, linked: r.linked !== false, lastRate: null, lastLv: 0 };
     });
     if (routed.length) {
       const byLake = new Map();
@@ -614,13 +621,17 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     /* An outlet's Q(level) is known exactly, so its limit is set directly from dQ/dh (1.5 cw L H^0.5 for a weir), and chunks stay under A/(dQ/dh). */
     const lakeDt = () => { let m = Infinity; for (const r of routed) { const Ah = r.S.area(r.level);
       m = Math.min(m, r.cap, r.kExt > 0 ? Math.max(0.05, Ah / r.kExt) : Infinity);
-      /* a lake fed from outside whose inflow has not yet been seen to depend on the level (kExt unmeasured) and is
-       * currently bringing nothing in is held to the adaptive cap's starting value of 1 s, however far its cap has
-       * grown over a quiet stretch: if that inflow switches on level-dependent, the first chunk is then an adaptive
-       * chunk instead of a full chunk at the starting rate, which moved one probe lake's level 6.67 ft in a single
-       * chunk after three quiet hours (0.6.1, review 0.6.0 F-18). Once a nonzero rate has been measured, or the
-       * dependence has, the ordinary caps apply. */
-      if (o.lakeInflow && !(r.kExt > 0) && !(r.lastRate > 0)) m = Math.min(m, 1);
+      /* A lake fed from outside (lakeInflow) keeps its chunks to 60 s at most, whatever its cap has grown to over a quiet stretch:
+       * an outside inflow that switches on level-dependent is only seen after a chunk, and a full chunk at the starting rate moved one
+       * probe lake 6.67 ft (review 0.6.0 F-18). 0.6.1 held such a lake to 1 s while its inflow was exactly zero, which any baseflow
+       * (1e-6 cfs) defeated and which made idle lakes run in 1 s chunks all run long (review 0.6.1 ENG6-2, ENG6-3). In the app the
+       * chunk is already the coupling interval (30 s by default) in two-way runs, the only runs with outside lake inflow. */
+      if (o.lakeInflow) m = Math.min(m, 60);
+      // until the outside inflow's dependence on the level has been read once, a lake linked from outside (r.linked, default true) takes
+      // 1 s chunks, so an inflow that switches on level-dependent meets an adaptive chunk (0.6.0 F-18). The hold no longer ends on a
+      // nonzero rate (any baseflow ended it: review 0.6.1 ENG6-2); lakes the caller marks as not linked (linked: false, for example a
+      // lake with no SWMM outfall) never take it (ENG6-3).
+      if (o.lakeInflow && r.linked && !r.kSeen) m = Math.min(m, 1);
       if (r.out) { const dq = r.out.dq(r.level); if (dq > 0) m = Math.min(m, Math.max(0.05, Ah / dq)); }
       const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
       const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.05, 0.25 * Ah / dqdh)); } return m; };
@@ -639,11 +650,20 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     // init alone is an initial condition (for example a lake at rest): the depth and velocity maxima both start at this moment.
     // init with initVel is a hot start that continues an earlier run: both maxima carry over, so they always cover the same period.
     if (o.init && !o.initVel) for (let k = 0; k < N; k++) { st0[4 * k + 2] = st0[4 * k]; st0[4 * k + 3] = st0[4 * k] > 0 ? o.t0 : 0; }
-    if (o.initVel && !(o.initVel.vmax && o.initVel.vmax.length === N && o.initVel.dvmax && o.initVel.dvmax.length === N)) throw new Error("initVel has the wrong size");
+    if (o.initVel) {   // every array carried over must be one finite value per cell (review 0.6.1 ENG6-8: short arrays left NaN tails on the GPU)
+      for (const key of ["vmax", "dvmax", "froude", "tvmax", "dvdur"]) {
+        const v = o.initVel[key];
+        if (v === undefined || v === null) { if (key === "vmax" || key === "dvmax") throw new Error(`initVel.${key} is missing`); continue; }
+        if (v.length !== N) throw new Error(`initVel.${key} has ${v.length} values for ${N} cells`);
+        for (let k = 0; k < N; k++) if ((!Number.isFinite(v[k]) && !(key === "tvmax" && Number.isNaN(v[k]))) || ((key === "dvdur" || key === "vmax" || key === "dvmax") && v[k] < 0)) throw new Error(`initVel.${key} at cell ${k} is ${v[k]}, not a ${key === "tvmax" || key === "froude" ? "" : "non-negative "}number`);
+      }
+    }
     for (let k = 0; k < 4 * N; k++) if (!Number.isFinite(st0[k])) throw new Error("Initial state contains a value that is not a number");
     solver.reset();
     if (solver.kind === "gpu") solver.upload(st0); else solver.st.set(st0);
+    // the threshold is set for every run, so a value from an earlier run on the same solver does not carry over (review 0.6.1 ENG6-7)
     if (o.dvThresh !== undefined) { if (!(typeof o.dvThresh === "number" && Number.isFinite(o.dvThresh) && o.dvThresh > 0)) throw new Error(`Depth x velocity threshold ${o.dvThresh} is not a positive number`); solver.dvThresh = o.dvThresh; }
+    else solver.dvThresh = g.dvThresh ?? 0.5;
     if (o.initVel) solver.setVel(o.initVel);
     let maxMult = 0; for (let k = 0; k < N; k++) if (g.aux[4 * k + 1] > maxMult) maxMult = g.aux[4 * k + 1];
     const sqG = Math.sqrt(G);
@@ -703,11 +723,9 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       // to 1/cfl, so lowering the Courant number would silently add diffusion (review F-02). Steps within 90% of the reference step
       // (every step of a chunk of 10 or more steps at the default cfl) keep theta as given. One value per chunk, rounded to Float32, is
       // used by both back ends.
-      // The scaling is two-sided (0.6.1, review 0.6.0 F-01): past the reference step (dt above 0.7 x the wave step, a Courant number
-      // above 0.7) (1 - theta) grows in proportion to dt instead of stopping at its base value, so the smoothing per second stays at
-      // the reference step's there too; (1 - theta) is capped at 0.5 so theta keeps a floor of 0.5. Below the reference step the
-      // 0.6.0 formula is unchanged, so results at Courant numbers of 0.7 and under are bit-identical to 0.6.0.
-      const omt0 = 1 - (g.theta ?? 0.8), scale = dt <= 0.7 * dtWave ? Math.min(1, dt / (0.9 * 0.7 * dtWave)) : dt / (0.7 * dtWave);
+      // Courant numbers above 0.7 are refused (review 0.6.1 ENG6-1), so dt never exceeds the reference step; the 0.6.1 scaling past it,
+      // which made results worse there, is gone. Results at Courant numbers of 0.7 and under are unchanged.
+      const omt0 = 1 - (g.theta ?? 0.8), scale = Math.min(1, dt / (0.9 * 0.7 * dtWave));   // dt <= cfl dtWave <= 0.7 dtWave always
       const theta = Math.fround(1 - Math.min(0.5, omt0 * scale));
       const co = { dt, n, theta, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
       let hmC = 0, done = n;
@@ -750,8 +768,14 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           r.level = r.S.levelOf(V0 + v2d + vr + ve - vo);
           const d = r.level - lv, rate = ve / used;
           // level dependence of the outside inflow, measured between this chunk and the last (only from a level change large enough to read)
-          if (ext && r.lastRate !== null && Math.abs(lv - r.lastLv) > 1e-4) { const k = -(rate - r.lastRate) / (lv - r.lastLv); r.kExt = Math.max(k > 0 ? k : 0, r.kExt * 0.9); }
-          if (ext) { r.lastRate = rate; r.lastLv = lv; }
+          // measured against the last reading point, not only the previous chunk, so a slow drift is read too; until the first reading
+          // (kSeen) a lake linked from outside is held to 1 s chunks (lakeDt). Without a new reading the estimate decays with a 10 min
+          // half-life, so one spike no longer keeps the chunks short for the rest of a still period (round 4 ENG5-5).
+          if (ext) {
+            if (r.lastRate === null) { r.lastRate = rate; r.lastLv = lv; }
+            else if (Math.abs(lv - r.lastLv) > 1e-4) { const k = -(rate - r.lastRate) / (lv - r.lastLv); r.kExt = Math.max(k > 0 ? k : 0, r.kExt * 0.9); r.kSeen = true; r.lastRate = rate; r.lastLv = lv; }
+            else r.kExt *= Math.pow(0.5, used / 600);
+          }
           if (Math.abs(d) > 0.02) r.cap = Math.max(0.05, used * 0.02 / Math.abs(d));
           else if (d * r.lastD < 0 && Math.min(Math.abs(d), Math.abs(r.lastD)) > 0.002) r.cap = Math.max(0.05, used * 0.5);
           else if (Number.isFinite(r.cap)) r.cap = Math.min(used, r.cap) * 1.5 > 3600 ? Infinity : Math.min(used, r.cap) * 1.5;
@@ -760,6 +784,11 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           // the grid's lowest ground. Outside withdrawals (water flowing back into SWMM) may lower a lidar lake below its flattened surface.
           // Outside inflow counts on the lake's side of the check: water that arrived from outside and then spilled to the land is booked in
           // gain2d as a loss, and a check that ignored its arrival would refuse a spilling, outfall-fed lake as a "numerical failure" (F-01).
+          // outside withdrawals: a lake with a stage-area table cannot give up water below its bottom; one without has no known bottom,
+          // so it is stopped 10 ft below the grid's lowest ground and asked for a table (round 4 ENG5-2: -5e6 cf a chunk took a lake to
+          // -14 million ft, accepted). Withdrawals may still take a lidar lake below its flattened surface (0.4.3, ENG3-E4).
+          const floor = r.tabled ? r.S.bottom : Math.min(zLow, r.start) - 10;
+          if (r.level < floor - 1e-6) throw new Error(`Routed lake ${r.name} fell to ${r.level.toFixed(2)} ft at hour ${(t / 3600).toFixed(2)}, below ${r.tabled ? `the bottom of its stage-area table (${floor} ft)` : `10 ft under the grid's lowest ground (${floor.toFixed(2)} ft); give a stage-area table for a deeper lake`}: the water taken from it (outside withdrawals ${(-Math.min(r.gainExt, 0)).toFixed(0)} cf) is more than it holds`);
           const lv2d = r.S.levelOf(r.S.vol(r.start) + r.gain2d + r.gainRain + Math.max(r.gainExt, 0));
           if (lv2d < Math.min(zLow, r.start) - 0.01) throw new Error(`Routed lake ${r.name}: the water it exchanged with the 2D grid alone would put it at ${lv2d.toFixed(2)} ft, below the lowest ground of the grid (${zLow.toFixed(2)} ft), at hour ${(t / 3600).toFixed(2)}: a numerical failure`);
         }

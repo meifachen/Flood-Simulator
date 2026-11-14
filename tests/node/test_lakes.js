@@ -215,23 +215,24 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     const dry = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.5, rainAt: () => 0, stageAt: () => [94.5], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 94.5, outlet: { kind: "rating", rating } }], chunkSec: 60, readSec: 3600 });
     ok("L16 below the rating's first stage the outlet passes nothing", dry.lakes.outlet[0] === 0 && dry.lakes.end[0] === 94.5, `outlet ${dry.lakes.outlet[0]} cf, level ${dry.lakes.end[0]} ft`);
   }
-  // L17 (new in 0.6.0, E-06; rewritten in 0.6.1, review 0.6.0 F-02) a pipe outlet is an orifice on the wetted circular
-  // segment, the head taken to the wetted centroid. The segment area and centroid are worked out here from the circle,
-  // not from the engine: constant inflows computed from them hold the level at the crown (103 ft), at half depth
+  // L17 (new in 0.6.0, E-06; rewritten in 0.6.1, review 0.6.0 F-02; SWMM's part-full form since review 0.6.1 ENG6-4) a pipe
+  // outlet is EPA SWMM 5.2's side orifice, written out here, not taken from the engine: constant inflows computed from it hold
+  // the level at the crown (103 ft), at half depth
   // (101.5 ft) and at 0.4 ft of depth (100.4 ft) of a 3 ft pipe at invert 100 ft; and while the pipe runs full the
   // drawdown has a closed form in the head to the centre, u(t) = (sqrt(u0) - k t)^2. On 0.6.0 the head was taken from
   // the invert instead: the crown feed (41.67 cfs here; 0.6.0 passed 58.9 cfs at the crown) drained the pond to about
   // 101.50 ft, so the crown and drawdown checks fail there.
   {
     const cd = 0.6, D = 3, c = 100, R = D / 2, gp = pond();
-    const segQ = (h) => { const d = h - c; if (!(d > 0)) return 0; if (d >= D) return cd * Math.PI * R * R * Math.sqrt(2 * 32.174 * (d - R));
-      const phi = Math.acos((R - d) / R), s = Math.sin(phi), den = phi - s * Math.cos(phi);
-      return cd * R * R * den * Math.sqrt(2 * 32.174 * (d - R + 2 * R * s ** 3 / (3 * den))); };
+    // EPA SWMM 5.2 side orifice (link.c orifice_getFlow), written out here: full, head to the centre; part full, the weir form
+    // Cd A sqrt(2 g R) (d / D)^1.5 (review 0.6.1 ENG6-4; 0.6.1 used the wetted-segment orifice, 2.3 times less at 0.26 ft)
+    const segQ = (h) => { const d = h - c; if (!(d > 0)) return 0; const Af = Math.PI * R * R;
+      return d >= D ? cd * Af * Math.sqrt(2 * 32.174 * (d - R)) : cd * Af * Math.sqrt(2 * 32.174 * R) * Math.pow(d / D, 1.5); };
     const hold = async (lv) => { const q = segQ(lv);
       const r = await F.simulate(gp, new F.CpuSolver(gp), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [lv], routedLakes: [{ lake: 0, areaFt2: 1600, level0: lv, outlet: { kind: "pipe", crestFt: c, diameterFt: D, cd } }], lakeInflow: (a, b) => [q * (b - a) * 3600], chunkSec: 60, readSec: 3600 });
       return { q, end: r.lakes.end[0] }; };
     const hCrown = await hold(103), hHalf = await hold(101.5), hShallow = await hold(100.4);
-    ok("L17 a pipe outlet passes the centroid-head segment flow: inflows worked out from the circle hold the level at the crown, at half depth and at 0.4 ft of depth",
+    ok("L17 a pipe outlet passes SWMM 5.2's side-orifice flow (weir form below the crown): inflows worked out from the circle hold the level at the crown, at half depth and at 0.4 ft of depth",
       Math.abs(hCrown.end - 103) < 0.02 && Math.abs(hHalf.end - 101.5) < 0.02 && Math.abs(hShallow.end - 100.4) < 0.02,
       `crown ${hCrown.q.toFixed(2)} cfs -> ${hCrown.end.toFixed(4)} ft; half ${hHalf.q.toFixed(2)} cfs -> ${hHalf.end.toFixed(4)} ft; shallow ${hShallow.q.toFixed(2)} cfs -> ${hShallow.end.toFixed(4)} ft`);
     const Ar = 100000, c2 = 97, h0 = 100, D2 = 2, Ao = Math.PI * D2 * D2 / 4, k = cd * Ao * Math.sqrt(2 * 32.174) / (2 * Ar);
@@ -286,6 +287,25 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     ok("L20 an outside inflow switching on level-dependent after 3 quiet hours moves the level by hundredths per chunk, not feet, and settles at its equilibrium without ringing (0.6.0: 6.67 ft in one chunk, 10 reversals)",
       maxJump < 0.5 && rev <= 2 && Math.abs(r.lakes.end[0] - 106) < 0.01 && Math.abs(r.ledger.errPct) < 0.01,
       `largest one-chunk move ${maxJump.toFixed(3)} ft; reversals ${rev}; end ${r.lakes.end[0].toFixed(3)} ft (equilibrium 106); ledger ${r.ledger.errPct.toExponential(2)}%`);
+  }
+  // L21 (review 0.6.1 and round 4) lake input and drawdown limits: a runaway withdrawal stops the run instead of taking the level to
+  // millions of feet below ground (round 4 ENG5-2); a falling-area table, a start below the table and an outlet below the table's bottom
+  // are refused (ENG5-4, WRK6-2); a withdrawal may still draw a table lake down to the table's bottom; and a baseflow of 1e-6 cfs during
+  // the quiet hours no longer defeats the hold that keeps a later stiff switch-on from jumping the level 6.67 ft (ENG6-2)
+  {
+    const msgs = [], tryRun = async (rl, extra = {}) => { try { const r = await F.simulate(g, new F.CpuSolver(g), Object.assign({ t0: 0, t1: 0.5, rainAt: () => 0, stageAt: () => [99], routedLakes: [Object.assign({ lake: 0, level0: 99 }, rl)] }, extra)); msgs.push(r.lakes.end[0]); } catch (e) { msgs.push(e.message); } };
+    await tryRun({ areaFt2: lakeArea }, { lakeInflow: () => [-5e6] });
+    await tryRun({ stageArea: [[95, 30000], [96, 30000], [97, 3000], [100, 300000]] });
+    await tryRun({ stageArea: [[100, 30000], [105, 60000]] });
+    await tryRun({ stageArea: [[95, 30000], [105, 60000]], outlet: { crestFt: 90, lengthFt: 5 } });
+    await tryRun({ stageArea: [[98, 30000], [105, 60000]] }, { lakeInflow: (a, b) => [-20 * (b - a) * 3600] });   // 36,000 cf from 99 ft: 30,000-30,429 sq ft
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 8, rainAt: () => 0, stageAt: () => [99], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99, name: "Stiff" }],
+      lakeInflow: (a, b, levels) => [(a < 3 ? 1e-6 : Math.max(0, 106 - levels[0]) * 400) * (b - a) * 3600], chunkSec: 60, readSec: 900 });
+    const S = r.lakes.series; let maxJump = 0; for (let i = 1; i < S.length; i++) maxJump = Math.max(maxJump, Math.abs(S[i].levels[0] - S[i - 1].levels[0]));
+    ok("L21 a runaway withdrawal, a falling-area table, a start or an outlet below the table are refused; a table lake drains to its bottom at most; a 1e-6 cfs baseflow keeps the switch-on hold (largest one-chunk move under 0.5 ft)",
+      /fell to .* below 10 ft under the grid's lowest ground .* give a stage-area table/.test(msgs[0]) && /areas in the stage-area table must not fall/.test(msgs[1]) && /starting level 99 ft is below the bottom of its stage-area table \(100 ft\)/.test(msgs[2]) &&
+      /outlet \(weir\) is set at 90 ft, below the bottom of its stage-area table \(95 ft\)/.test(msgs[3]) && /below the bottom of its stage-area table \(98 ft\)/.test(msgs[4]) && maxJump < 0.5,
+      `${msgs.map((m) => (typeof m === "number" ? m.toFixed(3) : m.slice(0, 70))).join(" | ")} | largest one-chunk move ${maxJump.toFixed(3)} ft`);
   }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log("CRASH " + (e.stack || e)); process.exit(1); });

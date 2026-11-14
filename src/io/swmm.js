@@ -61,10 +61,13 @@
       for (const e of [l.from, l.to]) if (!(e in model.nodeIndex)) model.warnings.push(`Link ${l.name} refers to unknown node ${e}`);
       model.links.push(l);
     }
-    /* Geom1 is a dimension for most shapes, but for IRREGULAR it is a transect name and for CUSTOM a curve name:
-     * those stay strings and earn no "not a number" warning (0.6.1, review 0.6.0 F-05) */
+    /* Geom1 is a dimension for most shapes. IRREGULAR and STREET take a transect or street name there (kept as text, no warning).
+     * CUSTOM takes its full height there, then the shape curve's name (SWMM 5.2 link.c link_readXsectParams; review 0.6.1 CPL6-7:
+     * 0.6.1 kept the height as text and accepted "CUSTOM <curve>", which SWMM refuses). */
     const xs = {}; for (const r of sec.XSECTIONS || []) { const shape = (r.t[1] || "").toUpperCase();
-      xs[r.t[0]] = { shape, geom1: shape === "IRREGULAR" || shape === "CUSTOM" ? (r.t[2] ?? null) : secNum(r.t[2], `Cross section ${r.t[0]} geometry`) }; }
+      xs[r.t[0]] = shape === "IRREGULAR" || shape === "STREET" ? { shape, geom1: r.t[2] ?? null }
+        : shape === "CUSTOM" ? { shape, geom1: secNum(r.t[2], `Cross section ${r.t[0]} CUSTOM height`), curve: r.t[3] ?? null }
+        : { shape, geom1: secNum(r.t[2], `Cross section ${r.t[0]} geometry`) }; }
     for (const l of model.links) if (xs[l.name]) Object.assign(l, xs[l.name]);
     for (const r of sec.VERTICES || []) (model.vertices[r.t[0]] = model.vertices[r.t[0]] || []).push([num(r.t[1], "Vertex X"), num(r.t[2], "Vertex Y")]);
     for (const r of sec.POLYGONS || []) (model.polygons[r.t[0]] = model.polygons[r.t[0]] || []).push([num(r.t[1], "Polygon X"), num(r.t[2], "Polygon Y")]);
@@ -134,7 +137,9 @@
       else if (g.format === "VOLUME") rate = pts[i].v / (step / 3600);
       else if (g.format === "CUMULATIVE") rate = i + 1 < pts.length ? (pts[i + 1].v - pts[i].v) / ((b - a) / 3600) : 0;
       else throw new Error(`Unknown rain format ${g.format}`);
-      rate *= toIn * g.scf;
+      // the snow catch factor applies to snowfall only (SWMM 5.2 gage.c gage_getPrecip); rain on the grid is not scaled by it
+      // (review 0.6.1 CPL6-2: SCF 0.5 halved the rain and SCF 0 removed it; SWMM gave the same 2.000 in at 1.0, 0.5 and 0)
+      rate *= toIn;
       if (!(rate >= 0)) throw new Error(`Rain gauge ${g.name}: negative or invalid rain at point ${i + 1}`);
       for (let k = Math.floor(a / step); k < Math.ceil(b / step) && k < n; k++) {
         const lo = Math.max(a, k * step), hi = Math.min(b, (k + 1) * step); if (hi > lo) vals[k] += rate * (hi - lo) / step;

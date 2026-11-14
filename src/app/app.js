@@ -25,11 +25,13 @@ async function catalog() { if (!S.catalog) S.catalog = JSON.parse(new TextDecode
 function msg(html, cls = "note") { $("#msg").className = cls; $("#msg").innerHTML = html; }
 function setSt(id, html, cls = "") { $(id).innerHTML = cls ? `<span class="${cls}">${html}</span>` : html; }
 const HASH_KINDS = ["dem", "buildings", "boundaries", "landcover", "soils", "inlets", "inp", "out"];
+const RAW = new Map();   // decoded text -> the file's bytes, for the provenance hash of the next load
 async function sha256hex(data) { const b = typeof data === "string" ? new TextEncoder().encode(data) : data; const h = await crypto.subtle.digest("SHA-256", b); return [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, "0")).join(""); }
 async function loadInputs(args, label) {
   if (S.running) { msg("Stop the run first, then load files.", "err"); return false; }
   args.catalog = await catalog();
   msg(`Reading ${esc(label)}…`);
+  S.loading = (S.loading || 0) + 1; $("#b-run").disabled = true;
   try {
     const r = await call("load", args);
     // run provenance (E-04): hash every input file as loaded, so a saved run names the exact files it came from
@@ -37,7 +39,10 @@ async function loadInputs(args, label) {
     // recorded input hashes belong to the site and are reset only when a new DEM was accepted (r.cleared). Before
     // 0.6.1 every later file load wiped them, and a saved run's provenance kept only the last file loaded (F-04).
     if (r.cleared) S.inputHashes = {};
-    for (const k of HASH_KINDS) if (args[k] !== undefined && args[k] !== null) { try { (S.inputHashes ||= {})[k] = { kind: k, name: label, sha256: await sha256hex(args[k] instanceof ArrayBuffer ? args[k] : args[k].buffer ? new Uint8Array(args[k]) : args[k]) }; } catch (e) { /* hashing is bookkeeping; a failure there must not refuse the load */ } }
+    // a layer cleared by this load (null) drops its hash, so a saved run does not name a file it did not use (review 0.6.1 P-04)
+    for (const k of HASH_KINDS) if (args[k] === null && S.inputHashes) delete S.inputHashes[k];
+    for (const k of HASH_KINDS) if (args[k] !== undefined && args[k] !== null) { try { const v = typeof args[k] === "string" && RAW.has(args[k]) ? RAW.get(args[k]) : args[k]; (S.inputHashes ||= {})[k] = { kind: k, name: label, sha256: await sha256hex(v instanceof ArrayBuffer ? v : v.buffer ? new Uint8Array(v) : v) }; } catch (e) { /* hashing is bookkeeping; a failure there must not refuse the load */ } }
+    RAW.clear();
     if (r.dem) { S.dem = r.dem; S.grid = null; S.resultsOnly = false; S.loadedFrom = null; clearResults(); if (r.dem.warnings && r.dem.warnings.length) $("#warns").innerHTML = r.dem.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join(""); }
     if (r.buildings) S.bld = r.buildings.count ? r.buildings : null;
     if (r.boundaries) S.bnd = r.boundaries.count ? r.boundaries : null;
@@ -46,10 +51,12 @@ async function loadInputs(args, label) {
     if ("swmm" in r) S.swmm = r.swmm;
     refreshInputs(); msg(`Loaded ${esc(label)}.`);
     return true;
-  } catch (e) { msg(`Could not read ${esc(label)}: ${esc(String(e.message).replace(/\.+$/, ""))}. Nothing was changed; the layers loaded before are still in use.`, "err"); return false; }
+  } catch (e) { RAW.clear(); msg(`Could not read ${esc(label)}: ${esc(String(e.message).replace(/\.+$/, ""))}. Nothing was changed; the layers loaded before are still in use.`, "err"); return false; }
+  finally { S.loading -= 1; runButtonState(); }
 }
 function vUnitFt() { const v = $("#vunit").value; if (v !== "auto") return UNIT_FT[v]; return S.dem && S.dem.vUnitHint ? UNIT_FT[S.dem.vUnitHint] : S.dem ? S.dem.hUnitFt : NaN; }
 function unitName(ft) { return Math.abs(ft - 1) < 1e-5 ? "ft" : Math.abs(ft - 1 / 0.3048) < 1e-6 ? "m" : Math.abs(ft - UNIT_FT["us-ft"]) < 1e-9 ? "US survey ft" : `${ft} ft`; }
+function runButtonState() { const d = S.dem; $("#b-run").disabled = !d || S.running || S.loading > 0 || S.resultsOnly || (!d.proj4 && !Number.isFinite(d.hUnitFt)); }
 function refreshInputs() {
   const d = S.dem;
   if (d) {
@@ -78,7 +85,7 @@ function refreshInputs() {
     setSt("#st-inl", `${S.inl.count} inlets on ${S.inl.nodes.length} junctions${S.inl.reprojected ? `, ${esc(S.inl.note)}` : ""}${S.inl.skipped ? `; ${S.inl.skipped} features that are not points were skipped` : ""}` + (S.swmm && unknown.length ? `<br><span class="warn">Not junctions in the .inp: ${unknown.slice(0, 6).map(esc).join(", ")}</span>` : "") + (S.inl.typeNote ? `<br><span class="warn">${esc(S.inl.typeNote)}.</span>` : "")); }
   else setSt("#st-inl", "none");
   $("#st-data").textContent = d ? "DEM loaded" + (S.bld ? ", buildings" : "") + (S.bnd ? ", boundaries" : "") + (sw ? ", SWMM" : "") : "nothing loaded";
-  $("#b-run").disabled = !d || S.running || S.resultsOnly || (!d.proj4 && !Number.isFinite(d.hUnitFt));
+  runButtonState();
   if (d) mapInputs();
 }
 function fillCellSizes() {
@@ -154,7 +161,10 @@ function waterNotes() {
 async function readFile(inp, kind) {
   const f = inp.files[0]; if (!f) return null;
   if (f.size > 600e6) throw new Error(`${f.name} is ${(f.size / 1e6).toFixed(0)} MB; prepare a smaller file first (python/prep_dem.py)`);
-  return kind === "text" ? await f.text() : await f.arrayBuffer();
+  if (kind !== "text") return await f.arrayBuffer();
+  // text is decoded as File.text() does (UTF-8, BOM dropped), and the file's own bytes are kept for its provenance hash: a hash of the
+  // decoded text could not be checked with sha256sum and gave two files that differ in one Latin-1 byte the same hash (review 0.6.1 P-05)
+  const raw = await f.arrayBuffer(), txt = new TextDecoder("utf-8").decode(raw); RAW.set(txt, raw); return txt;
 }
 function wireInputs() {
   // a new DEM starts a new site: every other layer is cleared, so nothing from an earlier site or example is used by mistake
@@ -239,6 +249,8 @@ function runOptions() {
 }
 async function run() {
   if (S.running) { msg("A run is already going; stop it first.", "err"); return; }
+  // a run started while a file is still being read would be built from the site being replaced (review 0.6.1 PS5-2)
+  if (S.loading) { msg("A file is still being read; run when it has loaded.", "err"); return; }
   let o; try { o = runOptions(); } catch (e) { msg(esc(e.message), "err"); return; }
   S.running = true; $("#b-run").disabled = true; $("#b-stop").disabled = false; clearResults(); $("#warns").innerHTML = "";
   try {
@@ -265,7 +277,12 @@ async function run() {
       // the rest of what defines the run (0.6.1, review 0.6.0 F-03): the rain itself, the drain allowance and the step cap at their
       // effective values, the two-way inlet panel values, and the boundary specs typed into the panel (boundary files are hashed as inputs)
       rainInHr: o.rainSource === "uniform" ? o.rainInHr : null, rainHours: o.rainSource === "uniform" ? o.rainHours : null, gauge: o.rainSource === "gauge" ? o.gauge : null,
-      drainInHr: o.drainInHr ?? 0, dtMax: o.dtMax ?? 5,
+      drainInHr: o.drainInHr ?? null, dtMax: o.dtMax ?? null,   // null: the engine's default (no drain, a 5 s step cap)
+      // the grid and surface settings that change the answer (review 0.6.1 P-03, WRK6-3): Manning n, imperviousness, Green-Ampt values,
+      // the land cover and soil tables, buildings, edges, units, cell size, thresholds and the SWMM search distance
+      surface: { cellSize: o.cellSize, vUnitFt: o.vUnitFt, hUnitFt: o.hUnitFt ?? null, useBuildings: !!o.useBuildings, roofToGround: !!o.roofToGround, closedEdges: !!o.closedEdges,
+        imperv: o.imperv, nImp: o.nImp, nPerv: o.nPerv, ksInHr: o.ksInHr, suctionIn: o.suctionIn, imd: o.imd, useLandcover: o.useLandcover !== false, useSoils: o.useSoils !== false,
+        lcTable: o.lcTable || null, soilTable: o.soilTable || null, wetFt: o.wetFt, buildingFt: o.buildingFt, searchFt: o.searchFt ?? null, useSwmmFlooding: !!o.useSwmmFlooding },
       inlets: o.coupling === "two" ? { lw: o.lw, cw: o.cw, inletArea: o.inletArea, co: o.co, clog: o.clog, defaultInlets: o.defaultInlets } : null,
       boundaries: (o.boundaries || []).map((b) => ({ key: b.key, node: b.node ?? null, routed: !!b.routed, level: Number.isFinite(b.level) ? b.level : null, areaAc: b.areaAc ?? null })) }, inputs: Object.values(S.inputHashes || {}) };
     $("#pbar").style.width = "100%";
@@ -287,7 +304,7 @@ async function compareWith(file) {
     const pdiff = RIO.provDiff(S.prov, r.h.prov);
     $("#cmp-note").innerHTML = `Compared with <b>${esc(file.name)}</b> (saved ${esc((r.h.saved || "").slice(0, 16).replace("T", " "))}): ${fmt(c.acres.compared, 1)} ac of open ground in both runs.` +
       (c.typeDiffers ? ` <span class="warn">${c.typeDiffers.toLocaleString()} cells are ground in one run and a building, wall or lake in the other; they are left out.</span>` : "") +
-      (S.prov && r.h.prov ? (pdiff.length ? ` <span class="warn">Run settings differ: ${esc(pdiff.join("; "))}.</span>` : " The two runs used the same settings and input files.") : "");
+      (pdiff === null ? " The settings of one of the runs were not recorded, so they cannot be compared." : pdiff.length ? ` <span class="warn">Run settings differ: ${esc(pdiff.join("; "))}.</span>` : " The recorded settings and input files of the two runs agree.");
     S.view = "diff"; $("#view").value = "diff"; paint();
     msg(`Comparing with ${esc(file.name)}. Choose “Change in maximum depth” under Show to see it again.`);
   } catch (e) { msg(`Could not compare: ${esc(e.message)}`, "err"); }
@@ -527,7 +544,7 @@ function lakesHtml() {
   const ac = (v) => fmt(v / 43560, 3);
   return `<h3 style="margin:12px 0 6px;font-size:15px">Routed lakes</h3><div style="overflow-x:auto;max-width:100%"><table class="t"><thead><tr><th>Lake</th><th class="n">Start (ft)</th><th class="n">Peak (ft)</th><th class="n">End (ft)</th><th class="n">Area (ac)</th><th class="n">From the 2D (ac-ft)</th><th class="n">Rain on the lake (ac-ft)</th><th class="n">SWMM outfalls (ac-ft)</th><th class="n">Outlet (ac-ft)</th></tr></thead><tbody>` +
     lk.names.map((n, i) => { const tab = lk.areaFrom[i] === "stage-area table", out = lk.outlet ? lk.outlet[i] : 0, node = lk.outletNode && lk.outletNode[i];
-      return `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${tab ? " (table, at start)" : lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td><td class="n">${lk.hasOutlet && lk.hasOutlet[i] ? `${esc((lk.outletKind && lk.outletKind[i]) || "outlet")} outlet: ${ac(out)}${node ? ` to ${esc(node)}` : " out of the model"}` : "none"}</td></tr>`; }).join("") +
+      return `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${tab ? " (table, at start)" : lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td><td class="n">${lk.hasOutlet && lk.hasOutlet[i] ? `${lk.outletKind && lk.outletKind[i] ? esc(lk.outletKind[i]) + " outlet" : "outlet"}: ${ac(out)}${node ? ` to ${esc(node)}` : " out of the model"}` : "none"}</td></tr>`; }).join("") +
     `</tbody></table></div><p class="note">A routed lake is a level pool: its volume changes by water from the 2D + rain on its area + SWMM outfall inflow − its outlet, and its level follows from its area (constant, or its stage-area table).</p>`;
 }
 function swmm2Html() {

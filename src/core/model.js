@@ -25,21 +25,38 @@
     const [rx, ry] = img.getResolution(); const [ox, oy] = img.getOrigin();
     if (!(Math.abs(Math.abs(rx) - Math.abs(ry)) < 1e-6 * Math.abs(rx))) throw new Error(`The DEM cells are not square (${Math.abs(rx)} x ${Math.abs(ry)}); resample it first`);
     const fd = img.getFileDirectory(); if (fd.ModelTransformation) throw new Error("Rotated GeoTIFFs are not supported; warp the DEM to north-up first");
-    const ras = await img.readRasters({ interleave: true }); const nd = img.getGDALNoData();
+    // band 1 only: with interleave and no sample list a multi-band file came back band-interleaved (100, 1, 101, 1, ...) and every
+    // elevation was wrong (review 0.6.1 WRK6-1); a file with more bands is read and said so
+    const nb = img.getSamplesPerPixel();
+    const ras = await img.readRasters({ interleave: true, samples: [0] }); const nd = img.getGDALNoData();
     const data = new Float32Array(nx * ny); let valid = 0;
     for (let i = 0; i < data.length; i++) { const v = ras[i]; const bad = !Number.isFinite(v) || (nd !== null && v === nd) || v < -1e20 || v > 1e20; data[i] = bad ? NaN : v; if (!bad) valid++; }
     if (!valid) throw new Error("The DEM has no valid cells");
     const gk = img.getGeoKeys() || {}; const epsg = gk.ProjectedCSTypeGeoKey && gk.ProjectedCSTypeGeoKey !== 32767 ? gk.ProjectedCSTypeGeoKey : null;
     if (!epsg && gk.GeographicTypeGeoKey && !gk.ProjectedCSTypeGeoKey) throw new Error("The DEM is in geographic coordinates (degrees); project it to a CRS in feet or meters first (python/prep_dem.py)");
     const c = epsg ? lookupCrs(catalog, epsg) : null;
-    let vUnit = null; const vt = (gk.VerticalUnitsGeoKey || null); if (vt === 9001) vUnit = "m"; else if (vt === 9002) vUnit = "ft"; else if (vt === 9003) vUnit = "us-ft";
     const warnings = [];
-    if (!vUnit) {   // GDAL's UNITTYPE band tag (what python/prep_dem.py --zunits writes) is not a GeoKey, so the hint above missed it and
-      // a feet DEM under a metric CRS fell back to metres, 3.28x out (review F-11); read the tag from GDAL_METADATA as well
-      const m = /name="UNITTYPE"[^>]*>([^<]+)</.exec((fd && fd.GDAL_METADATA) || "");
-      if (m) { const u = m[1].trim().toLowerCase(); if (u === "m" || u === "metre" || u === "metres" || u === "meter" || u === "meters") vUnit = "m"; else if (u === "us-ft" || u === "us survey foot" || u === "us survey feet" || u === "us_survey_feet" || u === "ftus") vUnit = "us-ft"; else if (u === "ft" || u === "foot" || u === "feet") vUnit = "ft";
-        // a UNITTYPE this reader does not know is named in the warnings, not silently dropped (0.6.1, review 0.6.0 F-13)
-        else if (u) warnings.push(`The DEM's vertical-unit tag (UNITTYPE) is "${m[1].trim()}", which is not a unit this app knows (m, ft, us-ft); the elevation unit is taken from the CRS instead`); }
+    if (nb > 1) warnings.push(`The DEM file has ${nb} bands; band 1 is read as the ground elevation`);
+    /* Vertical unit hint, from the VerticalUnitsGeoKey (EPSG unit codes: 9001 m, 9002 ft, 9003 US survey ft) or GDAL's UNITTYPE
+     * band tag (what python/prep_dem.py --zunits writes; GDAL marks it role="unittype", other tools write a plain item). Any code or
+     * name this app does not know is named in the warnings, and a GeoKey and a tag that disagree are said to (review 0.6.1 WRK6-8:
+     * 9036 and 9030 were dropped silently, and of two tags the first was taken where GDAL takes the role item). */
+    const unitOf = (u) => { u = String(u).trim().toLowerCase().replace(/[\s-]+/g, "_");
+      if (["m", "metre", "metres", "meter", "meters"].includes(u)) return "m";
+      if (["us_ft", "ftus", "us_survey_foot", "us_survey_feet", "survey_foot", "survey_feet", "foot_us", "ft_us"].includes(u)) return "us-ft";
+      if (["ft", "foot", "feet", "international_foot", "international_feet"].includes(u)) return "ft";
+      return null; };
+    const vt = gk.VerticalUnitsGeoKey || null, codes = { 9001: "m", 9002: "ft", 9003: "us-ft" };
+    let vUnit = null;
+    if (vt) { vUnit = codes[vt] || null; if (!vUnit) warnings.push(`The DEM's vertical unit code (VerticalUnitsGeoKey) is ${vt}, which is not a unit this app knows (9001 m, 9002 ft, 9003 US survey ft); the elevation unit is taken from the CRS instead`); }
+    const md = (fd && fd.GDAL_METADATA) || "", items = [...md.matchAll(/<Item\s([^>]*)>([^<]*)<\/Item>/g)].filter((m) => /name="UNITTYPE"/.test(m[1]));
+    const tag = items.find((m) => /role="unittype"/.test(m[1])) || items[0];
+    if (tag) {
+      const raw = tag[2].trim(), u = unitOf(raw);
+      if (!u && raw) warnings.push(`The DEM's vertical-unit tag (UNITTYPE) is "${raw}", which is not a unit this app knows (m, ft, us-ft); the elevation unit is taken from the CRS instead`);
+      if (items.length > 1 && new Set(items.map((m) => unitOf(m[2]))).size > 1) warnings.push(`The DEM carries ${items.length} vertical-unit tags (${items.map((m) => m[2].trim()).join(", ")}); the GDAL band unit "${raw}" is used`);
+      if (u && vUnit && u !== vUnit) warnings.push(`The DEM's vertical unit code says ${vUnit} but its UNITTYPE tag says ${raw}; the code (${vUnit}) is used`);
+      else if (u && !vUnit) vUnit = u;
     }
     return { nx, ny, x0: ox, y1: oy, res: Math.abs(rx), data, valid, epsg, crsName: c ? c.name : null, proj4: c ? c.proj4 : null, hUnitFt: c ? proj4UnitFt(c.proj4) : NaN, vUnitHint: vUnit, warnings,
       bounds: [ox, oy - ny * Math.abs(ry), ox + nx * Math.abs(rx), oy] };
@@ -155,7 +172,12 @@
     const bStart = new Int32Array(bld.length + 1), bList = [];
     bld.forEach((ft, i) => { bStart[i] = bList.length; fillRings(featureRings(ft), G, (k) => { if (type[k] === 0) { type[k] = 1; bCells++; } bList.push(k); }); });
     bStart[bld.length] = bList.length;
-    if (bld.length && !bList.length) warnings.push(`Buildings do not cover any cell of the grid (the file has ${bld.length} feature${bld.length === 1 ? "" : "s"}); check the coordinate system`);   // a non-empty file covering nothing used to pass silently (review F-12)
+    if (bld.length && !bList.length) {   // a non-empty file: footprints inside the grid but smaller than a cell are not a coordinate problem (WRK6-11)
+      const x1 = G.x0 + G.nx * G.cs, y0 = G.y1 - G.ny * G.cs;
+      const inside = bld.filter((ft) => featureRings(ft).some((ring) => ring.some(([x, y]) => x >= G.x0 && x <= x1 && y >= y0 && y <= G.y1))).length;
+      warnings.push(inside ? `Buildings do not cover any cell of the grid: ${inside} of the ${bld.length} footprints lie inside it but cover no cell centre (smaller than a ${G.cs} cell); use smaller cells to resolve them`
+        : `Buildings do not cover any cell of the grid (the file has ${bld.length} feature${bld.length === 1 ? "" : "s"}, none inside it); check the coordinate system`);
+    }   // (a non-empty file covering nothing used to pass silently: review F-12)
     // boundaries -> level cells; key index into o.boundaries
     const bnd = new Int16Array(N).fill(-1); let lvlCells = 0;
     (o.boundaries || []).forEach((b, i) => {
@@ -230,9 +252,12 @@
   /* nearest open cell within maxCells of k, by true (Euclidean) distance in cells, or -1.
    * A Chebyshev ring search (review F-09) accepted diagonal cells up to sqrt(2) x maxCells away under a
    * "within N ft" message and could return a farther diagonal over a nearer axial cell. */
+  /* The radius may be fractional (search distance in feet / cell size): a distance in feet is not rounded up to whole cells, so an
+   * open cell farther than the search distance is never taken (review 0.6.1 WRK6-6: ceil(30 / 12) = 3 cells accepted 36 ft). */
   function nearestOpen(type, G, k, maxCells) {
     if (k < 0) return -1; if (type[k] === 0) return k;
-    const r0 = (k / G.nx) | 0, c0 = k % G.nx, lim = maxCells * maxCells;
+    const r0 = (k / G.nx) | 0, c0 = k % G.nx, lim = maxCells * maxCells * (1 + 1e-12);
+    maxCells = Math.floor(maxCells);
     let best = -1, bd = Infinity;
     for (let r = Math.max(0, r0 - maxCells); r <= Math.min(G.ny - 1, r0 + maxCells); r++) for (let c = Math.max(0, c0 - maxCells); c <= Math.min(G.nx - 1, c0 + maxCells); c++) {
       const j = r * G.nx + c; if (type[j] !== 0) continue;
@@ -250,7 +275,7 @@
     if (out && out.unitSystem !== model.unitSystem) throw new Error(`The .inp is in ${model.unitSystem} units but the .out is in ${out.unitSystem} units; they are from different runs`);
     if (out) { const miss = model.nodes.filter((n) => out.nodeNames.indexOf(n.name) < 0).map((n) => n.name); if (miss.length) throw new Error(`The .out file does not match the .inp: nodes ${miss.slice(0, 5).join(", ")} are missing from it`); }
     const startMs = model.start ? model.start.getTime() : (out ? out.start.getTime() : 0);
-    const maxCells = Math.max(1, Math.ceil((o.searchFt ?? 30) / G.dxFt));
+    const maxCells = (o.searchFt ?? 30) / G.dxFt;   // radius in cells, not rounded up (review 0.6.1 WRK6-6)
     const sources = [], series = [], nodeMap = [];
     let outside = 0, moved = 0, dropped = 0, inBoundary = 0;
     for (const nd of model.nodes) {

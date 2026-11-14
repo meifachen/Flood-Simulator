@@ -93,9 +93,11 @@
    *   generic / grate:  min(Cw P hw^1.5, Co A sqrt(2 g min(hw, lim)))   grate: Cw 3.0, Co 0.67 (P perimeter, A clear opening)
    *   curb opening:     weir Cw (L + 1.8 W) hw^1.5 (Cw 2.3 with a gutter depression W > 0, else 3.0 on L);
    *                     above the opening height h also orifice Co h L sqrt(2 g do), do = hw - h/2, Co 0.67; capacity = the lesser
-   *   combination:      weir = grate weir + curb-opening weir (HEC-22 sag treatment; the curb weir was omitted before 0.6.0,
-   *                     understating shallow-ponding capture by over half, review F-10); orifice = grate orifice + curb orifice
-   *                     (the curb part once hw > h); capacity = the lesser
+   *   combination:      weir = grate weir + the weir of the curb opening's part beyond the grate (the "sweeper", curb length -
+   *                     grate length, when the grate length is given and shorter; HEC-22 sag treatment and EPA SWMM 5.2.4
+   *                     getOnSagInletCapture, which adds no curb weir along the grate: 0.6.0 added the whole curb weir and so
+   *                     over-counted by a third, review 0.6.1 CPL6-1); orifice = grate orifice + curb orifice (the curb part
+   *                     once hw > h); capacity = the lesser
    * Clogging c (0 <= c < 1) scales the grate perimeter and area (a curb-only inlet: its opening length) by 1 - c.
    *
    * An inlet flagged on-grade (it.onGrade, with its street's cross slope sx, longitudinal slope sl and gutter roughness gn)
@@ -114,7 +116,10 @@
     const sx = it.sx, sl = it.sl, gn = it.gn ?? 0.016, f = 1 - (it.clog || 0);
     const T = hw / sx, Q = 0.56 / gn * Math.pow(sx, 5 / 3) * Math.sqrt(sl) * Math.pow(T, 8 / 3);
     if (it.kind === "curb") {
-      const E0 = it.dw > 0 ? 1 - Math.pow(1 - Math.min(it.dw / T, 1), 2.67) : 0;
+      // depressed gutter: frontal-flow share of the composite section, HEC-22 eq. 4-4 (as SWMM 5.2.4 getEo), with Sw = sx + a/W;
+      // Se = sx + (a/W) Eo (HEC-22 eq. 4-23). The uniform-gutter share used before understated capture (review 0.6.1 CPL6-9).
+      let E0 = 0;
+      if (it.dep > 0 && it.dw > 0) { const r = (sx + it.dep / it.dw) / sx; E0 = T <= it.dw ? 1 : 1 / (1 + r / (Math.pow(1 + r / (T / it.dw - 1), 2.67) - 1)); }
       const Se = sx + (it.dep > 0 && it.dw > 0 ? (it.dep / it.dw) * E0 : 0);
       const LT = 0.6 * Math.pow(Q, 0.42) * Math.pow(sl, 0.3) * Math.pow(1 / (gn * Se), 0.6), L = it.cl * f;
       return Q * (L >= LT ? 1 : 1 - Math.pow(1 - L / LT, 1.8));
@@ -124,17 +129,30 @@
     const Rf = Math.max(0, 1 - 0.09 * Math.max(0, V - v0)), Rs = 1 / (1 + 0.15 * Math.pow(V, 1.8) / (sx * Math.pow(Lg, 2.3)));
     return Q * (Rf * E0 + Rs * (1 - E0));
   }
+  /* An on-grade inlet intercepts no more than its openings pass as an orifice at the same depth (with the same surcharge limit): the
+   * gutter-flow formulas have no spread limit, and at 2 ft of ponding an on-grade grate took 75.5 cfs against 22.8 cfs in sag
+   * (review 0.6.1 CPL6-3); a surcharged node also cuts it off smoothly through the orifice head, as in sag (CPL6-10). At gutter
+   * depths the orifice limit is far above the interception, so the HEC-22 on-grade fraction is unchanged there. */
   function inletCapacity(it, hw, lim) {
     if (!(hw > 0) || !(lim > 0)) return 0;
-    if (it.onGrade) return gradeCapacity(it, hw);
+    if (it.onGrade) return Math.min(gradeCapacity(it, hw), sagCapacity(it, hw, lim, true));
+    return sagCapacity(it, hw, lim, false);
+  }
+  function sagCapacity(it, hw, lim, orificeOnly) {
     const f = 1 - (it.clog || 0), hg = Math.min(hw, lim), r15 = Math.pow(hw, 1.5);
     const grateW = () => it.cw * it.lw * f * r15, grateO = () => it.co * it.area * f * Math.sqrt(2 * G * hg);
+    if (orificeOnly) {   // the opening's orifice capacity: grate, and the curb once it is submerged (a curb below its height has none)
+      const L0 = it.cl * (it.kind === "curb" ? f : 1), h0 = it.ch, gO = it.kind === "curb" ? 0 : grateO();
+      const cO = it.kind === "grate" || it.kind === "generic" ? 0 : hw > h0 ? it.cco * h0 * L0 * Math.sqrt(2 * G * Math.min(hw - h0 / 2, lim)) : (it.kind === "curb" ? Infinity : 0);
+      return gO + cO;
+    }
     if (it.kind === "generic" || it.kind === "grate") return Math.min(grateW(), grateO());
     const L = it.cl * (it.kind === "curb" ? f : 1), h = it.ch;
     const curbW = () => it.ccw * (L + 1.8 * it.dw) * r15;
     const curbO = () => { const hc = Math.min(hw > h ? hw - h / 2 : Infinity, lim); return hc === Infinity ? Infinity : it.cco * h * L * Math.sqrt(2 * G * hc); };
     if (it.kind === "curb") return Math.min(curbW(), curbO());
-    return Math.min(grateW() + curbW(), grateO() + (hw > h ? curbO() : 0));   // combination
+    const sweep = it.gl > 0 ? Math.max(0, it.cl - it.gl) : 0;   // curb opening beyond the grate (none when the grate length is not given)
+    return Math.min(grateW() + (sweep > 0 ? it.ccw * sweep * r15 : 0), grateO() + (hw > h ? curbO() : 0));   // combination
   }
   const KINDS = ["generic", "grate", "curb", "combination"];
 
@@ -156,12 +174,13 @@
     if (!(typeof def.clog === "number" && def.clog >= 0 && def.clog < 1)) throw new Error(`Default inlet clogging ${show0(def.clog)} is not a fraction from 0 to below 1`);
     if (!(capFrac > 0)) throw new Error(`Inlet capture limit (capFrac) ${show0(capFrac)} is not a positive number`);
     const sw = await SwmmEngine.open(createSWMM, inpText);
-    const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = Math.max(1, Math.ceil(searchFt / Gd.dxFt));
+    const W = sw.notes.slice(), Gd = B.G, A = Gd.dxFt * Gd.dxFt, searchFt = o.searchFt ?? 30, maxCells = searchFt / Gd.dxFt;   // search radius in cells, not rounded up (review 0.6.1 CPL6-8)
     const links = [], nodeMap = [], byName = {}, lakeOutfalls = [];
     const lakeOf = (k0) => {   // the level boundary an outfall discharges into: its own cell, or the nearest lake cell within the search distance
       if (B.type[k0] === 2) return (B.g.aux[4 * k0 + 2] >> 4) & 255;
       const r0 = (k0 / Gd.nx) | 0, c0 = k0 % Gd.nx; let best = -1, bd = Infinity;
-      for (let dr = -maxCells; dr <= maxCells; dr++) for (let dc = -maxCells; dc <= maxCells; dc++) {
+      const R = Math.floor(maxCells);
+      for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
         const r = r0 + dr, c = c0 + dc; if (r < 0 || c < 0 || r >= Gd.ny || c >= Gd.nx) continue; const k = r * Gd.nx + c, d = dr * dr + dc * dc;
         if (B.type[k] === 2 && d <= maxCells * maxCells && d < bd) { bd = d; best = (B.g.aux[4 * k + 2] >> 4) & 255; }
       }
@@ -191,6 +210,15 @@
       const kind = it.type === undefined || it.type === null || it.type === "" ? "generic" : String(it.type).trim().toLowerCase();
       if (!KINDS.includes(kind)) throw new Error(`${label}: inlet type ${show(it.type)} is not one of ${KINDS.join(", ")}`);
       const hasGrate = kind !== "curb", hasCurb = kind === "curb" || kind === "combination";
+      // Every size or coefficient given is checked, whether or not this inlet type uses it: a bad value in the table is refused, not
+      // kept silently (review 0.5.0 round 4 CPL5-F5). A blank cell (null) counts as not given (CPL5-F4).
+      const has = (v) => v !== undefined && v !== null;
+      for (const [v, what, zeroOk] of [[it.lw, "weir length or grate perimeter"], [it.area, "grate area"], [it.cw, "weir coefficient"], [it.co, "orifice coefficient"],
+        [it.curbLength, "curb opening length"], [it.curbHeight, "curb opening height"], [it.ccw, "curb weir coefficient"], [it.cco, "curb orifice coefficient"],
+        [it.depressionWidth, "gutter depression width", true], [it.depressionDepth, "gutter depression depth", true], [it.grateLength, "grate length"], [it.grateWidth, "grate width"]])
+        if (has(v) && !(typeof v === "number" && Number.isFinite(v) && (zeroOk ? v >= 0 : v > 0))) throw new Error(`${label}: ${what} ${show(v)} is not ${zeroOk ? "zero or " : ""}a positive number`);
+      if (has(it.onGrade) && typeof it.onGrade !== "boolean") throw new Error(`${label}: on_grade ${show(it.onGrade)} is not true or false`);
+      if (it.depressionDepth > 0 && !(it.depressionWidth > 0)) throw new Error(`${label}: a gutter depression depth of ${it.depressionDepth} ft needs its width (depression_width_ft)`);
       if (kind !== "generic") {
         if (hasGrate && (it.lw === undefined || it.area === undefined)) throw new Error(`${label}: a ${kind} inlet needs the grate perimeter (perimeter_ft) and clear opening area (open_area_sqft)`);
         if (hasCurb && (it.curbLength === undefined || it.curbHeight === undefined)) throw new Error(`${label}: a ${kind} inlet needs curb_length_ft and curb_height_ft`);
@@ -203,18 +231,19 @@
         // TxDOT HDM ch. 10 sec. 6: for an opening longer than 12 ft the depression is not counted (W = 0, Cw 3.0)
         const dwUse = it.curbLength > 12 ? 0 : dw, longCurb = it.curbLength > 12;
         // a weir coefficient given for a long curb is not used, but it is still checked: a bad value in the table is refused, not hidden
-        if (it.ccw !== undefined && !(typeof it.ccw === "number" && Number.isFinite(it.ccw) && it.ccw > 0)) throw new Error(`${label}: ${NAMES.ccw} ${show(it.ccw)} is not a positive number`);
-        if (longCurb && (dw > 0 || (it.ccw !== undefined && it.ccw !== 3.0))) W.push(`${label}: curb opening ${it.curbLength} ft is longer than 12 ft, so its gutter depression is not counted and its weir coefficient is 3.0 (TxDOT HDM ch. 10)`);
+        if (longCurb && (dw > 0 || (has(it.ccw) && it.ccw !== 3.0))) W.push(`${label}: curb opening ${it.curbLength} ft is longer than 12 ft, so its gutter depression is not counted and its weir coefficient is 3.0 (TxDOT HDM ch. 10)`);
         Object.assign(p, { cl: it.curbLength, ch: it.curbHeight, dw: dwUse, ccw: longCurb ? 3.0 : it.ccw ?? (dwUse > 0 ? 2.3 : 3.0), cco: it.cco ?? 0.67 });   // over 12 ft TxDOT sets Cw 3.0 as well
       }
       for (const [key, v] of Object.entries(p)) if (key !== "kind" && key !== "dw" && !(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: ${NAMES[key]} ${show(v)} is not a positive number`);
       p.clog = it.clog ?? def.clog;
       if (!(typeof p.clog === "number" && Number.isFinite(p.clog) && p.clog >= 0 && p.clog < 1)) throw new Error(`${label}: clogging ${show(p.clog)} is not a fraction from 0 to below 1`);
-      if (it.onGrade) {
+      if (it.onGrade === true) {
         // on-grade interception (HEC-22 ch. 4): the street's slopes are site data, so they are required, not defaulted
         if (kind === "generic") throw new Error(`${label}: a generic inlet has no on-grade form in HEC-22; give the inlet a type (grate, curb or combination)`);
         for (const [key, v, what] of [["sx", it.crossSlope, "cross slope (cross_slope)"], ["sl", it.longSlope, "longitudinal slope (long_slope)"]]) {
           if (!(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`${label}: an on-grade inlet needs its street's ${what}; ${show(v)} is not a positive number`);
+          // slopes are ft/ft (HEC-22 eq. 4-2); a value of 0.3 or more is a percent (as SWMM's [STREETS] takes) or a typo (review 0.6.1 CPL6-6)
+          if (v >= 0.3) throw new Error(`${label}: ${what} ${v} is not a street slope in ft/ft (0.02 for 2%); give it as a fraction`);
           p[key] = v;
         }
         p.gn = it.gutterN ?? 0.016;
@@ -229,7 +258,8 @@
         }
         if (hasCurb) { p.dep = it.depressionDepth ?? 0; if (!(typeof p.dep === "number" && Number.isFinite(p.dep) && p.dep >= 0)) throw new Error(`${label}: gutter depression depth (depression_depth_ft) ${show(it.depressionDepth)} is not zero or a positive number`); }
         p.onGrade = true;
-      }
+      } else if (kind === "combination" && has(it.grateLength)) p.gl = it.grateLength;   // in sag: the curb beyond the grate adds weir flow
+
       if (it.rimFt !== undefined && it.rimFt !== null && !(typeof it.rimFt === "number" && Number.isFinite(it.rimFt))) throw new Error(`${label}: crest elevation ${show(it.rimFt)} is not a number`);
       const j = byName[it.node];
       if (j === undefined) { W.push(`Inlet ${n + 1}: node ${it.node} is not a coupled SWMM junction; inlet ignored`); continue; }
@@ -252,6 +282,7 @@
     const tally = { recirculated: 0, deliveredToSwmm: 0, owedToSwmm: 0, sentToSwmm: 0, fromSwmm: 0, lostOverflow: 0, demanded: 0, shortfall: 0, pendingOverflow: 0, perNode: links.map(() => ({ in: 0, out: 0 })), perInlet: inlets.map(() => 0) };
     const allIdx = Array.from({ length: sw.nNodes }, (_, i) => i), coupledSet = new Set(links.map((l) => l.i));
     let lastRates = links.map(() => 0), pendV = links.map(() => 0), cur = null; const owed = links.map(() => 0);
+    let lastDt = 0;   // the last coupling interval (s): finish() spreads what is still owed over one such interval
     const extraOwed = new Map();   // SWMM node index -> lake outlet water owed to a node that is not a coupled junction
     const inletCells = inlets.map((it) => it.k), cells = [...new Set(inletCells)];
     const clampAt = async (solver) => { const c = solver.readClamp ? await solver.readClamp(cells) : new Float64Array(cells.length); if (!c || c.length !== cells.length) throw new Error(`The 2D gave ${c ? c.length : "no"} clamp values for ${cells.length} cells`); return c; };
@@ -278,7 +309,7 @@
     }
     /* after an interval (h1 is where it stopped): what the inlets took goes to SWMM, which steps over the same interval */
     async function afterChunk(h0, h1, solver) {
-      if (!cur) return; const c = cur; cur = null; const dt = (h1 - h0) * 3600; if (!(dt > 0)) return;
+      if (!cur) return; const c = cur; cur = null; const dt = (h1 - h0) * 3600; if (!(dt > 0)) return; lastDt = dt;
       const c1 = await clampAt(solver), demCell = {};
       if (!Array.from(c1).every(Number.isFinite)) throw new Error(`The 2D clamp at an inlet cell is not a number at hour ${h1.toFixed(2)}; the exchange cannot be booked`);
       inlets.forEach((it, m) => (demCell[it.k] = (demCell[it.k] || 0) + c.qin[m] * dt));
@@ -323,24 +354,35 @@
         return i;
       });
       tally.lakeOutletsToSwmm = names.map(() => 0);
-      return (h0, h1, vols) => vols.forEach((v, m) => {
+      return (h0, h1, vols) => {
+        // one volume per lake, each zero or more (review 0.5.0 round 4 CPL5-F2: a longer array put water into SWMM node 0, NaN and
+        // negative volumes vanished)
+        if (!(vols && vols.length === names.length && Array.from(vols).every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)))
+          throw new Error(`Lake outlet volumes at hour ${Number(h1).toFixed(2)} are not one volume of zero or more per lake (${JSON.stringify(vols && Array.from(vols))})`);
+        vols.forEach((v, m) => {
         if (idx[m] < 0 || !(v > 0)) return; tally.lakeOutletsToSwmm[m] += v;
         const j = links.findIndex((l) => l.junction && l.i === idx[m]);
         if (j >= 0) owed[j] += v; else extraOwed.set(idx[m], (extraOwed.get(idx[m]) || 0) + v);
         tally.owedToSwmm = owedTotal();
-      });
+        });
+      };
     }
     /* stop the exchange, run SWMM to the end of its simulation and close it */
     const finish = () => {
       if (cur) throw new Error(`afterChunk was not called for the last interval (from hour ${cur.h0.toFixed(4)}): the water the inlets took there would never reach SWMM`);
       // hand SWMM what the inlets took but its steps have not yet received (at most about one routing step), then stop and run to the end
+      // The first pass spreads what is owed over one coupling interval, as the exchange did: a whole interval's lake-outlet release
+      // handed over in one routing step showed as a 600 cfs spike in SWMM's report instead of 10 cfs (review 0.5.0 round 4 CPL5-F1).
+      // Later passes take what is left (about one routing step) a step at a time. latV may not exist yet (CPL5-F6).
+      const lv = (i) => (sw.latV ? sw.latV.get(i) || 0 : 0);
       for (let k = 0; k < 50 && !sw.done && (owed.some((v) => v > 1e-6) || [...extraOwed.values()].some((v) => v > 1e-6)); k++) {
-        const step = sw.lastStep > 0 ? sw.lastStep : 1, v0 = links.map((l) => sw.latV.get(l.i) || 0), x0 = new Map([...extraOwed.keys()].map((i) => [i, sw.latV.get(i) || 0]));
-        links.forEach((l, j) => { if (l.junction) sw.setLat(l.i, Math.max(owed[j], 0) / step); });
-        extraOwed.forEach((v, i) => sw.setLat(i, Math.max(v, 0) / step));
-        sw.advance(sw.tSec + step * 0.999, []);
-        links.forEach((l, j) => { if (!l.junction) return; const got = (sw.latV.get(l.i) || 0) - v0[j]; owed[j] -= got; tally.deliveredToSwmm += got; });
-        x0.forEach((v, i) => { const got = (sw.latV.get(i) || 0) - v; extraOwed.set(i, extraOwed.get(i) - got); tally.deliveredToSwmm += got; });
+        const step = sw.lastStep > 0 ? sw.lastStep : 1, span = k === 0 ? Math.max(lastDt, step) : step;
+        const v0 = links.map((l) => lv(l.i)), x0 = new Map([...extraOwed.keys()].map((i) => [i, lv(i)]));
+        links.forEach((l, j) => { if (l.junction) sw.setLat(l.i, Math.max(owed[j], 0) / span); });
+        extraOwed.forEach((v, i) => sw.setLat(i, Math.max(v, 0) / span));
+        sw.advance(sw.tSec + span * 0.999, []);
+        links.forEach((l, j) => { if (!l.junction) return; const got = lv(l.i) - v0[j]; owed[j] -= got; tally.deliveredToSwmm += got; });
+        x0.forEach((v, i) => { const got = lv(i) - v; extraOwed.set(i, extraOwed.get(i) - got); tally.deliveredToSwmm += got; });
       }
       tally.owedToSwmm = owedTotal();
       stop(); sw.advance(1e12, []); return sw.finish();

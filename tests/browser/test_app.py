@@ -11,9 +11,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 APP = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "dist", "FloodSimulator.html"))
 # suite stamp (0.6.1, review 0.6.0 F-10): the claims gate accepts a captured log only if this stamp's app version
 # and dist sha256 match the tree being gated, so a stale log cannot pass the B20 figure
+# The manifest must describe this very file (review 0.6.1 P-08): a manifest rebuilt without the HTML (a stale app labelled
+# with a new version) is refused here instead of being stamped and tested as the new version.
 _man = os.path.join(os.path.dirname(APP), "FloodSimulator.manifest.json")
-_ver = json.load(open(_man)).get("version", "?") if os.path.exists(_man) else "?"
-_sha = hashlib.sha256(open(APP, "rb").read()).hexdigest()[:16] if os.path.exists(APP) else "?"
+_mj = json.load(open(_man)) if os.path.exists(_man) else {}
+_ver = _mj.get("version", "?")
+_sha = hashlib.sha256(open(APP, "rb").read()).hexdigest() if os.path.exists(APP) else "?"
+if _mj and _mj.get("sha256") != _sha:
+    print(f"FAIL the app file is not the one its manifest describes (manifest {_ver}, sha256 {str(_mj.get('sha256'))[:16]}; file sha256 {_sha[:16]}); run python tools/build.py", flush=True)
+    sys.exit(1)
 print(f"SUITE STAMP: app {_ver}, dist sha256 {_sha}, {datetime.now(timezone.utc).isoformat(timespec='seconds')}", flush=True)
 TMP = tempfile.mkdtemp(prefix="fsim_")
 res = []
@@ -57,7 +63,7 @@ with sync_playwright() as p:
     ncontrols = pg.evaluate("document.querySelectorAll('main input, main select, main button, header button').length")
     ok("B19 every visible input, setting and button has a tooltip", not untipped and ncontrols > 60, f"{ncontrols} controls; without a tip: {untipped}")
     pg.focus("#cfl"); pg.wait_for_timeout(200)
-    ok("B19 a tooltip shows on keyboard focus with the units, default and range", pg.is_visible("#tip") and "Default 0.7; 0.1–1" in pg.inner_text("#tip") and pg.get_attribute("#cfl", "aria-describedby") == "tip", pg.inner_text("#tip")[:90])
+    ok("B19 a tooltip shows on keyboard focus with the units, default and range", pg.is_visible("#tip") and "Default 0.7; 0.1–0.7" in pg.inner_text("#tip") and pg.get_attribute("#cfl", "aria-describedby") == "tip", pg.inner_text("#tip")[:90])
     pg.click('.fstep[data-step="run"] .leaf[data-go="#wet"]'); pg.wait_for_timeout(700)
     ok("B19 a workflow item opens its panel and focuses that setting", pg.evaluate("document.activeElement.id") == "wet" and pg.evaluate("document.querySelector('#s-run').open"), pg.evaluate("document.activeElement.id"))
     pg.click('.fstep[data-step="water"] .leaf.gd'); pg.wait_for_timeout(400)

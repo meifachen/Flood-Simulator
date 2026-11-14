@@ -74,12 +74,17 @@ const RIO = {
   },
   /* The differences between two runs' provenance: a list of "what: this vs other" strings (empty when the settings
    * and the input files agree). Input files are compared by name and hash. */
+  /* Differences between two runs' provenance, or null when either run has none (unknown is not the same as identical: review 0.6.1 WRK6-3).
+   * Every recorded setting is compared, the grid and surface group key by key. */
   provDiff(a, b) {
-    if (!a || !b) return [];
+    if (!a || !b) return null;
     const out = [], sa = a.settings || {}, sb = b.settings || {};
     if (String(a.app ?? "") !== String(b.app ?? "")) out.push(`app version: ${a.app ?? "–"} vs ${b.app ?? "–"}`);
     for (const k of ["engine", "cfl", "coupling", "couplingSec", "t0", "t1", "outputSec", "rainSource", "dvThresh", "rainInHr", "rainHours", "gauge", "drainInHr", "dtMax"])
       if (String(sa[k] ?? "") !== String(sb[k] ?? "")) out.push(`${k}: ${sa[k] ?? "–"} vs ${sb[k] ?? "–"}`);
+    const su = sa.surface || {}, sv = sb.surface || {};
+    for (const k of new Set([...Object.keys(su), ...Object.keys(sv)])) { const x = JSON.stringify(su[k] ?? null), y = JSON.stringify(sv[k] ?? null); if (x !== y) out.push(`${k}: ${x} vs ${y}`); }
+    if (!sa.surface !== !sb.surface) out.push("grid and surface settings: recorded for one run only");
     const ia2 = sa.inlets || {}, ib2 = sb.inlets || {};
     for (const k of ["lw", "cw", "inletArea", "co", "clog", "defaultInlets"])
       if (String(ia2[k] ?? "") !== String(ib2[k] ?? "")) out.push(`inlet ${k}: ${ia2[k] ?? "–"} vs ${ib2[k] ?? "–"}`);

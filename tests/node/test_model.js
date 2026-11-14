@@ -117,6 +117,20 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
       odd.vUnitHint === null && (odd.warnings || []).some((w) => /UNITTYPE\) is "ft_survey"/.test(w)) && !(tagged.warnings || []).length && !(plain.warnings || []).length,
       `warnings: ${(odd.warnings || []).join(" | ") || "none"}`);
   }
+  // a two-band GeoTIFF read as a DEM gives band 1, with a note (review 0.6.1 WRK6-1: the bands came back interleaved, 100, 1, 101, 1, ...)
+  {
+    const G2 = { nx: 4, ny: 2, x0: 500000, y1: 1600000, cs: 10 }, b1 = Float32Array.from({ length: 8 }, (_, i) => 100 + i);
+    const d2 = await M.readDEM(M.geoTiff(G2, 2236, [{ name: "z", data: b1 }, { name: "other", data: new Float32Array(8).fill(1) }], "us-ft"), GeoTIFF, catalog);
+    ok("a two-band DEM file is read as band 1, with a warning naming the band count", Array.from(d2.data).join() === Array.from(b1).join() && d2.warnings.some((w) => /has 2 bands; band 1 is read/.test(w)),
+      `${Array.from(d2.data).join(",")} | ${d2.warnings.join(" | ")}`);
+  }
+  // the search radius is the search distance in feet over the cell size, not rounded up to whole cells (review 0.6.1 WRK6-6, CPL6-8):
+  // with 30 ft and 12 ft cells (2.5 cells) an open cell 3 cells (36 ft) away is not taken; with 36 ft it is
+  {
+    const G = { nx: 11, ny: 11 }, k0 = 5 * 11 + 5, t = new Uint8Array(121).fill(1); t[5 * 11 + 8] = 0;
+    ok("an open cell 36 ft away (3 cells of 12 ft) is outside a 30 ft search radius and inside a 36 ft one", M.nearestOpen(t, G, k0, 30 / 12) === -1 && M.nearestOpen(t, G, k0, 36 / 12) === 5 * 11 + 8,
+      `30 ft: ${M.nearestOpen(t, G, k0, 30 / 12)}; 36 ft: ${M.nearestOpen(t, G, k0, 36 / 12)}`);
+  }
   // nearestOpen measures true (Euclidean) distance in cells (review F-09): a diagonal 3 cells over and 3 up is 4.24 cells away,
   // outside a 3-cell radius; and a nearer axial cell beats a farther diagonal at the same ring
   {

@@ -101,5 +101,23 @@ function grid(nx, ny, dx, fz, ft, n = 0.03) {
       out.tvmax.length === ch.g.N && dur > 2900 && dur < 3500 && tv > 0.25 && tv < 0.45 && durHi === 0,
       `duration above 0.5 ft2/s ${dur.toFixed(0)} s of 7200 (measured 3191); time of max speed ${tv.toFixed(3)} h (measured 0.338); duration above 2.0 ft2/s ${durHi.toFixed(0)} s`);
   }
+  // V9 (review 0.6.1 ENG6-6, 6-7, 6-8) the duration above the D x V threshold is summed exactly enough: with a steady channel and fine steps
+  // (dtMax 0.02 s, 4 h: 720,000 steps), a cell above the threshold records the whole 4 h less the few seconds the restarted face flows
+  // take to build up (14,380-14,400 s; measured 14,392.8); the plain Float32 sum of 0.6.1 recorded 14,254.6 s (-1%), and drifted by -8%
+  // over 72 h at this step; a threshold set in one run does not carry over to the next run on the same solver; carried-over
+  // velocity arrays of the wrong size or with bad values are refused
+  {
+    const ch = channel({ nx: 40 }), solver = new F.CpuSolver(ch.g), steady = (h0) => ch.src.map(() => ch.Q / ch.src.length);
+    const warm = await sim(ch, { t1: 1, sourceAt: steady, solver });   // reach steady flow first, then carry the state over
+    const init = warm.frames.at(-1).st, k = ch.idx(3, 20);
+    const fine = await sim(ch, { t0: 1, t1: 5, sourceAt: steady, init, dtMax: 0.02, readSec: 14400, solver });
+    const a = await sim(ch, { t1: 0.5, sourceAt: steady, dvThresh: 50, solver }), b = await sim(ch, { t1: 0.5, sourceAt: steady, solver });
+    const N = ch.g.N, z = new Float32Array(N), msgs = [];
+    for (const iv of [{ vmax: z, dvmax: z, tvmax: new Float32Array(N - 5) }, { vmax: z, dvmax: z, dvdur: new Float32Array(N).fill(-1) }, { vmax: z, dvmax: z, froude: Float32Array.from(z, () => NaN) }])
+      try { await sim(ch, { t1: 0.01, sourceAt: steady, init, initVel: iv }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    ok("V9 the D x V duration of a cell above the threshold for 4 h of 0.02 s steps is 14,380-14,400 s (0.6.1: 14,254.6); a run's threshold does not carry over; bad carried-over arrays are refused",
+      fine.dvdur[k] > 14380 && fine.dvdur[k] <= 14400 && a.dvdur[k] === 0 && b.dvdur[k] > 1000 && /initVel.tvmax has \d+ values/.test(msgs[0]) && /initVel.dvdur at cell 0 is -1/.test(msgs[1]) && /initVel.froude at cell 0 is NaN/.test(msgs[2]),
+      `duration ${fine.dvdur[k].toFixed(2)} s of 14,400; threshold 50 then default: ${a.dvdur[k]} then ${b.dvdur[k].toFixed(0)} s | ${msgs.join(" | ")}`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

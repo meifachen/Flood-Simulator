@@ -6,3 +6,4 @@ node_modules/
 test-results/
 vendor_src/
 *.bundle
+tests/browser-last.log

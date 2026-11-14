@@ -57,11 +57,14 @@ async function loadAll(a) {
   }
   if (!DEM) throw new Error("Load a DEM first");
   // the vector layers already loaded were placed in the DEM's CRS; once it has one, changing it would leave them in the old one
-  if (a.epsg && !a.dem && DEM.proj4 && a.epsg !== DEM.epsg && (BLD.length || BOUND.length || INLETS)) throw new Error(`The DEM is already in EPSG ${DEM.epsg}, and the buildings, boundaries or inlets loaded were placed in it; load the DEM again to use EPSG ${a.epsg}`);
+  if (a.epsg && !a.dem && DEM.proj4 && a.epsg !== DEM.epsg && (BLD.length || BOUND.length || INLETS || (SOIL && SOIL.kind === "polygons"))) throw new Error(`The DEM is already in EPSG ${DEM.epsg}, and the buildings, boundaries, inlets or soil polygons loaded were placed in it; load the DEM again to use EPSG ${a.epsg}`);
   if (a.epsg && !a.dem) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); regrid(); }
   const z = DEM.data; let zmin = Infinity, zmax = -Infinity; for (const v of z) if (v === v) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
   res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, warnings: DEM.warnings || [], zmin, zmax, valid: DEM.valid };
-  if ("buildings" in a) { let bld = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); bld = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: bld.length, note: r.note, feats: bld }; } else res.buildings = { count: 0 }; BLD = bld; regrid(); }
+  if ("buildings" in a) { let bld = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); bld = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type));
+      // features that are not polygons (lines, points) cannot be footprints: they are counted and said so, not dropped silently (WRK6-11)
+      const other = r.feats.length - bld.length; if (!bld.length && other) throw new Error(`Buildings: none of the ${other} features is a polygon (${[...new Set(r.feats.map((f) => (f.geometry ? f.geometry.type : "no geometry")))].join(", ")}); footprints must be polygons`);
+      res.buildings = { count: bld.length, note: r.note + (other ? `; ${other} features that are not polygons are left out` : ""), feats: bld }; } else res.buildings = { count: 0 }; BLD = bld; regrid(); }
   if ("boundaries" in a) { let bnd = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); bnd = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: bnd.length, note: r.note, props: bnd.map((f) => f.properties || {}), feats: bnd }; } else res.boundaries = { count: 0 }; BOUND = bnd; regrid(); }
   if ("landcover" in a) {
     const R = a.landcover ? await Model.readRaster(a.landcover, GeoTIFF, CAT, "Land cover") : null;
@@ -73,7 +76,9 @@ async function loadAll(a) {
   }
   if ("soils" in a) {
     let soil = null; res.soils = null;
-    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); soil = { kind: "polygons", feats: r.feats }; const g = {}; let dual = 0; for (const f of r.feats) { const v = Model.hsgValue(f.properties || {}), c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
+    if (a.soils && typeof a.soils === "string") { const r = toDemCrs(parseJson(a.soils, "Soils"), "Soils"); soil = { kind: "polygons", feats: r.feats };
+      // a soil-group field given in two letter cases with different values would be resolved by file order (round 4 WRK5-3): refused
+      r.feats.forEach((f, i) => { const pr = f.properties || {}, by = {}; for (const k of Object.keys(pr)) { const l = k.toLowerCase(); if (!["hsg", "hydgrp", "hydgrpdcd"].includes(l)) continue; if (l in by && String(by[l][1]) !== String(pr[k])) throw new Error(`Soils: polygon ${i + 1} gives ${l} twice with different values (${by[l][0]} ${JSON.stringify(by[l][1])}, ${k} ${JSON.stringify(pr[k])}); keep one`); by[l] = [k, pr[k]]; } }); const g = {}; let dual = 0; for (const f of r.feats) { const v = Model.hsgValue(f.properties || {}), c = Model.hsgCode(v); if (c && /\//.test(String(v))) dual++; g[c ? "ABCD"[c - 1] : "?"] = (g[c ? "ABCD"[c - 1] : "?"] || 0) + 1; } res.soils = { kind: "polygons", count: r.feats.length, note: r.note + (dual ? `; ${dual} dual-group polygon${dual > 1 ? "s" : ""} (e.g. B/D) treated as D` : ""), groups: g }; }
     else if (a.soils) {
       const R = await Model.readRaster(a.soils, GeoTIFF, CAT, "Soils"), g = {}; let other = 0;
       for (const v of R.data) { if (v !== v) continue; const c = Model.hsgCode(v); if (c) g["ABCD"[c - 1]] = (g["ABCD"[c - 1]] || 0) + 1; else other++; }
@@ -163,10 +168,20 @@ async function loadAll(a) {
  *   pipe: outlet_crest_ft (its invert), outlet_diameter_ft, outlet_cd (default 0.6);
  *   gate: outlet_crest_ft (its sill), outlet_width_ft, outlet_opening_ft, outlet_cd (default 0.6);
  *   outlet_node: the SWMM node any of them discharges into (two-way runs) */
+const LAKE_KEYS = ["stage_area", "outlet_type", "outlet_crest_ft", "outlet_length_ft", "outlet_cw", "outlet_rating", "outlet_diameter_ft", "outlet_width_ft", "outlet_opening_ft", "outlet_cd", "outlet_node"];
+/* the lake fields a boundary feature carries, by lower-case name; one given in two letter cases is refused, as for inlets (review 0.6.1
+ * WRK6-7, round 4 WRK5-3) */
+function lakeFields(name, p0) {
+  const p = Object.create(null), seen = Object.create(null);
+  for (const k of Object.keys(p0 || {})) { const l = k.toLowerCase(); if (!LAKE_KEYS.includes(l)) continue; if (l in seen) throw new Error(`Level boundary ${name}: ${l} is given twice (${seen[l]} and ${k}); keep one`); seen[l] = k; p[l] = p0[k]; }
+  return p;
+}
 function lakeProps(name, p0) {
-  const p = Object.create(null); for (const k of Object.keys(p0 || {})) { const l = k.toLowerCase(); if (!(l in p)) p[l] = p0[k]; }
+  const p = lakeFields(name, p0);
   const has = (v) => v !== undefined && v !== null && v !== "", show = (v) => (typeof v === "string" ? JSON.stringify(v) : JSON.stringify(v) ?? String(v));
-  const numOf = (v) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN);
+  // decimal numbers only: Number() also reads "0x10" as 16, "0b111001" as 57 and "Infinity" (review 0.6.1 WRK6-7, round 4 WRK5-6)
+  const DEC = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+  const numOf = (v) => (typeof v === "number" ? v : typeof v === "string" && DEC.test(v.trim()) ? Number(v) : NaN);
   const out = {};
   if (has(p.stage_area)) {
     let rows = p.stage_area;
@@ -179,9 +194,14 @@ function lakeProps(name, p0) {
   }
   const oc = p.outlet_crest_ft, ol = p.outlet_length_ft, ow = p.outlet_cw, on = p.outlet_node, ot = p.outlet_type, orr = p.outlet_rating,
     od = p.outlet_diameter_ft, ogw = p.outlet_width_ft, ogo = p.outlet_opening_ft, ocd = p.outlet_cd;
-  if (has(ot) || has(oc) || has(ol) || has(ow) || has(on) || has(orr) || has(od) || has(ogw) || has(ogo)) {
+  if (has(ot) || has(oc) || has(ol) || has(ow) || has(on) || has(orr) || has(od) || has(ogw) || has(ogo) || has(ocd)) {
     const kind = has(ot) ? String(ot).trim().toLowerCase() : "weir";
     if (!["weir", "rating", "pipe", "gate"].includes(kind)) throw new Error(`Routed lake ${name}: outlet_type ${show(ot)} is not one of weir, rating, pipe, gate`);
+    // a field the outlet type does not use is refused, not silently dropped: a rating given without outlet_type rating became a weir,
+    // a pipe ignored outlet_length_ft, and outlet_cd alone made no outlet at all (review 0.6.1 WRK6-7)
+    const uses = { weir: ["outlet_crest_ft", "outlet_length_ft", "outlet_cw"], rating: ["outlet_rating"], pipe: ["outlet_crest_ft", "outlet_diameter_ft", "outlet_cd"], gate: ["outlet_crest_ft", "outlet_width_ft", "outlet_opening_ft", "outlet_cd"] }[kind];
+    const stray = ["outlet_crest_ft", "outlet_length_ft", "outlet_cw", "outlet_rating", "outlet_diameter_ft", "outlet_width_ft", "outlet_opening_ft", "outlet_cd"].filter((k) => has(p[k]) && !uses.includes(k));
+    if (stray.length) throw new Error(`Routed lake ${name}: ${stray.join(", ")} ${stray.length > 1 ? "are" : "is"} not used by a ${kind} outlet${has(ot) ? "" : " (outlet_type not given: weir)"}; give the outlet_type that uses ${stray.length > 1 ? "them" : "it"}, or remove ${stray.length > 1 ? "them" : "it"}`);
     const crest = () => { if (!has(oc)) throw new Error(`Routed lake ${name}: a ${kind} outlet needs outlet_crest_ft`); const v = numOf(oc); if (!Number.isFinite(v)) throw new Error(`Routed lake ${name}: outlet_crest_ft ${show(oc)} is not a number`); return v; };
     const posOf = (v, label) => { const x = numOf(v); if (!(x > 0)) throw new Error(`Routed lake ${name}: ${label} ${show(v)} is not a positive number`); return x; };
     const cd = () => (has(ocd) ? posOf(ocd, "outlet_cd") : 0.6);
@@ -275,7 +295,8 @@ async function run(o, id) {
     routedLakes.push({ lake: i, areaFt2, level0: b.level, name: b.key, areaFrom: lk.stageArea ? "stage-area table" : b.areaAc > 0 ? "given" : "inside the grid", gridAc: cells * A / 43560,
       stageArea: lk.stageArea, outlet: lk.outlet, outletNode: lk.outletNode });
   });
-  for (const b of bspec) if (!b.routed) { const lk = lakeProps(b.key, b.props); if (lk.stageArea || lk.outlet) lakeNotes.push(`Level boundary ${b.key}: its stage-area table and outlet are used only when it is routed`); }
+  // a boundary that is not routed does not use its lake fields: they are noted, not parsed, so a bad one does not stop the run (round 4 WRK5-5)
+  for (const b of bspec) if (!b.routed) { const f = Object.keys(lakeFields(b.key, b.props)).filter((k) => b.props && Object.keys(b.props).some((x) => x.toLowerCase() === k && b.props[x] !== null && b.props[x] !== "")); if (f.length) lakeNotes.push(`Level boundary ${b.key}: its lake fields (${f.join(", ")}) are used only when it is routed`); }
   const outletNodes = routedLakes.map((r) => r.outletNode || null);
   if (outletNodes.some(Boolean) && o.coupling !== "two") throw new Error(`Lake outlets into a SWMM node (${routedLakes.filter((r) => r.outletNode).map((r) => `${r.name} to ${r.outletNode}`).join(", ")}) need two-way coupling`);
   if (o.coupling === "two") {
@@ -318,6 +339,9 @@ async function run(o, id) {
   const nb = B.ringStart.length - 1, bMax = new Float32Array(nb);
   const t0w = Date.now(), simLen = (o.t1 - o.t0) * 3600;
   const isOpen = (k) => (g.aux[4 * k + 2] & 3) === 0;
+  // a routed lake is linked from outside only when a SWMM outfall discharges into it: the engine holds linked lakes to short chunks until
+  // their inflow's dependence on the level has been read, and an idle lake should not pay for that (review 0.6.1 ENG6-3)
+  if (two) for (const rl of routedLakes) rl.linked = two.lakeOutfalls.some((x) => x.lake === rl.lake);
   const r = await Flood2D.simulate(g, solver, {
     t0: o.t0, t1: o.t1, rainAt, rainStep, stageAt: cpl.stageAt, sources, sourceAt: cpl.sourceAt || (() => []), afterChunk: two ? two.afterChunk : undefined, routedLakes, lakeInflow: two && routedLakes.length ? two.lakeInflowFor(routedLakes) : undefined, lakeOutflow: two && outletNodes.some(Boolean) ? two.lakeOutletTo(outletNodes) : undefined, cfl: o.cfl ?? 0.7, dvThresh: o.dvThresh, readSec: o.outputSec, chunkSec,
     shouldStop: () => STOP,
@@ -347,17 +371,24 @@ async function run(o, id) {
   const bReached = bMax.reduce((s, v) => s + (v > bthr ? 1 : 0), 0);
   const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N), froude = r.froude || new Uint8Array(N);
   const tvmax = r.tvmax || new Float32Array(N), dvdur = r.dvdur || new Float32Array(N);
-  let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; tvmax[k] = 0; dvdur[k] = 0; } froudeCells += froude[k]; }
+  // tvmax is NaN where the water never moved (a speed of 0), as tmax is NaN where a cell never got wet: 0 h read as a time inside the run
+  // (review 0.6.1 WRK6-10)
+  let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; tvmax[k] = NaN; dvdur[k] = 0; } else if (!(vmax[k] > 0)) tvmax[k] = NaN; froudeCells += froude[k]; }
   const lakes = r.lakes ? Object.assign({}, r.lakes, { outletNode: outletNodes, hasOutlet: routedLakes.map((x) => !!x.outlet), outletKind: routedLakes.map((x) => x.outlet ? (x.outlet.kind ?? "weir") : null), areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
     seriesT: r.lakes.series.map((x) => x.tHours), seriesL: r.lakes.series.map((x) => x.levels) }) : null;
   return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer, tvmax.buffer, dvdur.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, tvmax, dvdur, froudeCells, ledger: r.ledger, lakes, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }
 
-self.onmessage = async (e) => {
+// Commands run one at a time, in the order they arrive (stop excepted): a load that awaits while a second load or a build arrives
+// would otherwise interleave with it, and a refused load's rollback could undo the other's work (review 0.5.0 round 4 WRK5-1).
+let QUEUE = Promise.resolve();
+self.onmessage = (e) => {
   const { id, cmd, args } = e.data;
   if (cmd === "stop") { STOP = true; return; }
-  try {
-    const out = cmd === "load" ? await load(args) : cmd === "build" ? build(args) : cmd === "run" ? await run(args, id) : null;
-    if (out && out.__transfer) post({ id, ok: true, res: out.res }, out.__transfer); else post({ id, ok: true, res: out });
-  } catch (err) { post({ id, error: err.message || String(err) }); }
+  QUEUE = QUEUE.then(async () => {
+    try {
+      const out = cmd === "load" ? await load(args) : cmd === "build" ? build(args) : cmd === "run" ? await run(args, id) : null;
+      if (out && out.__transfer) post({ id, ok: true, res: out.res }, out.__transfer); else post({ id, ok: true, res: out });
+    } catch (err) { post({ id, error: err.message || String(err) }); }
+  });
 };

@@ -100,12 +100,9 @@ function raw(nx, ny, dx, fz, ft = () => 0, o = {}) {
     ok("T9 a dam break moves the same water whatever the step (dtMax 5, 0.1, 0.02, 0.005 s; within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
   }
   // T10 (new in 0.6.0, E-02; covers review F-02; extended in 0.6.1, review 0.6.0 F-01) the same dam break moves the
-  // same water (within 3%) across the Courant range: the de Almeida smoothing is normalised to the wave step at the
-  // reference Courant number, two-sided since 0.6.1, so neither a lower nor a higher cfl changes the smoothing per
-  // second. On 0.5.0 the cfl 0.1 run moved 14% less water than the cfl 0.7 run; on 0.6.0 the cfl 0.95 run moved 14%
-  // MORE (the normalisation stopped at the reference step). At cfl 1.0 the scheme is at its stability edge and the
-  // front lags: that is pinned by the second check (measured 0.84x the cfl 0.7 volume, peak depth 1.77 ft), not
-  // claimed as invariance.
+  // same water (within 3%) across the allowed Courant range (0.1 to 0.7): the de Almeida smoothing is normalised to the
+  // wave step at the reference Courant number 0.7, so a lower cfl does not change the smoothing per second. On 0.5.0 the
+  // cfl 0.1 run moved 14% less water than the cfl 0.7 run. Above 0.7 the scheme is not stable and the value is refused.
   {
     const nx = 40, ny = 30, g = F.makeGrid(raw(nx, ny, 10, () => 100, (r, c) => (r === 0 || c === 0 || r === ny - 1 || c === nx - 1) ? 1 : 0));
     const run = async (cfl) => {
@@ -116,12 +113,14 @@ function raw(nx, ny, dx, fz, ft = () => 0, o = {}) {
       return { v, mx };
     };
     const moved = [], at = {};
-    for (const cfl of [0.7, 0.35, 0.1, 0.95]) { const r = await run(cfl); moved.push(r.v); at[cfl] = r; }
-    ok("T10 a dam break moves the same water at Courant 0.7, 0.35, 0.1 and 0.95 (within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
-    const r1 = await run(1.0);
-    ok("T10 at Courant 1.0 the front lags at the scheme's stability edge (pinned: 0.78-0.90x the Courant 0.7 volume, peak depth under 1.85 ft; not claimed invariant)",
-      r1.v > 0.78 * moved[0] && r1.v < 0.90 * moved[0] && r1.mx < 1.85,
-      `${r1.v.toFixed(0)} cf (${(r1.v / moved[0]).toFixed(3)}x), peak depth ${r1.mx.toFixed(3)} ft`);
+    for (const cfl of [0.7, 0.35, 0.1]) { const r = await run(cfl); moved.push(r.v); at[cfl] = r; }
+    ok("T10 a dam break moves the same water at Courant 0.7, 0.35 and 0.1 (within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
+    // Courant numbers above 0.7 are outside the scheme's stable range and are refused (review 0.6.1 ENG6-1: at 0.9 the moved volume
+    // was 1.10x, at 1.0 0.84x, and pockets in the page example peaked 6 ft too deep); so is a weighting theta outside 0.5-1
+    const msgs = [];
+    for (const cfl of [0.75, 0.95, 1.0]) { try { await run(cfl); msgs.push("accepted"); } catch (e) { msgs.push(e.message); } }
+    try { await F.simulate(F.makeGrid(Object.assign(raw(nx, ny, 10, () => 100), { theta: 0.3 })), new F.CpuSolver(g), { t0: 0, t1: 0.001, rainAt: () => 0, stageAt: () => [0] }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
+    ok("T10 Courant numbers above 0.7 (0.75, 0.95, 1.0) and a weighting theta of 0.3 are refused, naming the value", msgs.slice(0, 3).every((m, i) => new RegExp(`Invalid Courant number ${[0.75, 0.95, 1][i]};.*at most 0.7`).test(m)) && /Invalid weighting theta 0.3/.test(msgs[3]), msgs.join(" | "));
   }
   // T11 (new in 0.6.0, E-08) UK Environment Agency benchmarking Test 3, "momentum conservation over a small obstruction"
   // (Neelz and Pender 2010, Benchmarking of 2D hydraulic modelling packages): a 300 m by 100 m plane at 1:200 with two

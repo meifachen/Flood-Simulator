@@ -205,5 +205,38 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
       it.onGrade === true && it.crossSlope === 0.02 && it.longSlope === 0.01 && /Inlet 1 \(J3\): an on-grade inlet needs its street's longitudinal slope \(long_slope\)/.test(msg),
       `parsed onGrade ${it.onGrade}, cross ${it.crossSlope}, long ${it.longSlope}; refused: "${msg.slice(0, 110)}"`);
   }
+  // W19 (review 0.6.1 WRK6-7, WRK6-11, round 4 WRK5-1, 5-3, 5-4, 5-5, 5-6) inputs that were taken silently or by file order are refused or
+  // named: lake fields given twice in two cases, hex numbers, a field the outlet type does not use, outlet_cd alone, a rating without its
+  // outlet_type; an unrouted boundary's lake fields are only noted; a soil group given twice with different values; an EPSG change under
+  // loaded soil polygons; a buildings file of lines; and commands sent without waiting run one after another
+  {
+    const pondWith = (props) => { const gj = JSON.parse(text(US, "pond.geojson")); gj.features[0].properties = Object.assign({}, gj.features[0].properties, props); return JSON.stringify(gj); };
+    const w = newWorker(); await w.load({ catalog, dem: ab(ex(US, "dem.tif")), inp: text(US, "model.inp"), out: ab(ex(US, "model.out")) });
+    const bnd = [{ index: 0, key: "POND", level: 58, routed: true }], base = { coupling: "off", t0: 0, t1: 0.05, engine: "cpu", rainSource: "none", outputSec: 900, boundaries: bnd };
+    const runWith = async (props, b = bnd) => { await w.load({ boundaries: pondWith(props) }); w.build(Object.assign({}, bopt, { lcTable: null, boundaries: b })); w.posted.length = 0; return w.run(Object.assign({}, base, { boundaries: b })); };
+    const m = [];
+    for (const pr of [{ STAGE_AREA: "50:1; 60:2", stage_area: "50:100; 60:200" }, { outlet_crest_ft: 57, outlet_length_ft: "0x10" }, { outlet_type: "pipe", outlet_crest_ft: 57, outlet_diameter_ft: 2, outlet_length_ft: 50 },
+      { outlet_cd: 0.6 }, { outlet_rating: "50:0; 60:20", outlet_crest_ft: 57, outlet_length_ft: 5 }]) m.push(await refused(runWith(pr)));
+    await runWith({ stage_area: "n/a" }, [{ index: 0, key: "POND", level: 58, routed: false }]);
+    const note = JSON.stringify(w.posted.filter((x) => x.progress && x.progress.warnings).map((x) => x.progress.warnings));
+    const sq = (x, y, d) => [[[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]]];
+    const soils = (pr) => JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: pr, geometry: { type: "Polygon", coordinates: sq(500700, 1599150, 100) } }] });
+    m.push(await refused(w.load({ soils: soils({ Hsg: "A", HSG: "D" }) })));
+    const ll = proj4(dem.proj4, "EPSG:4326"), llSq = sq(500700, 1599150, 100)[0].map((p) => ll.forward(p));
+    const w2 = newWorker(); await w2.load({ catalog, dem: ab(ex(US, "dem.tif")) }); await w2.load({ soils: JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { hsg: "B" }, geometry: { type: "Polygon", coordinates: [llSq] } }] }) });
+    m.push(await refused(w2.load({ epsg: 26917 })));
+    m.push(await refused(w2.load({ buildings: JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[500700, 1599150], [500800, 1599150]] } }] }) })));
+    // the queue: a refused land cover load and a buildings load sent without waiting; the buildings stay loaded afterwards
+    const w3 = newWorker(), sent = []; await w3.load({ catalog, dem: ab(ex(US, "dem.tif")) });
+    const ctxPost = w3.posted; w3.peek("self").onmessage({ data: { id: 1, cmd: "load", args: { landcover: Model.geoTiff({ x0: dem.x0, y1: dem.y1, cs: dem.res * 4, nx: 10, ny: 10 }, 2236, [{ name: "lc", data: Float32Array.from({ length: 100 }, (_, k) => k) }], "us-ft") } } });
+    w3.peek("self").onmessage({ data: { id: 2, cmd: "load", args: { buildings: text(US, "buildings.geojson") } } });
+    for (let i = 0; i < 200 && ctxPost.filter((x) => x.id).length < 2; i++) await new Promise((r) => setTimeout(r, 25));
+    const bldAfter = w3.peek("BLD.length");
+    ok("W19 lake fields in two cases, hex numbers, unused outlet fields, outlet_cd alone and a rating without its type are refused; an unrouted boundary's fields are noted; soil groups in two cases, an EPSG change under soil polygons and a file of lines as buildings are refused; queued loads keep each other's layers",
+      /stage_area is given twice \(STAGE_AREA and stage_area\)/.test(m[0]) && /outlet_length_ft "0x10" is not a positive number/.test(m[1]) && /outlet_length_ft is not used by a pipe outlet/.test(m[2]) &&
+      /outlet_cd is not used by a weir outlet \(outlet_type not given: weir\)/.test(m[3]) && /outlet_rating is not used by a weir outlet/.test(m[4]) && /lake fields \(stage_area\) are used only when it is routed/.test(note) &&
+      /gives hsg twice with different values/.test(m[5]) && /already in EPSG 2236, and the buildings, boundaries, inlets or soil polygons/.test(m[6]) && /none of the 1 features is a polygon \(LineString\)/.test(m[7]) && bldAfter === 30,
+      `${m.map((x) => x.slice(0, 60)).join(" | ")} | note ${/used only when it is routed/.test(note)} | buildings after the queued loads ${bldAfter}`);
+  }
   const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

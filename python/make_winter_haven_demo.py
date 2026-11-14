@@ -139,15 +139,27 @@ def main(a):
     if a.outlets:
         import csv as _csv
         keys = {"outlet_type", "outlet_crest_ft", "outlet_length_ft", "outlet_cw", "outlet_rating", "outlet_diameter_ft", "outlet_width_ft", "outlet_opening_ft", "outlet_cd", "outlet_node", "stage_area"}
-        for row in _csv.DictReader(open(a.outlets)):
-            nm = (row.get("lake") or "").strip()
+        # utf-8-sig drops the byte-order mark Excel's "CSV UTF-8" writes; column names are matched in any case; a value that is not a
+        # finite decimal number stays text, and outlet_node always stays text ("0412" is a node name, not 412.0) (review 0.6.1 DS-7)
+        import math as _math, re as _re
+        rows = list(_csv.DictReader(open(a.outlets, encoding="utf-8-sig", newline="")))
+        cols = {k.strip().lower(): k for k in (rows[0].keys() if rows else []) if k}
+        if "lake" not in cols: sys.exit(f"--outlets {a.outlets}: no 'lake' column (columns: {', '.join(cols) or 'none'})")
+        for row in rows:
+            nm = (row.get(cols["lake"]) or "").strip()
             if not nm: continue
             d = {}
-            for k, v in row.items():
-                if k and k.strip().lower() in keys and v is not None and str(v).strip() != "":
-                    try: d[k.strip().lower()] = float(v)
-                    except ValueError: d[k.strip().lower()] = str(v).strip()
+            for lk, k in cols.items():
+                v = row.get(k)
+                if lk not in keys or v is None or str(v).strip() == "": continue
+                v = str(v).strip()
+                if lk in ("outlet_node", "outlet_type", "outlet_rating", "stage_area") or not _re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", v): d[lk] = v
+                else:
+                    x = float(v)
+                    if not _math.isfinite(x): sys.exit(f"--outlets {a.outlets}: lake {nm}: {lk} {v!r} is not a finite number")
+                    d[lk] = x
             if d: outlets[nm] = d
+        if not outlets: sys.exit(f"--outlets {a.outlets}: no row gives a lake name and an outlet value")
         rep["sources"]["lake_outlets"] = f"user-supplied {a.outlets} (the City's outlet structures are not in the public layers)"
     lakes = []
     for f in r["features"]:
@@ -174,7 +186,7 @@ def main(a):
     kind = "routed level pools" if a.routed else "level boundaries"
     if a.lake_levels == "city": note(f"Lake levels {start} the City's SAIP ICPR v4 WaterLevel values (datum not stated; taken as NAVD 88), not the 2018 lidar water surface; lakes are {kind} in the 2D")
     else: note(f"Lake levels {start} the lidar water surface (2018 survey), not a flood stage; lakes are {kind} in the 2D. The City's SAIP ICPR v4 levels are listed in the report (--lake-levels city uses them)")
-    if a.routed: note("Lakes are routed: each is a level pool over its whole NHD area (area_ac) that rises with the rain on it, the water the 2D spills into it and the SWMM outfalls on it (two-way runs); it has no outlet, so its rise is an upper bound")
+    if a.routed: note("Lakes are routed: each is a level pool over its whole NHD area (area_ac) that rises with the rain on it, the water the 2D spills into it and the SWMM outfalls on it (two-way runs)" + ("; lakes with an outlet in --outlets drain through it, the others have none, so their rise is an upper bound" if outlets else "; it has no outlet, so its rise is an upper bound"))
     if outlets:
         used = [f["properties"]["name"] for f in lakes if f["properties"]["name"] in outlets]
         for nm in outlets: 

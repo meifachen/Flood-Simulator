@@ -1,7 +1,7 @@
 # Response to the 0.6.0 review, round 1 (fixed in 0.6.1)
 
 The findings are those of `review-0.6.0-round1.md`. Fail-first was checked against the 0.6.0 code
-(3a54427): the new and changed checks were run against a pristine worktree of that commit (engine
+(ea0bc78 on GitHub; this note first named 3a54427, a local hash that was never pushed — corrected in 0.6.2, review 0.6.1 DS-10): the new and changed checks were run against a pristine worktree of that commit (engine
 checks through the suites' `FLOOD2D` override), and each row says what happened there. Checks for
 brand-new behaviour are marked as such. Two items are partial and say so: F-08 (the Winter Haven
 regeneration is still blocked by the USDA soils service — the pack README now says so plainly)

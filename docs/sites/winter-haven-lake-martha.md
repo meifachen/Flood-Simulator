@@ -114,7 +114,9 @@ The builder now records both levels. `--lake-levels city` uses the City's levels
 |---|---|---|---|---|
 | Martha | 139.19 ft | 141.3 ft | +2.11 ft | +1.18 ft |
 | Silver | 142.73 ft | 145.2 ft | +2.47 ft | +1.54 ft |
-| Maude | 139.17 ft | 139.6 ft | +0.43 ft | −0.50 ft |
+| Maude | 139.17 ft | 139.6 ft | +0.43 ft | −0.51 ft |
+
+The last column is `build_report.json`'s `city_minus_lidar_if_city_is_ngvd29_ft`, computed from the unrounded lidar level and the −0.932 ft shift; from the rounded figures in this table Maude would read −0.50 ft.
 
 - **What the City's levels are:** the layer gives the field name `WaterLevel` and no explanation. It may be a starting or control level in ICPR rather than a flood stage.
 - **Effect on the 25-year whole storm:**
@@ -163,7 +165,7 @@ In 0.4.0, a lake can rise with the water it gains instead of holding a fixed lev
   - 2D balance: within 0.0011%.
   - Inlets: 1,195,216 cf at 12 ft, the same as with fixed lakes to within 0.01%.
   - 0.4.0 against 0.4.1: the peaks changed by less than 0.001 ft, and the net outfall volumes by under 1%. These lakes are large enough that the 0.4.0 update was already stable, and little water flowed back.
-  - 0.4.1 against 0.4.2 (the adaptive lake chunk cap, rerun on the same GPU): the lake peaks agree to 0.001 ft; peak depth on open ground moved by at most 0.009 ft (no cell by more than 0.01 ft); inlets 1,195,143 vs 1,195,216 cf at 12 ft; SWMM continuity −0.014% and −0.104%.
+  - 0.4.1 against 0.4.2 (the adaptive lake chunk cap, rerun on the same GPU): the lake peaks agree to 0.001 ft; peak depth on open ground moved by at most 0.009 ft (no cell by more than 0.01 ft); inlets 1,195,216 (0.4.1) vs 1,195,143 cf (0.4.2) at 12 ft; SWMM continuity −0.014% and −0.104%.
   - 0.4.2 against 0.4.3 (the time-step smoothing fix and the lake stability limit, same GPU): the lake peaks agree to 0.001 ft; peak depth on open ground moved by at most 0.006 ft at 12 ft, and at 6 ft by more than 0.01 ft on 6 of 213,307 open cells (at most 0.10 ft); inlets 1,195,162 cf at 12 ft and 1,469,591 cf at 6 ft; SWMM continuity −0.014% and −0.105%.
 
 ### 8. Inlet file fields
