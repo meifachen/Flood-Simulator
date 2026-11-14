@@ -7,14 +7,16 @@ more than one device. It takes about ten minutes and needs no code changes.
 
 ## Procedure
 
-1. Build the app (`python tools/build.py`) or use the shipped `dist/flood_simulator.html`.
+1. Build the app (`python tools/build.py`) or use the shipped `dist/FloodSimulator.html`.
    Open it in Chrome or Edge on the machine under test.
 2. Load the US synthetic example (Examples menu) and build the grid at the default 12 ft cell.
 3. Note the GPU the browser reports: the run panel shows the WebGPU adapter description after
    the first GPU run; also record it from `chrome://gpu` (the "Renderer" / WebGPU line).
 4. Run the same case twice, once with the engine set to GPU and once to CPU: two-way coupling
-   off, rain from the model gauge, 1 h to 1.25 h window is enough (the browser suite's W9/B20
-   window). Record for each run: wall time shown in the run log, steps taken, cell count.
+   off, rain from the model gauge, a 1 h to 1.25 h window is enough (a like window to the
+   browser suite's routed-pond check, B20: the pond set to routed at 54.8 ft, uniform rain
+   2 in over 1 h, from hour 0). Record for each run: wall time shown in the run log, steps
+   taken, cell count.
 5. Repeat step 4 on the Winter Haven example if it has been generated (see
    `examples/winter_haven/`), at its default cell size.
 6. Also record: machine, CPU, GPU model and driver, browser and version, operating system.

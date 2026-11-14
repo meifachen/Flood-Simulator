@@ -17,6 +17,13 @@ function basin() {
   return { g, nx, dx, lakeArea: lakeCells * dx * dx };
 }
 const vol = (g, st) => { let v = 0; for (let k = 0; k < g.N; k++) if ((g.aux[4 * k + 2] & 3) === 0) v += st[4 * k]; return v * g.dx * g.dx; };
+// a contained pond: a 4 x 4 lake (bed 90 ft) inside walls, so its level moves only through its outlet and inflows (1,600 sq ft)
+function pond() {
+  const nx = 12, ny = 12, dx = 10, N = nx * ny, z = new Float32Array(N).fill(110), type = new Uint8Array(N).fill(1), node = new Uint8Array(N), n = new Float32Array(N).fill(0.03),
+    perv = new Float32Array(N), ks = new Float32Array(N), psimd = new Float32Array(N), mult = new Float32Array(N);
+  for (let r = 4; r < 8; r++) for (let c = 4; c < 8; c++) { const k = r * nx + c; type[k] = 2; node[k] = 0; z[k] = 90; }
+  return F.makeGrid({ nx, ny, dx, z, type, node, n, perv, ks, psimd, mult, K: 1 });
+}
 const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
 
 (async () => {
@@ -143,12 +150,13 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
   // and what the outlet released equals the storage the lake lost
   {
     const Ar = 25200, cw = 3.0, L = 10, c = 97, h0 = 99, ex = (t) => c + Math.pow(1 / Math.sqrt(h0 - c) + cw * L * t / (2 * Ar), -2);
+    const L13_BOUND = 0.001;   // the tolerance this check asserts; printed in its result line so the claims gate reads the asserted bound, not the check's name (0.6.1, review 0.6.0 F-10)
     const run = async (chunkSec) => F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 3, rainAt: () => 0, stageAt: () => [h0], routedLakes: [{ lake: 0, areaFt2: Ar, level0: h0, outlet: { crestFt: c, lengthFt: L, cw } }], chunkSec, readSec: 3600 });
     const r1 = await run(60), r9 = await run(900), errs = [r1, r9].map((r) => r.lakes.series.reduce((m, x) => Math.max(m, Math.abs(x.levels[0] - ex(x.tHours * 3600))), 0));
     const lo = Math.min(...r9.lakes.series.map((x) => x.levels[0]));
     ok("L13 an outlet weir drains the lake along the level-pool solution (within 0.001 ft, 60 s and 900 s chunks), not below its crest; outlet volume = storage lost",
-      errs.every((e) => e < 0.001) && lo >= c && Math.abs(r9.lakes.outlet[0] - (h0 - r9.lakes.end[0]) * Ar) < 1e-3 * Ar,
-      `largest error ${errs.map((e) => e.toFixed(4)).join(" / ")} ft; end ${r9.lakes.end[0].toFixed(4)} ft (exact ${ex(3 * 3600).toFixed(4)}); outlet ${r9.lakes.outlet[0].toFixed(0)} cf`);
+      errs.every((e) => e < L13_BOUND) && lo >= c && Math.abs(r9.lakes.outlet[0] - (h0 - r9.lakes.end[0]) * Ar) < 1e-3 * Ar,
+      `largest error ${errs.map((e) => e.toFixed(4)).join(" / ")} ft; end ${r9.lakes.end[0].toFixed(4)} ft (exact ${ex(3 * 3600).toFixed(4)}); outlet ${r9.lakes.outlet[0].toFixed(0)} cf; asserted bound ${L13_BOUND} ft`);
     const msgs = [];
     for (const rl of [{ stageArea: [[95, 20000]] }, { stageArea: [[100, 2e4], [95, 4e4]] }, { stageArea: [[95, 0], [100, 4e4]] }, { areaFt2: Ar, outlet: { crestFt: 97, lengthFt: 0 } }, { areaFt2: Ar, outlet: { crestFt: "97", lengthFt: 10 } }, { areaFt2: Ar, outlet: { crestFt: 97, lengthFt: 10, cw: -1 } }])
       try { await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.01, rainAt: () => 0, stageAt: () => [98], routedLakes: [Object.assign({ lake: 0, level0: 98 }, rl)] }); msgs.push("accepted"); } catch (e) { msgs.push(e.message); }
@@ -207,16 +215,36 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     const dry = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 0.5, rainAt: () => 0, stageAt: () => [94.5], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 94.5, outlet: { kind: "rating", rating } }], chunkSec: 60, readSec: 3600 });
     ok("L16 below the rating's first stage the outlet passes nothing", dry.lakes.outlet[0] === 0 && dry.lakes.end[0] === 94.5, `outlet ${dry.lakes.outlet[0]} cf, level ${dry.lakes.end[0]} ft`);
   }
-  // L17 (new in 0.6.0, E-06) a pipe outlet is an orifice at its invert: with a constant area the head follows
-  // H(t) = (sqrt(H0) - Cd A sqrt(2 g) t / (2 Ar))^2 exactly, and the lake never falls below the invert
+  // L17 (new in 0.6.0, E-06; rewritten in 0.6.1, review 0.6.0 F-02) a pipe outlet is an orifice on the wetted circular
+  // segment, the head taken to the wetted centroid. The segment area and centroid are worked out here from the circle,
+  // not from the engine: constant inflows computed from them hold the level at the crown (103 ft), at half depth
+  // (101.5 ft) and at 0.4 ft of depth (100.4 ft) of a 3 ft pipe at invert 100 ft; and while the pipe runs full the
+  // drawdown has a closed form in the head to the centre, u(t) = (sqrt(u0) - k t)^2. On 0.6.0 the head was taken from
+  // the invert instead: the crown feed (41.67 cfs here; 0.6.0 passed 58.9 cfs at the crown) drained the pond to about
+  // 101.50 ft, so the crown and drawdown checks fail there.
   {
-    const Ar = 100000, c = 97, h0 = 99, D = 2, cd = 0.6, Ao = Math.PI * D * D / 4, k = cd * Ao * Math.sqrt(2 * 32.174) / (2 * Ar);
-    const ex = (t) => c + Math.pow(Math.sqrt(h0 - c) - k * t, 2);
-    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 3, rainAt: () => 0, stageAt: () => [h0], routedLakes: [{ lake: 0, areaFt2: Ar, level0: h0, outlet: { kind: "pipe", crestFt: c, diameterFt: D, cd } }], chunkSec: 60, readSec: 3600 });
+    const cd = 0.6, D = 3, c = 100, R = D / 2, gp = pond();
+    const segQ = (h) => { const d = h - c; if (!(d > 0)) return 0; if (d >= D) return cd * Math.PI * R * R * Math.sqrt(2 * 32.174 * (d - R));
+      const phi = Math.acos((R - d) / R), s = Math.sin(phi), den = phi - s * Math.cos(phi);
+      return cd * R * R * den * Math.sqrt(2 * 32.174 * (d - R + 2 * R * s ** 3 / (3 * den))); };
+    const hold = async (lv) => { const q = segQ(lv);
+      const r = await F.simulate(gp, new F.CpuSolver(gp), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [lv], routedLakes: [{ lake: 0, areaFt2: 1600, level0: lv, outlet: { kind: "pipe", crestFt: c, diameterFt: D, cd } }], lakeInflow: (a, b) => [q * (b - a) * 3600], chunkSec: 60, readSec: 3600 });
+      return { q, end: r.lakes.end[0] }; };
+    const hCrown = await hold(103), hHalf = await hold(101.5), hShallow = await hold(100.4);
+    ok("L17 a pipe outlet passes the centroid-head segment flow: inflows worked out from the circle hold the level at the crown, at half depth and at 0.4 ft of depth",
+      Math.abs(hCrown.end - 103) < 0.02 && Math.abs(hHalf.end - 101.5) < 0.02 && Math.abs(hShallow.end - 100.4) < 0.02,
+      `crown ${hCrown.q.toFixed(2)} cfs -> ${hCrown.end.toFixed(4)} ft; half ${hHalf.q.toFixed(2)} cfs -> ${hHalf.end.toFixed(4)} ft; shallow ${hShallow.q.toFixed(2)} cfs -> ${hShallow.end.toFixed(4)} ft`);
+    const Ar = 100000, c2 = 97, h0 = 100, D2 = 2, Ao = Math.PI * D2 * D2 / 4, k = cd * Ao * Math.sqrt(2 * 32.174) / (2 * Ar);
+    const ex = (t) => c2 + D2 / 2 + Math.pow(Math.sqrt(h0 - c2 - D2 / 2) - k * t, 2);   // head to the centre while the pipe runs full
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 1, rainAt: () => 0, stageAt: () => [h0], routedLakes: [{ lake: 0, areaFt2: Ar, level0: h0, outlet: { kind: "pipe", crestFt: c2, diameterFt: D2, cd } }], chunkSec: 60, readSec: 3600 });
     const errs = r.lakes.series.map((x) => Math.abs(x.levels[0] - ex(x.tHours * 3600)));
-    ok("L17 a pipe outlet drains the lake along the orifice solution (within 0.01 ft), not below its invert; outlet volume = storage lost",
-      Math.max(...errs) < 0.01 && Math.min(...r.lakes.series.map((x) => x.levels[0])) >= c && Math.abs(r.lakes.outlet[0] - (h0 - r.lakes.end[0]) * Ar) < 1e-3 * Ar,
-      `largest error ${Math.max(...errs).toFixed(4)} ft; end ${r.lakes.end[0].toFixed(4)} ft (exact ${ex(3 * 3600).toFixed(4)}); outlet ${r.lakes.outlet[0].toFixed(0)} cf`);
+    ok("L17 while the pipe runs full the lake follows the centroid-head drawdown (within 0.01 ft); a long drain never takes it below the invert and the outlet volume is the storage lost",
+      Math.max(...errs) < 0.01 && Math.abs(r.lakes.end[0] - ex(3600)) < 0.01,
+      `largest error ${Math.max(...errs).toFixed(4)} ft; end ${r.lakes.end[0].toFixed(4)} ft (exact ${ex(3600).toFixed(4)})`);
+    const drain = await F.simulate(gp, new F.CpuSolver(gp), { t0: 0, t1: 6, rainAt: () => 0, stageAt: () => [103], routedLakes: [{ lake: 0, areaFt2: 1600, level0: 103, outlet: { kind: "pipe", crestFt: c, diameterFt: D, cd } }], chunkSec: 60, readSec: 3600 });
+    ok("L17 a pipe outlet never draws the lake below its invert; outlet volume = storage lost",
+      drain.lakes.end[0] >= c && Math.min(...drain.lakes.series.map((x) => x.levels[0])) >= c && Math.abs(drain.lakes.outlet[0] - (103 - drain.lakes.end[0]) * 1600) < 1.6,
+      `end ${drain.lakes.end[0].toFixed(4)} ft; outlet ${drain.lakes.outlet[0].toFixed(1)} cf vs storage lost ${((103 - drain.lakes.end[0]) * 1600).toFixed(1)} cf`);
   }
   // L18 (new in 0.6.0, E-06) a gate outlet: at a level above the opening it passes Cd W a sqrt(2 g (level - sill - a/2)); inside the
   // opening it passes the orifice flow of the wetted part. Both are checked as equilibria against a matching constant inflow.
@@ -235,5 +263,29 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
     ok("L18 a falling or negative rating, a zero pipe diameter, a text gate opening and an unknown outlet type are refused",
       /flows of zero or more/.test(msgs[0]) && /must not fall/.test(msgs[1]) && /diameter 0/.test(msgs[2]) && /gate opening 1/.test(msgs[3]) && /not one of weir, rating, pipe, gate/.test(msgs[4]), msgs.join(" | "));
   }
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  // L19 (new in 0.6.1, review 0.6.0 F-16) a rating curve steep enough to price a whole half-chunk release above the
+  // volume stored over its control put the midpoint below the control and released nothing, chunk after chunk:
+  // slope 500,000 cfs/ft on a 1,600 sq ft pond starting 0.01 ft over the control released 0.0 cf in 2 h on 0.6.0.
+  // The release is now evaluated at no less than the level holding half the volume left above the control.
+  {
+    const gp = pond();
+    const r = await F.simulate(gp, new F.CpuSolver(gp), { t0: 0, t1: 2, rainAt: () => 0, stageAt: () => [100], routedLakes: [{ lake: 0, areaFt2: 1600, level0: 100.01, name: "Steep", outlet: { kind: "rating", rating: [[100, 0], [100.02, 10000]] } }], readSec: 900 });
+    ok("L19 a rating curve too steep for the midpoint step still drains the pond to its control (0.6.0: stalled 0.01 ft above it, releasing nothing)",
+      Math.abs(r.lakes.end[0] - 100) < 0.001 && Math.abs(r.lakes.outlet[0] - 16) < 0.5,
+      `end ${r.lakes.end[0].toFixed(5)} ft; outlet ${r.lakes.outlet[0].toFixed(2)} cf of the 16 cf stored above the control`);
+  }
+  // L20 (new in 0.6.1, review 0.6.0 F-18) a level-dependent outside inflow that switches on after a long quiet stretch
+  // met an adaptive cap that had grown unchecked, and its first chunk moved the level 6.67 ft at k = 400 cfs/ft on
+  // 0.6.0 (then rang 10 times). While the dependence is unmeasured and the inflow is bringing nothing in, chunks are
+  // held to the cap's starting 1 s, so the first surge chunk is an adaptive chunk and the level settles without ringing.
+  {
+    const r = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 8, rainAt: () => 0, stageAt: () => [99], routedLakes: [{ lake: 0, areaFt2: lakeArea, level0: 99, name: "Stiff" }],
+      lakeInflow: (a, b, levels) => [a < 3 ? 0 : Math.max(0, 106 - levels[0]) * 400 * (b - a) * 3600], chunkSec: 60, readSec: 900 });
+    const S = r.lakes.series; let maxJump = 0, rev = 0, prev = 0;
+    for (let i = 1; i < S.length; i++) { const d = S[i].levels[0] - S[i - 1].levels[0]; maxJump = Math.max(maxJump, Math.abs(d)); const s = Math.sign(Math.abs(d) > 0.005 ? d : 0); if (s && prev && s !== prev) rev++; if (s) prev = s; }
+    ok("L20 an outside inflow switching on level-dependent after 3 quiet hours moves the level by hundredths per chunk, not feet, and settles at its equilibrium without ringing (0.6.0: 6.67 ft in one chunk, 10 reversals)",
+      maxJump < 0.5 && rev <= 2 && Math.abs(r.lakes.end[0] - 106) < 0.01 && Math.abs(r.ledger.errPct) < 0.01,
+      `largest one-chunk move ${maxJump.toFixed(3)} ft; reversals ${rev}; end ${r.lakes.end[0].toFixed(3)} ft (equilibrium 106); ledger ${r.ledger.errPct.toExponential(2)}%`);
+  }
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log("CRASH " + (e.stack || e)); process.exit(1); });

@@ -58,7 +58,7 @@
       this.nqx = (g.nx + 1) * g.ny; this.q = new Float32Array(this.nqx + g.nx * (g.ny + 1)); this.qo = new Float32Array(this.q.length);
       this.theta = g.theta ?? 0.8; this.kind = "cpu"; this.src = new Float32Array(N);   // point-source depth rate (ft/s) per cell
       this.vmx = new Float32Array(N); this.dvmx = new Float32Array(N);   // running maxima of speed (ft/s) and depth x speed (ft2/s)
-      this.tvx = new Float32Array(N); this.dur = new Float32Array(N);   // time of the maximum speed (hours, the chunk-start convention of tmax) and seconds with depth x speed above dvThresh
+      this.tvx = new Float32Array(N); this.dur = new Float32Array(N);   // time of the maximum speed (hours, the chunk-mid convention of tmax) and seconds with depth x speed above dvThresh
       this.dvThresh = g.dvThresh ?? 0.5;   // ft2/s; the lowest depth x velocity class edge in the app (0.5), unless the run sets it
       this.lim = new Uint8Array(N);   // 1 where a face of the cell hit the Froude limiter (flow capped at critical) with water deeper than VEL_H
     }
@@ -532,9 +532,11 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       let out = null;
       if (r.outlet !== undefined && r.outlet !== null) {
         /* An outlet is any Q(level) with a control elevation it cannot draw the lake below: a weir (the 0.5.0 form), a rating
-         * curve (stage ft : flow cfs pairs, linear between, held beyond), a pipe (an orifice at its invert: Cd A sqrt(2 g H),
-         * Cd 0.6 unless given) or a gate (an orifice of width x opening at its sill, the head taken to the opening's centroid,
-         * the wetted part only while the level is inside the opening). All run through the same midpoint step and chunk limits. */
+         * curve (stage ft : flow cfs pairs, linear between, held beyond), a pipe (an orifice on the wetted circular segment:
+         * Cd A_wet sqrt(2 g y), y the depth of the wetted centroid below the surface, the full area and the head to the
+         * centre once the level reaches the crown; Cd 0.6 unless given) or a gate (an orifice of width x opening at its
+         * sill, the head taken to the opening's centroid, the wetted part only while the level is inside the opening).
+         * All run through the same midpoint step and chunk limits. */
         const ol = r.outlet, kind = ol.kind ?? "weir";
         if (!Number.isFinite(ol.crestFt) && kind !== "rating") throw new Error(`Routed lake ${nm}: outlet crest ${ol.crestFt} is not a number`);
         const pos = (v, what) => { if (!(v > 0 && Number.isFinite(v))) throw new Error(`Routed lake ${nm}: outlet ${what} ${v} is not a positive number`); return v; };
@@ -549,12 +551,21 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           for (let m = 1; m < tab.length; m++) { if (!(tab[m][0] > tab[m - 1][0])) throw new Error(`Routed lake ${nm}: stages in the outlet rating must rise (${tab[m - 1][0]} then ${tab[m][0]})`); if (tab[m][1] < tab[m - 1][1]) throw new Error(`Routed lake ${nm}: flows in the outlet rating must not fall (${tab[m - 1][1]} then ${tab[m][1]} cfs)`); }
           const ctl = tab[0][0], seg = (h) => { let m = 0; while (m < tab.length - 2 && h > tab[m + 1][0]) m++; return m; };
           out = { kind, ctl, q: (h) => { if (!(h > ctl)) return 0; if (h >= tab[tab.length - 1][0]) return tab[tab.length - 1][1]; const m = seg(h); return tab[m][1] + (tab[m + 1][1] - tab[m][1]) * (h - tab[m][0]) / (tab[m + 1][0] - tab[m][0]); },
-            dq: (h) => { if (!(h > ctl)) return (tab[1][1] - tab[0][1]) / (tab[1][0] - tab[0][0]); if (h >= tab[tab.length - 1][0]) return 0; const m = seg(h); return (tab[m + 1][1] - tab[m][1]) / (tab[m + 1][0] - tab[m][0]); } };
+            dq: (h) => { if (!(h > ctl)) return 0; if (h >= tab[tab.length - 1][0]) return 0; const m = seg(h); return (tab[m + 1][1] - tab[m][1]) / (tab[m + 1][0] - tab[m][0]); } };
         } else if (kind === "pipe" || kind === "gate") {
           const cd = ol.cd ?? 0.6; pos(cd, "discharge coefficient"); const ctl = ol.crestFt;
           if (kind === "pipe") {
-            const A = Math.PI * pos(ol.diameterFt, "diameter") ** 2 / 4;
-            out = { kind, ctl, q: (h) => (h > ctl ? cd * A * Math.sqrt(2 * G * (h - ctl)) : 0), dq: (h) => (h > ctl ? cd * A * Math.sqrt(2 * G) / (2 * Math.sqrt(Math.max(h - ctl, 0.02))) : cd * A * Math.sqrt(2 * G) / (2 * Math.sqrt(0.02))) };
+            const D = pos(ol.diameterFt, "diameter"), R = D / 2, Af = Math.PI * R * R;
+            /* the orifice law on the part of the pipe that is wet: below the crown the flow area is the circular segment
+             * up to the level and the head is taken to that segment's centroid (the gate's wetted convention, on a round
+             * opening); at and above the crown the pipe runs full and the head is to the centre. Measuring the head from
+             * the invert instead, as 0.6.0 did, overstates the flow by up to sqrt(2) (review 0.6.0 F-02). */
+            const q = (h) => { const d = h - ctl; if (!(d > 0)) return 0;
+              if (d >= D) return cd * Af * Math.sqrt(2 * G * (d - R));
+              const phi = Math.acos((R - d) / R), s = Math.sin(phi), den = phi - s * (R - d) / R;
+              const Aw = R * R * den, yb = d - R + 2 * R * s * s * s / (3 * den);   // wetted area; depth of its centroid below the surface
+              return cd * Aw * Math.sqrt(2 * G * Math.max(yb, 0)); };
+            out = { kind, ctl, q, dq: (h) => (h > ctl ? (q(h + 0.02) - q(h)) / 0.02 : 0) };
           } else {
             const w = pos(ol.widthFt, "gate width"), a = pos(ol.openingFt, "gate opening");
             const q = (h) => { if (!(h > ctl)) return 0; const d = h - ctl; return d < a ? cd * w * d * Math.sqrt(G * d) : cd * w * a * Math.sqrt(2 * G * (d - a / 2)); };
@@ -603,6 +614,13 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
     /* An outlet's Q(level) is known exactly, so its limit is set directly from dQ/dh (1.5 cw L H^0.5 for a weir), and chunks stay under A/(dQ/dh). */
     const lakeDt = () => { let m = Infinity; for (const r of routed) { const Ah = r.S.area(r.level);
       m = Math.min(m, r.cap, r.kExt > 0 ? Math.max(0.05, Ah / r.kExt) : Infinity);
+      /* a lake fed from outside whose inflow has not yet been seen to depend on the level (kExt unmeasured) and is
+       * currently bringing nothing in is held to the adaptive cap's starting value of 1 s, however far its cap has
+       * grown over a quiet stretch: if that inflow switches on level-dependent, the first chunk is then an adaptive
+       * chunk instead of a full chunk at the starting rate, which moved one probe lake's level 6.67 ft in a single
+       * chunk after three quiet hours (0.6.1, review 0.6.0 F-18). Once a nonzero rate has been measured, or the
+       * dependence has, the ordinary caps apply. */
+      if (o.lakeInflow && !(r.kExt > 0) && !(r.lastRate > 0)) m = Math.min(m, 1);
       if (r.out) { const dq = r.out.dq(r.level); if (dq > 0) m = Math.min(m, Math.max(0.05, Ah / dq)); }
       const H = r.level - r.lip; if (!(H > 0) || !r.faces) continue;
       const dqdh = Math.sqrt(G) * r.faces * g.dx * Math.pow(2 / 3, 1.5) * 1.5 * Math.sqrt(H); m = Math.min(m, Math.max(0.05, 0.25 * Ah / dqdh)); } return m; };
@@ -685,7 +703,12 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
       // to 1/cfl, so lowering the Courant number would silently add diffusion (review F-02). Steps within 90% of the reference step
       // (every step of a chunk of 10 or more steps at the default cfl) keep theta as given. One value per chunk, rounded to Float32, is
       // used by both back ends.
-      const theta = Math.fround(1 - (1 - (g.theta ?? 0.8)) * Math.min(1, dt / (0.9 * 0.7 * dtWave)));
+      // The scaling is two-sided (0.6.1, review 0.6.0 F-01): past the reference step (dt above 0.7 x the wave step, a Courant number
+      // above 0.7) (1 - theta) grows in proportion to dt instead of stopping at its base value, so the smoothing per second stays at
+      // the reference step's there too; (1 - theta) is capped at 0.5 so theta keeps a floor of 0.5. Below the reference step the
+      // 0.6.0 formula is unchanged, so results at Courant numbers of 0.7 and under are bit-identical to 0.6.0.
+      const omt0 = 1 - (g.theta ?? 0.8), scale = dt <= 0.7 * dtWave ? Math.min(1, dt / (0.9 * 0.7 * dtWave)) : dt / (0.7 * dtWave);
+      const theta = Math.fround(1 - Math.min(0.5, omt0 * scale));
       const co = { dt, n, theta, rain, drain: drainInHr / 12 / 3600, stages, tHours: th, pipes, sources };
       let hmC = 0, done = n;
       if (solver.kind === "cpu") {
@@ -715,7 +738,14 @@ fn boundary(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
           // that level), and never takes the lake below its crest
           const qOut = (h) => (r.out ? r.out.q(h) : 0);
           const hMid = r.S.levelOf(V0 + 0.5 * (v2d + vr + ve - qOut(lv) * used));
-          const vo = r.out ? Math.min(qOut(hMid) * used, Math.max(V0 + v2d + vr + ve - r.S.vol(r.out.ctl), 0)) : 0;
+          /* a rating curve steep enough can price the whole half-chunk release above the volume stored over its control,
+           * which puts hMid below the control and releases nothing, chunk after chunk, a hair above it (0.6.1, review
+           * 0.6.0 F-16): evaluate a rating's release at no less than the level whose stored volume is half the volume
+           * the chunk leaves above the control. The volume cap below still keeps the release physical. */
+          let hEval = hMid;
+          if (r.out && r.out.kind === "rating") { const vEnd = V0 + v2d + vr + ve, avail = Math.max(vEnd - r.S.vol(r.out.ctl), 0);
+            if (avail > 0) hEval = Math.max(hMid, r.S.levelOf(r.S.vol(r.out.ctl) + 0.5 * avail)); }
+          const vo = r.out ? Math.min(qOut(hEval) * used, Math.max(V0 + v2d + vr + ve - r.S.vol(r.out.ctl), 0)) : 0;
           r.gain2d += v2d; r.gainRain += vr; r.gainExt += ve; r.outVol += vo; outV[i] = vo;
           r.level = r.S.levelOf(V0 + v2d + vr + ve - vo);
           const d = r.level - lv, rate = ve / used;

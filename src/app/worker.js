@@ -60,7 +60,7 @@ async function loadAll(a) {
   if (a.epsg && !a.dem && DEM.proj4 && a.epsg !== DEM.epsg && (BLD.length || BOUND.length || INLETS)) throw new Error(`The DEM is already in EPSG ${DEM.epsg}, and the buildings, boundaries or inlets loaded were placed in it; load the DEM again to use EPSG ${a.epsg}`);
   if (a.epsg && !a.dem) { const e = Model.lookupCrs(CAT, a.epsg); if (!e) throw new Error(`EPSG ${a.epsg} is not in the projection list`); Object.assign(DEM, { epsg: e.epsg, crsName: e.name, proj4: e.proj4, hUnitFt: Model.proj4UnitFt(e.proj4) }); regrid(); }
   const z = DEM.data; let zmin = Infinity, zmax = -Infinity; for (const v of z) if (v === v) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
-  res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, zmin, zmax, valid: DEM.valid };
+  res.dem = { nx: DEM.nx, ny: DEM.ny, res: DEM.res, x0: DEM.x0, y1: DEM.y1, bounds: DEM.bounds, epsg: DEM.epsg, crsName: DEM.crsName, proj4: DEM.proj4, hUnitFt: DEM.hUnitFt, vUnitHint: DEM.vUnitHint, warnings: DEM.warnings || [], zmin, zmax, valid: DEM.valid };
   if ("buildings" in a) { let bld = []; if (a.buildings) { const r = toDemCrs(parseJson(a.buildings, "Buildings"), "Buildings"); bld = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.buildings = { count: bld.length, note: r.note, feats: bld }; } else res.buildings = { count: 0 }; BLD = bld; regrid(); }
   if ("boundaries" in a) { let bnd = []; if (a.boundaries) { const r = toDemCrs(parseJson(a.boundaries, "Level boundaries"), "Level boundaries"); bnd = r.feats.filter((f) => f.geometry && /Polygon/.test(f.geometry.type)); res.boundaries = { count: bnd.length, note: r.note, props: bnd.map((f) => f.properties || {}), feats: bnd }; } else res.boundaries = { count: 0 }; BOUND = bnd; regrid(); }
   if ("landcover" in a) {
@@ -348,7 +348,7 @@ async function run(o, id) {
   const vmax = r.vmax || new Float32Array(N), dvmax = r.dvmax || new Float32Array(N), froude = r.froude || new Uint8Array(N);
   const tvmax = r.tvmax || new Float32Array(N), dvdur = r.dvdur || new Float32Array(N);
   let froudeCells = 0; for (let k = 0; k < N; k++) { if (!isOpen(k)) { vmax[k] = 0; dvmax[k] = 0; froude[k] = 0; tvmax[k] = 0; dvdur[k] = 0; } froudeCells += froude[k]; }
-  const lakes = r.lakes ? Object.assign({}, r.lakes, { outletNode: outletNodes, hasOutlet: routedLakes.map((x) => !!x.outlet), areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
+  const lakes = r.lakes ? Object.assign({}, r.lakes, { outletNode: outletNodes, hasOutlet: routedLakes.map((x) => !!x.outlet), outletKind: routedLakes.map((x) => x.outlet ? (x.outlet.kind ?? "weir") : null), areaFrom: routedLakes.map((x) => x.areaFrom), gridAc: routedLakes.map((x) => x.gridAc), fromSwmm: two && two.tally.toLakes ? two.tally.toLakes : null, series: undefined,
     seriesT: r.lakes.series.map((x) => x.tHours), seriesL: r.lakes.series.map((x) => x.levels) }) : null;
   return { __transfer: [hmax.buffer, tmax.buffer, bMax.buffer, vmax.buffer, dvmax.buffer, froude.buffer, tvmax.buffer, dvdur.buffer], res: { hmax, tmax, bMax, bReached, vmax, dvmax, froude, tvmax, dvdur, froudeCells, ledger: r.ledger, lakes, steps: r.steps, stopped: r.stopped, kind: solver.kind, wall: (Date.now() - t0w) / 1000, QS, swmm2 } };
 }

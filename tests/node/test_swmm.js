@@ -71,10 +71,20 @@ expectError("refuses a node defined twice", () => S.parseInp("[JUNCTIONS]\nJ1 10
   ok("non-numeric secondary fields are named in the warnings (F-29)", m.nodes[0].surDepth === 0 && m.nodes[0].pondedArea === 2 && m.nodes[1].surDepth === 1.5 && m.nodes[1].pondedArea === 0 && m.nodes[2].initDepth === 0 && /Junction J1 surcharge depth: "abc"/.test(w) && /Junction J2 ponded area: "xyz"/.test(w) && /Storage S1 initial depth: "deep"/.test(w) && /Conduit C1 inlet offset: "off"/.test(w),
     `warnings: ${w}`);
 }
+// Geom1 of an IRREGULAR section is a transect name and of a CUSTOM section a curve name: both stay strings and earn
+// no "not a number" warning, while genuinely bad numeric fields in the same file still do (0.6.1, review 0.6.0 F-05;
+// Pass B's probe file). On 0.6.0 the name was warned on and zeroed.
+{
+  const m = S.parseInp("[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ1 10 5 0 0 0\nJ2 9 5 0 abc 0\n[OUTFALLS]\nO1 5 FREE NO\n[CONDUITS]\nC1 J1 J2 100 0.013 0 0 0 0\nC2 J2 O1 100 0.013 * 0 0 0\nC3 J1 O1 100 0.013 0 0 0 0\n[XSECTIONS]\nC1 CIRCULAR 3.0\nC2 IRREGULAR TRANSECT1\nC3 CUSTOM CURVE1\n[COORDINATES]\nJ1 0 0\nJ2 1 0\nO1 2 0\n");
+  const w = m.warnings.join(" | "), byName = Object.fromEntries(m.links.map((l) => [l.name, l]));
+  ok("a transect or curve name in a cross section is kept as a name, not warned on or zeroed (F-05 of the 0.6.0 review)",
+    byName.C2.geom1 === "TRANSECT1" && byName.C3.geom1 === "CURVE1" && byName.C1.geom1 === 3.0 && !/TRANSECT1/.test(w) && !/CURVE1/.test(w) && /Junction J2 surcharge depth: "abc"/.test(w) && /Conduit C2 inlet offset: "\*"/.test(w),
+    `C1 geom1 ${byName.C1.geom1}; C2 geom1 ${JSON.stringify(byName.C2.geom1)}; C3 geom1 ${JSON.stringify(byName.C3.geom1)}; warnings: ${w}`);
+}
 // water SWMM can make on its own besides subcatchments: [INFLOWS], [DWF], [RDII], [GROUNDWATER] lines are counted
 {
   const base = "[OPTIONS]\nFLOW_UNITS CFS\n[JUNCTIONS]\nJ1 10 5 0 0 0\n[OUTFALLS]\nO1 5 FREE NO\n[CONDUITS]\nC1 J1 O1 100 0.013 0 0 0 0\n";
   const none = S.parseInp(base), some = S.parseInp(base + "[INFLOWS]\nJ1 FLOW TS1\n[DWF]\nJ1 FLOW 0.5\n");
   ok("other inflows SWMM makes on its own are counted", none.otherInflows === 0 && some.otherInflows === 2, `${none.otherInflows} and ${some.otherInflows}`);
 }
-const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);

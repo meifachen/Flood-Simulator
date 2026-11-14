@@ -61,7 +61,10 @@
       for (const e of [l.from, l.to]) if (!(e in model.nodeIndex)) model.warnings.push(`Link ${l.name} refers to unknown node ${e}`);
       model.links.push(l);
     }
-    const xs = {}; for (const r of sec.XSECTIONS || []) xs[r.t[0]] = { shape: (r.t[1] || "").toUpperCase(), geom1: secNum(r.t[2], `Cross section ${r.t[0]} geometry`) };
+    /* Geom1 is a dimension for most shapes, but for IRREGULAR it is a transect name and for CUSTOM a curve name:
+     * those stay strings and earn no "not a number" warning (0.6.1, review 0.6.0 F-05) */
+    const xs = {}; for (const r of sec.XSECTIONS || []) { const shape = (r.t[1] || "").toUpperCase();
+      xs[r.t[0]] = { shape, geom1: shape === "IRREGULAR" || shape === "CUSTOM" ? (r.t[2] ?? null) : secNum(r.t[2], `Cross section ${r.t[0]} geometry`) }; }
     for (const l of model.links) if (xs[l.name]) Object.assign(l, xs[l.name]);
     for (const r of sec.VERTICES || []) (model.vertices[r.t[0]] = model.vertices[r.t[0]] || []).push([num(r.t[1], "Vertex X"), num(r.t[2], "Vertex Y")]);
     for (const r of sec.POLYGONS || []) (model.polygons[r.t[0]] = model.polygons[r.t[0]] || []).push([num(r.t[1], "Polygon X"), num(r.t[2], "Polygon Y")]);

@@ -116,5 +116,5 @@ function gaExact(Ks, psi, imd, d, t) { const c1 = (psi + d) * imd; let F = Math.
     ok("refuses infinite stage", msg !== null, msg || "no error");
   }
   require("fs").writeFileSync((process.env.OUTDIR || require("os").tmpdir()) + "/test_fixes_results.json", JSON.stringify(res, null, 1));
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

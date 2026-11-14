@@ -99,18 +99,29 @@ function raw(nx, ny, dx, fz, ft = () => 0, o = {}) {
     }
     ok("T9 a dam break moves the same water whatever the step (dtMax 5, 0.1, 0.02, 0.005 s; within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
   }
-  // T10 (new in 0.6.0, E-02; covers review F-02) the same dam break at Courant numbers 0.7, 0.35 and 0.1 moves the same water (within 3%):
-  // the de Almeida smoothing is normalised to the wave step at the reference Courant number, so a lower cfl no longer adds diffusion.
-  // On 0.5.0 the cfl 0.1 run moved 14% less water than the cfl 0.7 run.
+  // T10 (new in 0.6.0, E-02; covers review F-02; extended in 0.6.1, review 0.6.0 F-01) the same dam break moves the
+  // same water (within 3%) across the Courant range: the de Almeida smoothing is normalised to the wave step at the
+  // reference Courant number, two-sided since 0.6.1, so neither a lower nor a higher cfl changes the smoothing per
+  // second. On 0.5.0 the cfl 0.1 run moved 14% less water than the cfl 0.7 run; on 0.6.0 the cfl 0.95 run moved 14%
+  // MORE (the normalisation stopped at the reference step). At cfl 1.0 the scheme is at its stability edge and the
+  // front lags: that is pinned by the second check (measured 0.84x the cfl 0.7 volume, peak depth 1.77 ft), not
+  // claimed as invariance.
   {
     const nx = 40, ny = 30, g = F.makeGrid(raw(nx, ny, 10, () => 100, (r, c) => (r === 0 || c === 0 || r === ny - 1 || c === nx - 1) ? 1 : 0));
-    const moved = [];
-    for (const cfl of [0.7, 0.35, 0.1]) {
+    const run = async (cfl) => {
       const init = new Float32Array(4 * g.N); for (let r = 1; r < ny - 1; r++) for (let c = 30; c < nx - 1; c++) init[4 * (r * nx + c)] = 3;
       const out = await F.simulate(g, new F.CpuSolver(g), { t0: 0, t1: 20 / 3600, rainAt: () => 0, stageAt: () => [0], cfl, dtMax: 5, readSec: 3600, init });
-      const st = out.frames.at(-1).st; let v = 0; for (let r = 1; r < ny - 1; r++) for (let c = 1; c < 30; c++) v += st[4 * (r * nx + c)] * 100; moved.push(v);
-    }
-    ok("T10 a dam break moves the same water at Courant 0.7, 0.35 and 0.1 (within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
+      const st = out.frames.at(-1).st; let v = 0, mx = 0; for (let r = 1; r < ny - 1; r++) for (let c = 1; c < 30; c++) v += st[4 * (r * nx + c)] * 100;
+      for (let k = 0; k < g.N; k++) mx = Math.max(mx, st[4 * k]);
+      return { v, mx };
+    };
+    const moved = [], at = {};
+    for (const cfl of [0.7, 0.35, 0.1, 0.95]) { const r = await run(cfl); moved.push(r.v); at[cfl] = r; }
+    ok("T10 a dam break moves the same water at Courant 0.7, 0.35, 0.1 and 0.95 (within 3%)", moved.every((v) => Math.abs(v - moved[0]) / moved[0] < 0.03), moved.map((v) => v.toFixed(0) + " cf").join(", "));
+    const r1 = await run(1.0);
+    ok("T10 at Courant 1.0 the front lags at the scheme's stability edge (pinned: 0.78-0.90x the Courant 0.7 volume, peak depth under 1.85 ft; not claimed invariant)",
+      r1.v > 0.78 * moved[0] && r1.v < 0.90 * moved[0] && r1.mx < 1.85,
+      `${r1.v.toFixed(0)} cf (${(r1.v / moved[0]).toFixed(3)}x), peak depth ${r1.mx.toFixed(3)} ft`);
   }
   // T11 (new in 0.6.0, E-08) UK Environment Agency benchmarking Test 3, "momentum conservation over a small obstruction"
   // (Neelz and Pender 2010, Benchmarking of 2D hydraulic modelling packages): a 300 m by 100 m plane at 1:200 with two
@@ -140,10 +151,12 @@ function raw(nx, ny, dx, fz, ft = () => 0, o = {}) {
     const dep = (c) => st[4 * (mid * nx + c)], lvl = (c) => dep(c) + g.aux[4 * (mid * nx + c)];
     let vEast = 0; for (let k = 0; k < g.N; k++) if ((k % nx + 0.5) * 5 > 200) vEast += st[4 * k] * A;
     const v1 = out.vmax[mid * nx + 30] / M;                            // peak speed at the left depression, m/s
+    // bands tightened in 0.6.1 (review 0.6.0 F-28) around this fixture's measured values (depth 0.166 m, share
+    // 18.3%, flatness 0.000 ft, peak speed 0.49 m/s), so a drift in any of them fails here instead of passing silently
     ok("T11 EA Test 3 replica: momentum carries water over the 0.25 m obstruction into the right depression, a bounded share, levels settle flat, ledger closes",
-      dep(50) > 0.15 && vEast / vFill < 0.3 && vEast > 0.01 * vFill && Math.abs(lvl(28) - lvl(32)) < 0.1 && Math.abs(out.ledger.errPct) < 0.5 && v1 > 0.3 && v1 < 3.7,
-      `right depression depth ${(dep(50) / M).toFixed(3)} m (published: the full-SWE packages settle it about 0.02 m apart), share east of crest ${(100 * vEast / vFill).toFixed(1)}% of the inflow volume, left pond flatness ${Math.abs(lvl(28) - lvl(32)).toFixed(3)} ft, peak speed at point 1 ${v1.toFixed(2)} m/s (published plot envelope up to about 3 m/s), ledger ${out.ledger.errPct.toFixed(3)}%`);
+      dep(50) / M > 0.14 && dep(50) / M < 0.19 && vEast / vFill > 0.14 && vEast / vFill < 0.23 && Math.abs(lvl(28) - lvl(32)) < 0.02 && Math.abs(out.ledger.errPct) < 0.5 && v1 > 0.35 && v1 < 0.8,
+      `right depression depth ${(dep(50) / M).toFixed(3)} m (measured 0.166; published: the full-SWE packages settle it about 0.02 m apart), share east of crest ${(100 * vEast / vFill).toFixed(1)}% of the inflow volume (measured 18.3), left pond flatness ${Math.abs(lvl(28) - lvl(32)).toFixed(3)} ft, peak speed at point 1 ${v1.toFixed(2)} m/s (measured 0.49; published plot envelope up to about 3 m/s), ledger ${out.ledger.errPct.toFixed(3)}%`);
   }
   require("fs").writeFileSync((process.env.OUTDIR || require("os").tmpdir()) + "/test_flood_results.json", JSON.stringify(res, null, 1));
-  console.log(res.every((r) => r.pass) ? "ALL PASS" : "SOME FAILED"); process.exitCode = res.every((r) => r.pass) ? 0 : 1;
+  console.log(res.every((r) => r.pass) ? `ALL PASS (${res.length} checks)` : "SOME FAILED"); process.exitCode = res.every((r) => r.pass) ? 0 : 1;
 })();

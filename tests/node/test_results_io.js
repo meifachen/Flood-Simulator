@@ -50,6 +50,21 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
       r2.h.prov.settings.cfl === 0.7 && r2.h.prov.inputs[0].sha256 === "a".repeat(64) && r2.final.tvmax[0] === 1.5 && r2.final.dvdur[0] === 600 &&
       d.length === 2 && /cfl: 0.7 vs 0.5/.test(d[0]) && /inp file differs/.test(d[1]) && dSame.length === 0 && /sha256 aaaaaaaaaaaa/.test(RIO.provLine(prov)),
       `diff: ${d.join("; ") || "none"}; line: ${RIO.provLine(prov).slice(0, 90)}…`);
+    // the whole provenance object, inputs included, comes back deep-equal (0.6.1, review 0.6.0 F-04)
+    const deepEq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    ok("R-C3 the provenance of a saved run reopens deep-equal to what was saved, inputs included",
+      deepEq(r2.h.prov, prov), `saved ${JSON.stringify(prov).length} chars, reopened ${JSON.stringify(r2.h.prov).length} chars`);
+    // the settings recorded since 0.6.1 (rain, drain, dtMax, inlet panel, boundary specs) are diffed by name:
+    // two runs differing only in their uniform rain are NOT "the same settings" (0.6.1, review 0.6.0 F-03;
+    // on 0.6.0 provDiff did not know these keys and returned no difference)
+    const pA = JSON.parse(JSON.stringify(prov)); pA.settings = Object.assign({}, pA.settings, { rainSource: "uniform", rainInHr: 1, rainHours: 6, gauge: null, drainInHr: 0, dtMax: 5, inlets: { lw: 5, cw: 3, inletArea: 3, co: 0.6, clog: 0, defaultInlets: true }, boundaries: [{ key: "Pond", node: null, routed: true, level: 54.8, areaAc: null }] });
+    const pB = JSON.parse(JSON.stringify(pA)); pB.settings.rainInHr = 4; pB.settings.rainHours = 2;
+    const pC = JSON.parse(JSON.stringify(pA)); pC.settings.inlets.clog = 0.25; pC.settings.boundaries[0].level = 55.5;
+    const dRain = RIO.provDiff(pA, pB), dInl = RIO.provDiff(pA, pC);
+    ok("R-C3 provenance diffs name a rain-only difference, an inlet-panel difference and a boundary-level difference",
+      dRain.length === 2 && /rainInHr: 1 vs 4/.test(dRain[0]) && /rainHours: 6 vs 2/.test(dRain[1]) &&
+      dInl.length === 2 && /inlet clog: 0 vs 0.25/.test(dInl[0]) && /boundary Pond level: 54.8 vs 55.5/.test(dInl[1]),
+      `rain: ${dRain.join("; ") || "none"}; inlet/boundary: ${dInl.join("; ") || "none"}`);
   }
   // R-C1 comparing two runs on the same grid: per-cell change in maximum depth and the areas gained and lost (hand-made 2 x 2 runs)
   {
@@ -71,5 +86,5 @@ const refused = async (buf) => { try { await RIO.unpack(buf); return "opened"; }
     const c = RIO.compare(g, { hmax: Float32Array.of(0.1) }, g, { hmax: Float32Array.of(3e-9) }, 0.05, 0.1);
     ok("R-C2 a change stored as 0.1 ft (Float32) is counted as deeper by 0.1 ft, as the map shows it", c.diff[0] >= 0.1 && c.acres.deeper === 1 / 43560, `stored change ${c.diff[0]}; deeper ${c.acres.deeper * 43560} cells`);
   }
-  const bad2 = res.filter((x) => !x.pass).length; console.log(bad2 ? `${bad2} FAILED` : "ALL PASS"); process.exit(bad2 ? 1 : 0);
+  const bad2 = res.filter((x) => !x.pass).length; console.log(bad2 ? `${bad2} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad2 ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

@@ -110,6 +110,12 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
     const plain = await M.readDEM(ab(path.join(__dirname, "../fixtures/dem_no_zunits.tif")), GeoTIFF, catalog);
     ok("a DEM written by prep_dem --zunits ft reads back with a feet vertical-unit hint (F-11)", tagged.vUnitHint === "ft" && si.vUnitHint === "m" && plain.vUnitHint === null,
       `tagged ft: ${tagged.vUnitHint}; SI example: ${si.vUnitHint}; no tag: ${plain.vUnitHint}`);
+    // an UNITTYPE value the reader does not know ("ft_survey", as other tools write it) is named in the DEM warnings,
+    // not silently dropped (0.6.1, review 0.6.0 F-13); fixture: the ft fixture with its tag rewritten by rasterio
+    const odd = await M.readDEM(ab(path.join(__dirname, "../fixtures/dem_zunits_survey.tif")), GeoTIFF, catalog);
+    ok("an unrecognized UNITTYPE value is named in the DEM warnings instead of silently ignored (F-13 of the 0.6.0 review)",
+      odd.vUnitHint === null && (odd.warnings || []).some((w) => /UNITTYPE\) is "ft_survey"/.test(w)) && !(tagged.warnings || []).length && !(plain.warnings || []).length,
+      `warnings: ${(odd.warnings || []).join(" | ") || "none"}`);
   }
   // nearestOpen measures true (Euclidean) distance in cells (review F-09): a diagonal 3 cells over and 3 up is 4.24 cells away,
   // outside a 3-cell radius; and a nearer axial cell beats a farther diagonal at the same ring
@@ -135,5 +141,5 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
   await expectError("refuses a .out from a different model", () => { const m = S.parseInp(fs.readFileSync(ex("synthetic_us", "model.inp"), "utf8")); m.nodes.push({ name: "EXTRA", x: 0, y: 0 }); M.coupleSwmm(B.synthetic_us.b, m, S.readOut(fs.readFileSync(ex("synthetic_us", "model.out")))); }, /does not match/);
   await expectError("refuses a .inp/.out unit mismatch", () => M.coupleSwmm(B.synthetic_us.b, S.parseInp(fs.readFileSync(ex("synthetic_us", "model.inp"), "utf8")), S.readOut(fs.readFileSync(ex("synthetic_si", "model.out")))), /different runs/);
   await expectError("refuses a boundary node without results", () => M.coupleSwmm(B.synthetic_us.b, S.parseInp(fs.readFileSync(ex("synthetic_us", "model.inp"), "utf8")), null, { boundaries: [{ key: "P", node: "POND" }] }), /needs the SWMM .out/);
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

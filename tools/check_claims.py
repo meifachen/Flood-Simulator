@@ -10,7 +10,8 @@ values STATUS quotes. Any drift, or a suite that does not pass, fails the gate.
 
 The browser figure (B20) is gated only when a browser-suite log is given: capture one with
 `python tests/browser/test_app.py 2>&1 | tee tests/browser-last.log`. Without a log it is reported as
-not gated in this run, not as passed.
+not gated in this run, not as passed. The log is accepted only with the suite's stamp (app version
+and dist sha256) matching the dist in this tree, so a stale log cannot pass the figure.
 """
 import argparse, re, subprocess, sys
 from pathlib import Path
@@ -72,10 +73,14 @@ def main():
             print(f"PASS {name}: measured {mv} = STATUS {sv}")
         else:
             print(f"FAIL {name}: measured {mv} but STATUS quotes {sv}"); bad += 1
-    # L13 is a bound, not a value: STATUS's quoted bound must equal the tolerance the test asserts, and the measured errors must sit inside it
-    rc, out = cache.get("tests/node/test_lakes.js", run_suite("tests/node/test_lakes.js"))
+    # L13 is a bound, not a value: STATUS's quoted bound must equal the tolerance the test asserts, and the measured errors must sit inside it.
+    # The asserted tolerance is printed in the check's result line from the same constant the assertion uses (0.6.1, review 0.6.0 F-10);
+    # before, it was parsed out of the check's name, so loosening the assertion alone would still have passed the gate.
+    if "tests/node/test_lakes.js" not in cache:
+        cache["tests/node/test_lakes.js"] = run_suite("tests/node/test_lakes.js")
+    rc, out = cache["tests/node/test_lakes.js"]
     m = re.search(r"largest error ([\d.]+) / ([\d.]+) ft", out)
-    t = re.search(r"L13 an outlet weir drains the lake along the level-pool solution \(within ([\d.]+) ft", out)
+    t = re.search(r"asserted bound ([\d.]+) ft", out)
     s = re.search(r"L13 \(weir drawdown against the closed-form level-pool solution within ([\d.]+) ft", status)
     if not (m and t and s):
         print("FAIL L13 weir errors: a needed figure was not found"); bad += 1
@@ -85,17 +90,29 @@ def main():
             print(f"PASS L13 weir errors (ft): measured {errs} inside the quoted bound {bound}")
         else:
             print(f"FAIL L13 weir errors: measured {errs}, test bound {t.group(1)}, STATUS bound {bound}"); bad += 1
-    # B20 comes from the browser suite; gate it only with a captured log
+    # B20 comes from the browser suite; gate it only with a captured log. The log must carry the suite's stamp
+    # (app version and the dist file's sha256, printed by test_app.py) matching the dist in this tree, so a stale
+    # log from an older build cannot pass the figure (0.6.1, review 0.6.0 F-10).
     s = re.search(r"B20: routed pond, rise = budget ÷ area; GPU = CPU, ([\d.]+) ft", status)
     if a.browser_log:
         log = Path(a.browser_log).read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"CPU ([\d.]+), GPU [\d.]+ ft", log)
-        if not (m and s):
-            print("FAIL B20 pond level: a needed figure was not found"); bad += 1
-        elif abs(float(m.group(1)) - float(s.group(1))) < 5e-5:
-            print(f"PASS B20 pond level (ft): browser log {m.group(1)} = STATUS {s.group(1)}")
+        stamp = re.search(r"SUITE STAMP: app ([\d.]+), dist sha256 ([0-9a-f]+), (\S+)", log)
+        import hashlib, json as _json
+        dist = ROOT / "dist" / "FloodSimulator.html"
+        man = _json.loads((ROOT / "dist" / "FloodSimulator.manifest.json").read_text(encoding="utf-8")) if (ROOT / "dist" / "FloodSimulator.manifest.json").exists() else {}
+        sha = hashlib.sha256(dist.read_bytes()).hexdigest() if dist.exists() else ""
+        if not stamp:
+            print("FAIL B20 pond level: the browser log has no suite stamp; recapture it with the current test_app.py"); bad += 1
+        elif stamp.group(1) != str(man.get("version", "")) or not sha.startswith(stamp.group(2)):
+            print(f"FAIL B20 pond level: the browser log is stale (stamp app {stamp.group(1)}, dist sha256 {stamp.group(2)}; this tree's dist is app {man.get('version')}, sha256 {sha[:len(stamp.group(2))]})"); bad += 1
         else:
-            print(f"FAIL B20 pond level: browser log {m.group(1)} but STATUS quotes {s.group(1)}"); bad += 1
+            m = re.search(r"CPU ([\d.]+), GPU [\d.]+ ft", log[stamp.end():])
+            if not (m and s):
+                print("FAIL B20 pond level: a needed figure was not found"); bad += 1
+            elif abs(float(m.group(1)) - float(s.group(1))) < 5e-5:
+                print(f"PASS B20 pond level (ft): browser log {m.group(1)} = STATUS {s.group(1)} (log stamped {stamp.group(3)}, app {stamp.group(1)})")
+            else:
+                print(f"FAIL B20 pond level: browser log {m.group(1)} but STATUS quotes {s.group(1)}"); bad += 1
     else:
         print(f"SKIP B20 pond level: no browser log given (STATUS quotes {s.group(1) if s else '?'} ft); pass --browser-log to gate it")
     print("CLAIMS GATE: " + ("FAILED" if bad else "ALL GATED CLAIMS PASS"))

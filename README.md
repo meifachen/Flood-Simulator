@@ -100,7 +100,7 @@ node tests/node/test_landcover.js
 node tests/node/test_worker.js
 node tests/node/test_results_io.js
 python tools/build.py && python tests/browser/test_app.py
-python tools/check_claims.py   # the figures STATUS quotes, checked against what the suites print
+python tools/check_claims.py   # the five figures STATUS quotes from the suites, checked against what they print; add --browser-log <log> to gate the browser figure (B20) too, as CI does
 ```
 
 The SWMM readers are checked against the EPA SWMM 5.2 engine (`swmm-toolkit`), and the grid builder against rasterio.

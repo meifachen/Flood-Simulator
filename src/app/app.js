@@ -33,9 +33,12 @@ async function loadInputs(args, label) {
   try {
     const r = await call("load", args);
     // run provenance (E-04): hash every input file as loaded, so a saved run names the exact files it came from
-    if (r.dem) S.inputHashes = {};
+    // the worker describes the DEM in every load response, so r.dem alone does not mean a new DEM arrived: the
+    // recorded input hashes belong to the site and are reset only when a new DEM was accepted (r.cleared). Before
+    // 0.6.1 every later file load wiped them, and a saved run's provenance kept only the last file loaded (F-04).
+    if (r.cleared) S.inputHashes = {};
     for (const k of HASH_KINDS) if (args[k] !== undefined && args[k] !== null) { try { (S.inputHashes ||= {})[k] = { kind: k, name: label, sha256: await sha256hex(args[k] instanceof ArrayBuffer ? args[k] : args[k].buffer ? new Uint8Array(args[k]) : args[k]) }; } catch (e) { /* hashing is bookkeeping; a failure there must not refuse the load */ } }
-    if (r.dem) { S.dem = r.dem; S.grid = null; S.resultsOnly = false; S.loadedFrom = null; clearResults(); }
+    if (r.dem) { S.dem = r.dem; S.grid = null; S.resultsOnly = false; S.loadedFrom = null; clearResults(); if (r.dem.warnings && r.dem.warnings.length) $("#warns").innerHTML = r.dem.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join(""); }
     if (r.buildings) S.bld = r.buildings.count ? r.buildings : null;
     if (r.boundaries) S.bnd = r.boundaries.count ? r.boundaries : null;
     if ("inlets" in r) S.inl = r.inlets;
@@ -258,7 +261,13 @@ async function run() {
       }
     });
     S.final = res;   // provenance of this run, saved into the .fsim.gz (E-04)
-    S.prov = { app: BUILD ? BUILD.version : "dev", settings: { engine: res.kind, cfl: o.cfl, coupling: o.coupling, couplingSec: o.coupling === "two" ? o.couplingSec : null, t0: o.t0, t1: o.t1, outputSec: o.outputSec, rainSource: o.rainSource, dvThresh: o.dvThresh }, inputs: Object.values(S.inputHashes || {}) };
+    S.prov = { app: BUILD ? BUILD.version : "dev", settings: { engine: res.kind, cfl: o.cfl, coupling: o.coupling, couplingSec: o.coupling === "two" ? o.couplingSec : null, t0: o.t0, t1: o.t1, outputSec: o.outputSec, rainSource: o.rainSource, dvThresh: o.dvThresh,
+      // the rest of what defines the run (0.6.1, review 0.6.0 F-03): the rain itself, the drain allowance and the step cap at their
+      // effective values, the two-way inlet panel values, and the boundary specs typed into the panel (boundary files are hashed as inputs)
+      rainInHr: o.rainSource === "uniform" ? o.rainInHr : null, rainHours: o.rainSource === "uniform" ? o.rainHours : null, gauge: o.rainSource === "gauge" ? o.gauge : null,
+      drainInHr: o.drainInHr ?? 0, dtMax: o.dtMax ?? 5,
+      inlets: o.coupling === "two" ? { lw: o.lw, cw: o.cw, inletArea: o.inletArea, co: o.co, clog: o.clog, defaultInlets: o.defaultInlets } : null,
+      boundaries: (o.boundaries || []).map((b) => ({ key: b.key, node: b.node ?? null, routed: !!b.routed, level: Number.isFinite(b.level) ? b.level : null, areaAc: b.areaAc ?? null })) }, inputs: Object.values(S.inputHashes || {}) };
     $("#pbar").style.width = "100%";
     msg(`${res.stopped ? "<b>Stopped early.</b> " : "Done: "}${res.steps.toLocaleString()} time steps in ${fmt(res.wall, 1)} s on the ${res.kind === "gpu" ? "GPU" : "CPU"}; water balance closes within ${fmt(Math.abs(res.ledger.errPct), 4)}%.`, res.stopped ? "warn" : "note");
     S.view = $("#view").value; renderAll();
@@ -518,7 +527,7 @@ function lakesHtml() {
   const ac = (v) => fmt(v / 43560, 3);
   return `<h3 style="margin:12px 0 6px;font-size:15px">Routed lakes</h3><div style="overflow-x:auto;max-width:100%"><table class="t"><thead><tr><th>Lake</th><th class="n">Start (ft)</th><th class="n">Peak (ft)</th><th class="n">End (ft)</th><th class="n">Area (ac)</th><th class="n">From the 2D (ac-ft)</th><th class="n">Rain on the lake (ac-ft)</th><th class="n">SWMM outfalls (ac-ft)</th><th class="n">Outlet (ac-ft)</th></tr></thead><tbody>` +
     lk.names.map((n, i) => { const tab = lk.areaFrom[i] === "stage-area table", out = lk.outlet ? lk.outlet[i] : 0, node = lk.outletNode && lk.outletNode[i];
-      return `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${tab ? " (table, at start)" : lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td><td class="n">${lk.hasOutlet && lk.hasOutlet[i] ? `${ac(out)}${node ? ` to ${esc(node)}` : " out of the model"}` : "none"}</td></tr>`; }).join("") +
+      return `<tr><td>${esc(n)}</td><td class="n">${fmt(lk.start[i], 2)}</td><td class="n">${fmt(lk.peak[i], 2)}</td><td class="n">${fmt(lk.end[i], 2)}</td><td class="n">${fmt(lk.area[i] / 43560, 1)}${tab ? " (table, at start)" : lk.areaFrom[i] === "given" ? "" : " (in grid)"}</td><td class="n">${ac(lk.from2d[i])}</td><td class="n">${ac(lk.rain[i])}</td><td class="n">${ac(lk.outside[i])}</td><td class="n">${lk.hasOutlet && lk.hasOutlet[i] ? `${esc((lk.outletKind && lk.outletKind[i]) || "outlet")} outlet: ${ac(out)}${node ? ` to ${esc(node)}` : " out of the model"}` : "none"}</td></tr>`; }).join("") +
     `</tbody></table></div><p class="note">A routed lake is a level pool: its volume changes by water from the 2D + rain on its area + SWMM outfall inflow − its outlet, and its level follows from its area (constant, or its stage-area table).</p>`;
 }
 function swmm2Html() {

@@ -78,8 +78,16 @@ const RIO = {
     if (!a || !b) return [];
     const out = [], sa = a.settings || {}, sb = b.settings || {};
     if (String(a.app ?? "") !== String(b.app ?? "")) out.push(`app version: ${a.app ?? "–"} vs ${b.app ?? "–"}`);
-    for (const k of ["engine", "cfl", "coupling", "couplingSec", "t0", "t1", "outputSec", "rainSource", "dvThresh"])
+    for (const k of ["engine", "cfl", "coupling", "couplingSec", "t0", "t1", "outputSec", "rainSource", "dvThresh", "rainInHr", "rainHours", "gauge", "drainInHr", "dtMax"])
       if (String(sa[k] ?? "") !== String(sb[k] ?? "")) out.push(`${k}: ${sa[k] ?? "–"} vs ${sb[k] ?? "–"}`);
+    const ia2 = sa.inlets || {}, ib2 = sb.inlets || {};
+    for (const k of ["lw", "cw", "inletArea", "co", "clog", "defaultInlets"])
+      if (String(ia2[k] ?? "") !== String(ib2[k] ?? "")) out.push(`inlet ${k}: ${ia2[k] ?? "–"} vs ${ib2[k] ?? "–"}`);
+    const ba = sa.boundaries || [], bMap = new Map((sb.boundaries || []).map((b) => [b.key, b]));
+    for (const x of ba) { const y = bMap.get(x.key);
+      if (!y) out.push(`boundary ${x.key}: only in this run`);
+      else for (const k of ["node", "routed", "level", "areaAc"]) if (String(x[k] ?? "") !== String(y[k] ?? "")) out.push(`boundary ${x.key} ${k}: ${x[k] ?? "–"} vs ${y[k] ?? "–"}`); }
+    for (const y of (sb.boundaries || [])) if (!ba.some((x) => x.key === y.key)) out.push(`boundary ${y.key}: only in the other run`);
     const ia = new Map((a.inputs || []).map((i) => [i.kind, i])), ib = new Map((b.inputs || []).map((i) => [i.kind, i]));
     for (const k of new Set([...ia.keys(), ...ib.keys()])) {
       const x = ia.get(k), y = ib.get(k);

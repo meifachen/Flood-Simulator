@@ -96,9 +96,10 @@ function grid(nx, ny, dx, fz, ft, n = 0.03) {
     const ch = channel({}), out = await sim(ch, { t1: 2, sourceAt: ramp(ch, 600, 3600) });
     const dur = mid(ch, out, (k) => out.dvdur[k]), tv = mid(ch, out, (k) => out.tvmax[k]);
     const hi = await sim(ch, { t1: 2, sourceAt: ramp(ch, 600, 3600), dvThresh: 2.0 }), durHi = mid(ch, hi, (k) => hi.dvdur[k]);
+    // bands tightened in 0.6.1 (review 0.6.0 F-28) around the measured values (duration 3,191 s, time of max 0.338 h)
     ok("V8 time of max speed and duration above the D x V threshold are recorded (and the threshold is the run's)",
-      out.tvmax.length === ch.g.N && dur > 0.75 * 3600 && dur < 1.6 * 3600 && tv > 0 && tv <= 2 && durHi === 0,
-      `duration above 0.5 ft2/s ${dur.toFixed(0)} s of 7200; time of max speed ${tv.toFixed(3)} h; duration above 2.0 ft2/s ${durHi.toFixed(0)} s`);
+      out.tvmax.length === ch.g.N && dur > 2900 && dur < 3500 && tv > 0.25 && tv < 0.45 && durHi === 0,
+      `duration above 0.5 ft2/s ${dur.toFixed(0)} s of 7200 (measured 3191); time of max speed ${tv.toFixed(3)} h (measured 0.338); duration above 2.0 ft2/s ${durHi.toFixed(0)} s`);
   }
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

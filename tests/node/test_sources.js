@@ -59,5 +59,5 @@ async function expectError(name, fn, re) { try { await fn(); ok(name, false, "no
   await expectError("S6 refuses sources without sourceAt", () => F.simulate(g, new F.CpuSolver(g), Object.assign({}, base, { sources: [{ cell }] })), /sourceAt/);
   await expectError("S6 refuses a wrong-length inflow array", () => F.simulate(g, new F.CpuSolver(g), Object.assign({}, base, { sources: [{ cell }, { cell: cell + 1 }], sourceAt: () => [1] })), /missing/);
   await expectError("S6 refuses a zero rain interval", () => F.simulate(g, new F.CpuSolver(g), Object.assign({}, base, { rainStep: 0 })), /rain interval/);
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

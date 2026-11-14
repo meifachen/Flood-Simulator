@@ -1,8 +1,8 @@
 {
  "app": "FloodSimulator.html",
- "version": "0.6.0",
- "bytes": 5768737,
- "sha256": "ace9da88b2440eca356f3cee670a92614aca885a28b9927b41c87c6d0c7e67d1",
+ "version": "0.6.1",
+ "bytes": 5778824,
+ "sha256": "b70a179f054ecf9972cb2fcb5eaacbf92d9d2e5c3d746f97e3db53b83df74226",
  "inputs": [
   {
    "file": "examples/public_demo/buildings.geojson",
@@ -98,11 +98,11 @@
   },
   {
    "file": "src/app/app.js",
-   "sha256": "affa33774ad7d433ad835d2e26fd37e621cf36ead11fa39a6019492da17ad5c0"
+   "sha256": "5b88aef83b41657f9fe8dacf5ca963553eb7fe14e0f9ff9b64a30f244bb943c7"
   },
   {
    "file": "src/app/help.html",
-   "sha256": "febe6fba216ee79014889533288975fec7f6c7328db09bdacf3486adfb670b0c"
+   "sha256": "38c64a908fb8859ea33b2d65448cb212eee7f48c32f30f49b54e5c75e3d79917"
   },
   {
    "file": "src/app/index.html",
@@ -110,7 +110,7 @@
   },
   {
    "file": "src/app/results_io.js",
-   "sha256": "b7d30d4bc84f2c2bf0c84c73873ee22e6facb0764bb037a7c91b6f79dc131417"
+   "sha256": "f8acc4bd8800e8f8a9362c52f763665aeecab49ae4a54184d9631cf787583531"
   },
   {
    "file": "src/app/ui.js",
@@ -122,7 +122,7 @@
   },
   {
    "file": "src/app/worker.js",
-   "sha256": "cf20e2e13e72929e5e4625da585edb02b8663df00ecd1dbd29b83defe0bcfff2"
+   "sha256": "c76b649548d15512dc74b5002a4b48bfdbfbaa22758b829081596aeebe961985"
   },
   {
    "file": "src/core/couple2way.js",
@@ -130,15 +130,15 @@
   },
   {
    "file": "src/core/model.js",
-   "sha256": "e7625748d21804796c48f424dba4d8169791fc539517c79e82799a094c7a6f07"
+   "sha256": "714e928ad8a67406ef2cadad504c1d133c0a243c7aaecb6f6e1a6ab26703dad6"
   },
   {
    "file": "src/engine/flood2d.js",
-   "sha256": "f314e38b8aae9da9c8d9c78f804294674280b7e42cc64cfe2926f961c616d618"
+   "sha256": "572a325a576de28dfc3559729f2c72c51d754916762c4437d4613f82d4374a83"
   },
   {
    "file": "src/io/swmm.js",
-   "sha256": "a6a58b6bed702a01c66aec4a43956bb93c0a353662199260c7ae4e1f9141898f"
+   "sha256": "f0bfeff8969fa1083bd7cdf119a396a2d6ce17049fb0535e3ac742544a8bf96c"
   },
   {
    "file": "vendor/crs_catalog.json",

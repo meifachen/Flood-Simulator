@@ -33,12 +33,15 @@
     if (!epsg && gk.GeographicTypeGeoKey && !gk.ProjectedCSTypeGeoKey) throw new Error("The DEM is in geographic coordinates (degrees); project it to a CRS in feet or meters first (python/prep_dem.py)");
     const c = epsg ? lookupCrs(catalog, epsg) : null;
     let vUnit = null; const vt = (gk.VerticalUnitsGeoKey || null); if (vt === 9001) vUnit = "m"; else if (vt === 9002) vUnit = "ft"; else if (vt === 9003) vUnit = "us-ft";
+    const warnings = [];
     if (!vUnit) {   // GDAL's UNITTYPE band tag (what python/prep_dem.py --zunits writes) is not a GeoKey, so the hint above missed it and
       // a feet DEM under a metric CRS fell back to metres, 3.28x out (review F-11); read the tag from GDAL_METADATA as well
       const m = /name="UNITTYPE"[^>]*>([^<]+)</.exec((fd && fd.GDAL_METADATA) || "");
-      if (m) { const u = m[1].trim().toLowerCase(); if (u === "m" || u === "metre" || u === "metres" || u === "meter" || u === "meters") vUnit = "m"; else if (u === "us-ft" || u === "us survey foot" || u === "us survey feet" || u === "us_survey_feet" || u === "ftus") vUnit = "us-ft"; else if (u === "ft" || u === "foot" || u === "feet") vUnit = "ft"; }
+      if (m) { const u = m[1].trim().toLowerCase(); if (u === "m" || u === "metre" || u === "metres" || u === "meter" || u === "meters") vUnit = "m"; else if (u === "us-ft" || u === "us survey foot" || u === "us survey feet" || u === "us_survey_feet" || u === "ftus") vUnit = "us-ft"; else if (u === "ft" || u === "foot" || u === "feet") vUnit = "ft";
+        // a UNITTYPE this reader does not know is named in the warnings, not silently dropped (0.6.1, review 0.6.0 F-13)
+        else if (u) warnings.push(`The DEM's vertical-unit tag (UNITTYPE) is "${m[1].trim()}", which is not a unit this app knows (m, ft, us-ft); the elevation unit is taken from the CRS instead`); }
     }
-    return { nx, ny, x0: ox, y1: oy, res: Math.abs(rx), data, valid, epsg, crsName: c ? c.name : null, proj4: c ? c.proj4 : null, hUnitFt: c ? proj4UnitFt(c.proj4) : NaN, vUnitHint: vUnit,
+    return { nx, ny, x0: ox, y1: oy, res: Math.abs(rx), data, valid, epsg, crsName: c ? c.name : null, proj4: c ? c.proj4 : null, hUnitFt: c ? proj4UnitFt(c.proj4) : NaN, vUnitHint: vUnit, warnings,
       bounds: [ox, oy - ny * Math.abs(ry), ox + nx * Math.abs(rx), oy] };
   }
 

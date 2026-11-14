@@ -205,5 +205,5 @@ const text = (d, f) => fs.readFileSync(ex(d, f), "utf8");
       it.onGrade === true && it.crossSlope === 0.02 && it.longSlope === 0.01 && /Inlet 1 \(J3\): an on-grade inlet needs its street's longitudinal slope \(long_slope\)/.test(msg),
       `parsed onGrade ${it.onGrade}, cross ${it.crossSlope}, long ${it.longSlope}; refused: "${msg.slice(0, 110)}"`);
   }
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

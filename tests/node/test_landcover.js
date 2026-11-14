@@ -95,5 +95,5 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
     const wide = M.sampleRaster(R, { x0: 990, y1: 2010, cs: 10, nx: 6, ny: 5 }, null), inside = Array.from(wide).filter((v) => v === 41).length, nan = Array.from(wide).filter((v) => v !== v).length;
     ok("raster NoData stored as a huge number reads as NoData; cells outside the raster are NaN", R.data[5] !== R.data[5] && inside === 11 && nan === 19, `cell 5 ${R.data[5]}; ${inside} cells inside with class 41, ${nan} NaN (1 NoData + 18 outside)`);
   }
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

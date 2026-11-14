@@ -303,9 +303,9 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
   }
   // C19 (new in 0.6.0, E-07) on-grade inlets intercept a fraction of the gutter flow (HEC-22 ch. 4; EPA SWMM Reference Manual
   // vol. II addendum sec. 5.3), they do not pond-capture: hand calculations written out from the published equations.
-  // Curb: Sx 0.02, slope 0.01, n 0.016, opening 10 ft; at hw 0.2 ft the spread is 10 ft and the gutter flow is 2.395 cfs;
-  // LT = 27.16 ft, so E = 0.562 and the inlet takes 1.347 cfs; a 30 ft opening exceeds LT and takes the whole gutter flow.
-  // Grate: Sx 0.02, slope 0.04, width 2 ft, length 3 ft, splash-over 6 ft/s; at hw 0.3 ft the gutter flow is 14.10 cfs at
+  // Curb: Sx 0.02, slope 0.01, n 0.016, opening 10 ft; at hw 0.2 ft the spread is 10 ft and the gutter flow is 2.394 cfs;
+  // LT = 27.18 ft, so E = 0.562 and the inlet takes 1.346 cfs; a 30 ft opening exceeds LT and takes the whole gutter flow.
+  // Grate: Sx 0.02, slope 0.04, width 2 ft, length 3 ft, splash-over 6 ft/s; at hw 0.3 ft the gutter flow is 14.12 cfs at
   // 6.27 ft/s; E0 = 0.318, Rf = 0.976, Rs = 0.0578, E = 0.350, so it takes 4.93 cfs. A combination inlet on grade takes
   // what its grate takes. On-grade inlets are new in 0.6.0 (the flag was not read before), so these have no 0.5.0 counterpart.
   {
@@ -322,5 +322,5 @@ const ab = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOf
       Math.abs(gotCurb - expCurb) < 1e-9 * expCurb && Math.abs(gotGrate - expGrate) < 1e-9 * expGrate && Math.abs(full - Qc) < 1e-9 * Qc && comb === gotGrate && gotCurb < Qc && gotGrate < Qg,
       `curb ${gotCurb.toFixed(3)} of ${Qc.toFixed(3)} cfs gutter flow (LT ${LT.toFixed(2)} ft); 30 ft opening takes all ${full.toFixed(3)}; grate ${gotGrate.toFixed(3)} of ${Qg.toFixed(2)} cfs (E0 ${E0.toFixed(3)}, Rf ${Rf.toFixed(3)}, Rs ${Rs.toFixed(4)}); combination = grate ${comb.toFixed(3)}`);
   }
-  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : "ALL PASS"); process.exit(bad ? 1 : 0);
+  const bad = res.filter((r) => !r.pass).length; console.log(bad ? `${bad} FAILED` : `ALL PASS (${res.length} checks)`); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error("CRASH", e); process.exit(2); });

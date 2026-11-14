@@ -2,12 +2,19 @@
 """Browser tests of the built app (Playwright + Chromium): python tests/browser/test_app.py [dist/FloodSimulator.html]   exit 1 on failure.
 Runs the paths a user takes: example load, own files through the file inputs, CPU and GPU runs, map, 3D, exports, Stop,
 bad input, phone width and dark theme. GPU runs need Chromium with WebGPU (SwiftShader works with --enable-unsafe-webgpu)."""
-import json, os, sys, tempfile, time
+import hashlib, json, os, sys, tempfile, time
+from datetime import datetime, timezone
 import numpy as np, rasterio
 from playwright.sync_api import sync_playwright
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 APP = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "dist", "FloodSimulator.html"))
+# suite stamp (0.6.1, review 0.6.0 F-10): the claims gate accepts a captured log only if this stamp's app version
+# and dist sha256 match the tree being gated, so a stale log cannot pass the B20 figure
+_man = os.path.join(os.path.dirname(APP), "FloodSimulator.manifest.json")
+_ver = json.load(open(_man)).get("version", "?") if os.path.exists(_man) else "?"
+_sha = hashlib.sha256(open(APP, "rb").read()).hexdigest()[:16] if os.path.exists(APP) else "?"
+print(f"SUITE STAMP: app {_ver}, dist sha256 {_sha}, {datetime.now(timezone.utc).isoformat(timespec='seconds')}", flush=True)
 TMP = tempfile.mkdtemp(prefix="fsim_")
 res = []
 def ok(name, cond, info=""):
@@ -327,7 +334,7 @@ with sync_playwright() as p:
     lk = pg.evaluate("S.final.lakes"); V = lambda h: 43560 * (h - 50) * (1 + 0.05 * (h - 50))
     bud = lk and (V(lk["end"][0]) - V(54.8)) - (lk["from2d"][0] + lk["rain"][0] + lk["outside"][0] - lk["outlet"][0])
     led = pg.inner_text("#ledger")
-    ok("B26 a pond with a stage-area table and an outlet weir: storage change = 2D + rain - outlet; the lakes table shows the outlet", msg.startswith("Done") and lk and lk["outlet"][0] > 0 and abs(bud) < 1e-3 * lk["outlet"][0] and "out of the model" in led and "table, at start" in led,
+    ok("B26 a pond with a stage-area table and an outlet weir: storage change = 2D + rain - outlet; the lakes table shows the outlet and names its kind", msg.startswith("Done") and lk and lk["outlet"][0] > 0 and abs(bud) < 1e-3 * lk["outlet"][0] and "weir outlet:" in led and "out of the model" in led and "table, at start" in led,
        f"end {lk and lk['end'][0]:.3f} ft; outlet {lk and lk['outlet'][0]:.0f} cf; budget error {bud and round(bud, 3)} cf")
     vp = pg.viewport_size; pg.set_viewport_size({"width": 390, "height": 844}); pg.wait_for_timeout(400); sw26 = pg.evaluate("document.documentElement.scrollWidth"); pg.set_viewport_size(vp)
     ok("B26 the lakes table scrolls in its own box at 390 px (no page scroll)", sw26 <= 390, f"scrollWidth {sw26}")
@@ -389,8 +396,9 @@ with sync_playwright() as p:
     st_soil = pg.inner_text("#st-soil")
     pg.select_option("#rain", "gauge"); pg.evaluate("waterNotes()")
     settings(pg, cell_index=0, t0="0", t1="0.1", outmin="2", engine="cpu"); pg.click("#b-run"); msg = wait_done(pg)
-    ok("B27 soils load as a GeoTIFF and the build puts them on the grid (infiltration follows)", "raster of groups" in st_soil and "A: " in st_soil and pg.evaluate("S.grid.info.soilCells") > 0 and pg.evaluate("S.final.ledger.inf") > 0,
-       f"{st_soil[:110]}; soil cells {pg.evaluate('S.grid.info.soilCells')}, infiltration {pg.evaluate('S.final.ledger.inf'):.0f} cf")
+    # soil-cell band tightened in 0.6.1 (review 0.6.0 F-28) around the measured count for this fixture (106,266 cells)
+    ok("B27 soils load as a GeoTIFF and the build puts them on the grid (infiltration follows)", "raster of groups" in st_soil and "A: " in st_soil and 105200 < pg.evaluate("S.grid.info.soilCells") < 107300 and pg.evaluate("S.final.ledger.inf") > 0,
+       f"{st_soil[:110]}; soil cells {pg.evaluate('S.grid.info.soilCells')} (measured 106266), infiltration {pg.evaluate('S.final.ledger.inf'):.0f} cf")
 
     # ---- B28 (new in 0.6.0, E-11) a DEM whose file carries no CRS: the EPSG entry box appears and the typed code is used
     with rasterio.open(os.path.join(us, "dem.tif")) as ds:
@@ -413,4 +421,4 @@ with sync_playwright() as p:
     print("screenshots in", TMP)
     b.close()
 bad = [r for r in res if not r[1]]
-print(f"{len(bad)} FAILED" if bad else "ALL PASS"); sys.exit(1 if bad else 0)
+print(f"{len(bad)} FAILED of {len(res)} checks" if bad else f"ALL PASS ({len(res)} checks)"); sys.exit(1 if bad else 0)
